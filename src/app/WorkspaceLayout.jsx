@@ -35,6 +35,14 @@ function writeRailWidth(value) {
   }
 }
 
+const ACTIVE_NODE_UPDATE_STATES = new Set([
+  'starting',
+  'downloading',
+  'verifying',
+  'installing',
+  'restarting',
+]);
+
 function connectionLabel(state) {
   return ({ open: 'OPEN', connecting: 'CONNECTING', reconnecting: 'RECONNECTING', closed: 'CLOSED' })[state]
     || String(state || 'CLOSED').toUpperCase();
@@ -68,7 +76,7 @@ function canReadChannel(channel) {
 }
 
 function nodeUpdateCurrentVersion(update) {
-  const value = update?.currentVersion;
+  const value = update?.current_version ?? update?.currentVersion;
   return value == null || value === '' ? '未提供' : String(value);
 }
 
@@ -148,15 +156,35 @@ function RailResizeHandle({ width, measure, onResize, onCommit, onReset }) {
   />;
 }
 
+function nodeUpdateLabel(update, wireState) {
+  if (update?.status === 'unsupported' || update?.status === 'unavailable') {
+    return update.detail || '当前节点升级能力不可用';
+  }
+  if (update?.status === 'restarting' && wireState !== 'open') return '正在重连…';
+  return ({
+    starting: '准备升级…',
+    downloading: '正在下载…',
+    verifying: '正在校验…',
+    installing: '正在安装…',
+    restarting: '正在重启…',
+    failed: '升级失败，重试',
+  })[update?.status] || `升级到 ${update?.latest_version || update?.latestVersion || '最新版'}`;
+}
+
 function WorkspaceRail({ session, navigation, onClose, closeButtonRef, railRef, onSelect }) {
   const memberChannels = navigation.channels.filter((channel) => String(channel.access || '').startsWith('member_'));
   const otherChannels = navigation.channels.filter((channel) => !String(channel.access || '').startsWith('member_'));
   const activeCount = Object.values(navigation.agentActivity?.byChannel || {})
     .reduce((count, channel) => count + (channel.active?.length || 0), 0);
   const [now, setNow] = useState(Date.now);
-  const nodeUpdate = navigation.update;
-  const nodeUpdateUnavailable = nodeUpdate?.status === 'unsupported';
-  const nodeUpdateDetail = nodeUpdate?.detail || '当前版本不支持安全升级，请刷新或联系管理员/手动升级';
+  const nodeUpdatePort = navigation.update;
+  const nodeUpdate = nodeUpdatePort?.value;
+  const nodeUpdateUnavailable = nodeUpdate?.status === 'unsupported' || nodeUpdate?.status === 'unavailable';
+  const nodeUpdateActive = ACTIVE_NODE_UPDATE_STATES.has(nodeUpdate?.status);
+  const nodeUpdateFailed = nodeUpdate?.status === 'failed';
+  const nodeUpdateAvailable = nodeUpdate?.available === true;
+  const nodeUpdateVisible = nodeUpdateUnavailable || nodeUpdateActive || nodeUpdateFailed || nodeUpdateAvailable;
+  const nodeUpdatePending = nodeUpdatePort?.pending === true;
   useEffect(() => {
     if (!activeCount) return undefined;
     setNow(Date.now());
@@ -215,10 +243,25 @@ function WorkspaceRail({ session, navigation, onClose, closeButtonRef, railRef, 
       <p className="rail-caption space-caption">空间 <span>{otherChannels.length}</span></p>
       {renderRows(otherChannels, '没有可发现频道')}
     </nav>
-    {nodeUpdateUnavailable && <div className="node-update-action" aria-label="节点升级">
-      <button type="button" disabled title={nodeUpdateDetail}>{nodeUpdateDetail}</button>
+    {nodeUpdateVisible && <div className="node-update-action" aria-label="节点升级">
+      <button
+        type="button"
+        disabled={nodeUpdateUnavailable || nodeUpdateActive || nodeUpdatePending || typeof nodeUpdatePort?.start !== 'function'}
+        onClick={() => {
+          if (typeof nodeUpdatePort?.start !== 'function') return;
+          const target = nodeUpdate?.latest_version || nodeUpdate?.latestVersion || '最新版';
+          const confirmed = typeof globalThis.confirm === 'function'
+            && globalThis.confirm(`升级到 ${target}？\n\n升级会重启 Atoll，并暂时中断当前连接和正在进行的工作。频道记录、任务和工作区数据会保留。`);
+          if (confirmed) void nodeUpdatePort.start().catch(() => {});
+        }}
+        title={nodeUpdate?.detail || `升级到 ${nodeUpdate?.latest_version || nodeUpdate?.latestVersion || '最新版'}`}
+      >
+        {!nodeUpdateUnavailable && <span aria-hidden="true">↑</span>}
+        {nodeUpdateLabel(nodeUpdate, session.wireState)}
+      </button>
       <div className="node-version" aria-label="当前版本（只读）">当前版本：{nodeUpdateCurrentVersion(nodeUpdate)}（只读）</div>
     </div>}
+    {!nodeUpdateVisible && nodeUpdate && nodeUpdateCurrentVersion(nodeUpdate) !== '未提供' && <div className="node-version" aria-label="当前版本（只读）">当前版本：{nodeUpdateCurrentVersion(nodeUpdate)}（只读）</div>}
     <footer className="account-card">
       <span className="avatar">{String(session.me?.display_name || session.me?.id || '?').slice(0, 1).toUpperCase()}</span>
       <span><strong>{session.me?.display_name || '已登录用户'}</strong><small>{session.me?.id}</small></span>

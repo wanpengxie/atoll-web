@@ -494,15 +494,15 @@ describe('A-D round 24 public-owner evidence', () => {
     expect(screen.getByRole('status').textContent).toContain('终态详情不可用，请刷新或重新进入频道');
   });
 
-  it('[AD-202] exposes the unavailable node-update contract without a command owner', () => {
+  it('[AD-202] exposes the unavailable node-update contract from the session port', () => {
     // 用户能力：当前版本不支持安全升级时，Shell 给出稳定、有界失败态。
-    // 不变量：没有真实 session command port 时不显示确认或升级入口。
+    // 不变量：没有真实可用事实时不显示确认或升级入口。
     const nav = navigation();
     render(<WorkspaceLayout
       session={session()}
-      navigation={{ ...nav, update: { status: 'unsupported', currentVersion: null, detail: '当前版本不支持安全升级，请刷新或联系管理员/手动升级' } }}
+      navigation={{ ...nav, update: { value: { current_version: null, status: 'unsupported', available: false, detail: '当前节点升级能力不可用' }, pending: false, start: vi.fn() } }}
     />);
-    expect(screen.getByRole('button', { name: '当前版本不支持安全升级，请刷新或联系管理员/手动升级' }).disabled).toBe(true);
+    expect(screen.getByRole('button', { name: '当前节点升级能力不可用' }).disabled).toBe(true);
   });
 
   it('[AD-203] preserves a read-only current version in the unavailable state', () => {
@@ -511,10 +511,10 @@ describe('A-D round 24 public-owner evidence', () => {
     const nav = navigation();
     render(<WorkspaceLayout
       session={session()}
-      navigation={{ ...nav, update: { status: 'unsupported', currentVersion: 'v0.06', detail: '当前版本不支持安全升级，请刷新或联系管理员/手动升级' } }}
+      navigation={{ ...nav, update: { value: { current_version: 'v0.06', status: 'unsupported', available: false, detail: '当前节点升级能力不可用' }, pending: false, start: vi.fn() } }}
     />);
     expect(screen.getByLabelText('当前版本（只读）').textContent).toContain('当前版本：v0.06（只读）');
-    expect(screen.getByRole('button', { name: '当前版本不支持安全升级，请刷新或联系管理员/手动升级' }).disabled).toBe(true);
+    expect(screen.getByRole('button', { name: '当前节点升级能力不可用' }).disabled).toBe(true);
   });
 
   it('[AD-256] restores principal-scoped control state and converts sending to uncertain', async () => {

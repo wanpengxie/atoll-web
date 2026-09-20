@@ -17,6 +17,15 @@ import { newId } from '../../util/id.js';
 
 const SERVER_WORLD_KEY = 'atoll.server.boot.v2';
 const CHANNEL_NAME_KEY = 'atoll.channel.names.v1';
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1_000;
+const ACTIVE_NODE_UPDATE_STATES = new Set([
+  'starting',
+  'downloading',
+  'verifying',
+  'installing',
+  'restarting',
+]);
+const NODE_UPDATE_UNAVAILABLE_DETAIL = '当前节点升级能力不可用，请刷新或联系管理员/手动升级';
 const WORLD_PREFIXES = [
   'atoll.workspace.bootstrap.v2.',
   'atoll.history.priority.v1.',
@@ -26,6 +35,208 @@ const WORLD_PREFIXES = [
   'atoll.web.file-reading-history.v1.',
   'atoll.terminal.session.',
 ];
+
+function nodeUpdateError(response, body) {
+  const error = new Error(body?.detail || `升级请求失败（HTTP ${response.status}）`);
+  error.status = response.status;
+  error.code = body?.code || 'update_failed';
+  error.detail = body?.detail || error.message;
+  error.body = body;
+  return error;
+}
+
+async function requestNodeUpdate(path, options = {}) {
+  const response = await globalThis.fetch(path, {
+    ...options,
+    credentials: 'include',
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw nodeUpdateError(response, body);
+  return body;
+}
+
+function developmentUpdate(value) {
+  return String(value?.detail || '').includes('开发版')
+    || String(value?.detail || '').toLowerCase().includes('development build')
+    || String(value?.status || '').toLowerCase() === 'unsupported';
+}
+
+function projectNodeUpdate(value) {
+  if (!value || typeof value !== 'object') return null;
+  if (developmentUpdate(value)) {
+    return {
+      ...value,
+      status: 'unsupported',
+      available: false,
+      detail: value.detail || '开发版不执行自动升级',
+    };
+  }
+  return value;
+}
+
+function unavailableNodeUpdate(previous, error) {
+  const body = error?.body && typeof error.body === 'object' ? error.body : {};
+  const currentVersion = body.current_version
+    ?? previous?.current_version
+    ?? previous?.currentVersion
+    ?? null;
+  const latestVersion = body.latest_version
+    ?? previous?.latest_version
+    ?? previous?.latestVersion
+    ?? '';
+  const detail = body.detail
+    || error?.detail
+    || (error?.status === 403
+      ? '当前账号没有节点升级权限'
+      : error?.status === 503
+        ? '节点升级服务暂不可用，请稍后重试'
+        : NODE_UPDATE_UNAVAILABLE_DETAIL);
+  return {
+    ...(previous || {}),
+    ...body,
+    current_version: currentVersion,
+    latest_version: latestVersion,
+    available: false,
+    status: 'unsupported',
+    detail,
+    unavailable: true,
+    error_status: error?.status || 0,
+  };
+}
+
+function useNodeUpdate({ principalId = '', wireState = 'closed' } = {}) {
+  const [value, setValue] = useState(null);
+  const [pending, setPending] = useState(false);
+  const valueRef = useRef(null);
+  const mountedRef = useRef(false);
+  const refreshInFlightRef = useRef(null);
+  const startInFlightRef = useRef(null);
+  const hasConnectedRef = useRef(false);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  useEffect(() => { valueRef.current = value; }, [value]);
+
+  const refresh = useCallback((check = false) => {
+    if (principalId !== 'root') return Promise.resolve(null);
+    if (refreshInFlightRef.current) return refreshInFlightRef.current;
+    const request = requestNodeUpdate(`/api/update${check ? '?check=1' : ''}`)
+      .then((next) => {
+        const projected = projectNodeUpdate(next);
+        valueRef.current = projected;
+        if (mountedRef.current) setValue(projected);
+        return projected;
+      })
+      .catch((error) => {
+        const current = valueRef.current;
+        // A restarting node can close this HTTP request before the next
+        // process is reachable. Keep the authoritative active phase until a
+        // later reconnect/check receipt replaces it; HTTP permission/service
+        // failures are explicit unavailable projections instead.
+        if (mountedRef.current && !ACTIVE_NODE_UPDATE_STATES.has(current?.status)) {
+          const projected = unavailableNodeUpdate(current, error);
+          valueRef.current = projected;
+          setValue(projected);
+        }
+        return null;
+      })
+      .finally(() => {
+        if (refreshInFlightRef.current === request) refreshInFlightRef.current = null;
+      });
+    refreshInFlightRef.current = request;
+    return request;
+  }, [principalId]);
+
+  useEffect(() => {
+    if (principalId !== 'root') {
+      valueRef.current = null;
+      hasConnectedRef.current = false;
+      setValue(null);
+      setPending(false);
+      return undefined;
+    }
+    // The status check is an authenticated root-only HTTP capability. The
+    // six-hour timer is a bounded freshness check, not an update poll.
+    void refresh(true);
+    const timer = globalThis.setInterval(() => { void refresh(true); }, UPDATE_CHECK_INTERVAL_MS);
+    return () => globalThis.clearInterval(timer);
+  }, [principalId, refresh]);
+
+  useEffect(() => {
+    if (principalId !== 'root' || wireState !== 'open') return undefined;
+    if (hasConnectedRef.current) void refresh(true);
+    hasConnectedRef.current = true;
+    return undefined;
+  }, [principalId, refresh, wireState]);
+
+  useEffect(() => {
+    if (principalId !== 'root' || !ACTIVE_NODE_UPDATE_STATES.has(value?.status)) return undefined;
+    const timer = globalThis.setInterval(() => { void refresh(false); }, 1_000);
+    return () => globalThis.clearInterval(timer);
+  }, [principalId, refresh, value?.status]);
+
+  const start = useCallback(() => {
+    if (principalId !== 'root') {
+      const error = new Error('当前账号无权升级节点');
+      error.code = 'permission_denied';
+      return Promise.reject(error);
+    }
+    const current = valueRef.current;
+    if (current?.status === 'unsupported' || current?.status === 'unavailable') {
+      const error = new Error(current.detail || NODE_UPDATE_UNAVAILABLE_DETAIL);
+      error.code = 'update_unavailable';
+      error.status = current.error_status || 503;
+      return Promise.reject(error);
+    }
+    if (!current || current.available !== true) {
+      const error = new Error('节点升级状态尚未确认');
+      error.code = 'update_not_available';
+      return Promise.reject(error);
+    }
+    if (ACTIVE_NODE_UPDATE_STATES.has(current.status)) return Promise.resolve(current);
+    if (startInFlightRef.current) return startInFlightRef.current;
+
+    if (mountedRef.current) setPending(true);
+    const request = requestNodeUpdate('/api/update', { method: 'POST' })
+      .then((next) => {
+        const projected = projectNodeUpdate(next);
+        valueRef.current = projected;
+        if (mountedRef.current) setValue(projected);
+        return projected;
+      })
+      .catch((error) => {
+        const currentValue = valueRef.current;
+        const projected = error?.status === 401 || error?.status === 403 || error?.status === 503
+          ? unavailableNodeUpdate(currentValue, error)
+          : {
+            ...(currentValue || {}),
+            available: currentValue?.available === true,
+            status: 'failed',
+            detail: error.detail || error.message,
+          };
+        valueRef.current = projected;
+        if (mountedRef.current) setValue(projected);
+        throw error;
+      })
+      .finally(() => {
+        if (startInFlightRef.current === request) startInFlightRef.current = null;
+        if (mountedRef.current) setPending(false);
+      });
+    startInFlightRef.current = request;
+    return request;
+  }, [principalId]);
+
+  return useMemo(() => Object.freeze({
+    active: ACTIVE_NODE_UPDATE_STATES.has(value?.status),
+    pending,
+    refresh,
+    start,
+    value,
+  }), [pending, refresh, start, value]);
+}
 
 function storagePort() {
   try { return globalThis.localStorage || null; } catch { return null; }
@@ -677,9 +888,10 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
   };
 }
 
-export function useWireSessionPort() {
+export function useWireSessionPort({ principalId = '' } = {}) {
   const [state, setState] = useState('closed');
   const [incompatible, setIncompatible] = useState(null);
+  const update = useNodeUpdate({ principalId, wireState: state });
   const incompatibleRef = useRef(null);
   const incompatibleEpochRef = useRef(0);
   const obsRef = useRef(null);
@@ -705,8 +917,9 @@ export function useWireSessionPort() {
     setIncompatible,
     setState,
     state,
+    update,
     wireRef,
-  }), [close, incompatible, state]);
+  }), [close, incompatible, state, update]);
 }
 
 export function useWireConnection({

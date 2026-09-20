@@ -21,27 +21,50 @@ function navigation() {
 }
 
 describe('A-D round 15 node-update blocked evidence', () => {
-  it('[AD-202] shows a stable unavailable update action without a command owner', () => {
-    // 用户能力：当前版本不支持安全升级时，用户看到明确的有界失败态。
-    // 不变量：无真实 command port 时不得伪造可升级、确认或网络副作用。
+  it('[AD-202] shows one root-gated confirmation action for an available update', () => {
+    // 用户能力：后端给出可用版本时，Shell 只有一个确认入口。
+    // 不变量：入口消费唯一 session/update port，不从布局自行发 HTTP。
     const nav = navigation();
+    const start = vi.fn();
     render(<WorkspaceLayout
       session={session()}
-      navigation={{ ...nav, update: { status: 'unsupported', currentVersion: null, detail: '当前版本不支持安全升级，请刷新或联系管理员/手动升级' } }}
+      navigation={{ ...nav, update: {
+        value: { current_version: 'v0.06', latest_version: 'v0.07', available: true, status: 'idle' },
+        pending: false,
+        start,
+      } }}
     />);
-    const action = screen.getByRole('button', { name: '当前版本不支持安全升级，请刷新或联系管理员/手动升级' });
-    expect(action.disabled).toBe(true);
+    expect(screen.getByRole('button', { name: '升级到 v0.07' }).disabled).toBe(false);
+    expect(screen.getByLabelText('当前版本（只读）').textContent).toContain('v0.06');
   });
 
-  it('[AD-203] keeps the current version read-only beside the unavailable action', () => {
-    // 用户能力：版本事实仍可只读查看，但没有升级进度或重试假象。
-    // 不变量：unsupported 终态没有 start/POST/polling owner。
+  it('[AD-203] reports active progress through the same disabled action and preserves version', () => {
+    // 用户能力：升级执行期间按钮不可重复提交，当前版本仍来自同一后端事实。
+    // 不变量：active progress 不伪造完成，也不创建第二 command owner。
     const nav = navigation();
     render(<WorkspaceLayout
       session={session()}
-      navigation={{ ...nav, update: { status: 'unsupported', currentVersion: 'v0.06', detail: '当前版本不支持安全升级，请刷新或联系管理员/手动升级' } }}
+      navigation={{ ...nav, update: {
+        value: { current_version: 'v0.06', latest_version: 'v0.07', available: true, status: 'downloading' },
+        pending: false,
+        start: vi.fn(),
+      } }}
     />);
     expect(screen.getByLabelText('当前版本（只读）').textContent).toContain('当前版本：v0.06（只读）');
-    expect(screen.getByRole('button', { name: '当前版本不支持安全升级，请刷新或联系管理员/手动升级' }).disabled).toBe(true);
+    expect(screen.getByRole('button', { name: '正在下载…' }).disabled).toBe(true);
+  });
+
+  it('[AD-202/203] renders an explicit unavailable terminal from the session port', () => {
+    const nav = navigation();
+    render(<WorkspaceLayout
+      session={session()}
+      navigation={{ ...nav, update: {
+        value: { current_version: 'dev', available: false, status: 'unsupported', detail: '开发版不执行自动升级' },
+        pending: false,
+        start: vi.fn(),
+      } }}
+    />);
+    expect(screen.getByRole('button', { name: '开发版不执行自动升级' }).disabled).toBe(true);
+    expect(screen.getByLabelText('当前版本（只读）').textContent).toContain('当前版本：dev（只读）');
   });
 });
