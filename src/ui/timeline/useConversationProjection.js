@@ -925,10 +925,12 @@ export function useConversationProjection({
       activationID: viewport.activationID,
       mode: viewport.session.mode,
       rows: projection.presentation.rows,
+      latestRowID,
       bookmarkID: viewport.session.bookmark?.messageID || '',
     }));
   }, [
     projection.presentation,
+    latestRowID,
     viewport.activationID,
     viewport.session.bookmark?.messageID,
     viewport.session.mode,

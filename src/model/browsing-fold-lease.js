@@ -21,6 +21,7 @@ export function reconcileBrowsingFoldLease(current = EMPTY_LEASE, {
   activationID = '',
   mode = READING_MODE.following,
   rows = [],
+  latestRowID = '',
   bookmarkID = '',
 } = {}) {
   if (mode !== READING_MODE.browsing || !activationID) return EMPTY_LEASE;
@@ -28,7 +29,10 @@ export function reconcileBrowsingFoldLease(current = EMPTY_LEASE, {
   const retained = current.activationID === activationID
     ? current.visualSlotIDs.filter((id) => visualSlotIDs.has(id))
     : [];
-  const latest = rows.find((row) => row?.role?.latest === true);
+  // The latest row is an authority decision made by the current Presentation
+  // viewport. Rows intentionally carry no role field; accepting one here
+  // would recreate the removed role-finalization/compatibility path.
+  const latest = rows.find((row) => String(row?.id || '') === String(latestRowID || ''));
   const latestID = String(latest?.id || '');
   const latestSlotID = String(latest?.visualSlotID || latestID);
   if (latestSlotID && (retained.length === 0 || String(bookmarkID || '') === latestID)) {
