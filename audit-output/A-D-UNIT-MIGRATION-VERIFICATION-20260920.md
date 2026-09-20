@@ -294,6 +294,18 @@ without a current public owner. The ledger is now **322 PASS / 0 REGRESSION /
 43 BLOCKED**, with OWNER_MISSING 12, FIXTURE_MISSING 11, and CAPABILITY_GAP 20.
 No product source or baseline declaration changed.
 
+Round 29 adds the case-level packet
+[`A-D-BLOCKED-EVIDENCE-ROUND29-20260920.md`](./A-D-BLOCKED-EVIDENCE-ROUND29-20260920.md)
+for ten current-owner capability gaps: AD-170, AD-182, AD-202, AD-203,
+AD-256, AD-257, AD-284, AD-291, AD-292, and AD-316. It intentionally adds no
+duplicate ordinary-red test declarations; the existing Round 24/25 public-owner
+assertions are the executable regression sources. The focused selection is
+**2 files failed; 10 selected tests failed; 30 tests skipped**. The ten red
+results remain BLOCKED and no row is promoted. The ledger remains **322 PASS /
+0 REGRESSION / 43 BLOCKED**, with OWNER_MISSING **10**, FIXTURE_MISSING **10**,
+and CAPABILITY_GAP **23** after identifying the public owner boundaries for
+AD-256/257 and AD-316. No capability is declared obsolete.
+
 ## Public-boundary migration completed in this pass
 
 `tests/channel-access.test.js` and `tests/channel-name-cache.test.js` no longer
@@ -353,6 +365,7 @@ The focused slices were run with Vitest against current public owners:
 | `tests/blocked-round25-public-owner.test.jsx` | 5 passed, 15 ordinary red, 20 total | AD-157/158/167 reverify Feed grant/boot/probe admission; AD-288/289 verify the existing cursor clamp owner; AD-170/182/284/291/292 and AD-002/003/004/093/097/099/105/106/108/149 retain precise ordinary-red public owner evidence |
 | `tests/blocked-round26-public-owner.test.jsx` | 20 ordinary red, 20 total | AD-027/037, AD-150–153/155, AD-156/159–161, AD-165/166/178, and AD-192–197 retain precise Waiting/Feed/Governance owner or fixture evidence; closed AD-157/158/167/288/289 are explicitly de-duplicated |
 | `tests/blocked-round27-fixture-recovery.test.jsx` | 3 passed, 3 total | AD-027/178/196 are recovered through current public Waiting/Reading, Feed cache, and Governance command owners; the separate Round 26 ordinary-red packet remains the evidence source for the 17 unresolved rows |
+| `tests/blocked-round24-public-owner.test.jsx tests/blocked-round25-public-owner.test.jsx -t '\[AD-(170|182|202|203|256|257|284|291|292|316)\]'` | 10 ordinary red, 30 skipped | Round 29 rechecks ten selected current-owner capability gaps without adding duplicate red declarations; all remain BLOCKED and are handed off case-by-case in the Round 29 packet |
 | Round 15–20 blocked packets combined | 42 passed, 59 expected fail, 101 total | seven packet files remain green as suites; expected-fail rows are unresolved evidence and are not counted as completion |
 | A–D owner slices including Agent/Waiting/Composer/Artifact/Content/Workspace tests | PASS cases green; no registered regression case red | AD-011 and AD-143 are closed through their existing public owners; no AD-123 `it.fails` case remains |
 
@@ -426,6 +439,12 @@ scope), not to the 42-suite A–D baseline ledger.
   rows BLOCKED. It does not modify Waiting, Reading, Feed, Replica, Governance,
   Workspace, vendor, package, lockfile, private exports, compatibility APIs,
   or baseline declarations.
+- Round 29 changes only the case-level evidence packet and A–D audit/ledger
+  reports. It reuses the existing ordinary-red public-owner assertions for ten
+  current capability gaps, identifies `useComposerSubmissionRuntime` for
+  AD-256/257 and the `SpaceDevices` command port for AD-316, and does not add a
+  duplicate red test source. No product source, vendor, package, lockfile,
+  private export, compatibility API, or baseline declaration changed.
 - No Reading, Outbox, vendor, package manifest,
   lockfile, or private production export changed.
 - No baseline declaration was deleted or skipped. BLOCKED rows remain explicit

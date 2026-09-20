@@ -83,6 +83,26 @@ the unchanged Round 26 ordinary-red packet remains the reproduction source for
 all unresolved rows. The current ledger is **43 BLOCKED** (**322 PASS / 0
 REGRESSION / 43 BLOCKED**).
 
+## Round 29 evidence packet
+
+Round 29 selects ten remaining rows with an identified current public owner:
+AD-170, AD-182, AD-202, AD-203, AD-256, AD-257, AD-284, AD-291, AD-292, and
+AD-316. It adds the case-level handoff
+[`A-D-BLOCKED-EVIDENCE-ROUND29-20260920.md`](./A-D-BLOCKED-EVIDENCE-ROUND29-20260920.md)
+but deliberately adds no duplicate ordinary-red declaration. The existing
+Round 24/25 public-owner assertions were run as one focused selection:
+**2 files failed; 10 selected tests failed; 30 tests skipped**. All ten are
+ordinary red product-gap evidence, so no row moves to PASS and the ledger
+remains **322 PASS / 0 REGRESSION / 43 BLOCKED**.
+
+This round makes the owner boundary explicit for AD-256/257
+(`useComposerSubmissionRuntime`) and AD-316 (`SpaceDevices`' public
+`space.commands` port). They are direct non-equivalent behaviors at current
+public owners, so they move from the earlier `OWNER_MISSING`/`FIXTURE_MISSING`
+triage buckets into `CAPABILITY_GAP`. This is a classification correction, not
+a capability-obsolescence decision; no row is deleted, skipped, or judged
+obsolete.
+
 ## Minimal regression packets
 
 ### AD-011 — Activity retained-work settlement after reconnect
@@ -163,21 +183,20 @@ The classification is an evidence triage, not a verdict on product scope:
 
 | Category | Count | Rule |
 |---|---:|---|
-| 缺 owner (`OWNER_MISSING`) | 12 | The exact baseline capability has no single current public entry/owner, even where an adjacent feature exists. Round 20 adds AD-165/166 for channel-entry/reconnect freshness interests. |
-| 缺 fixture / 等价证明 (`FIXTURE_MISSING`) | 11 | A current public owner is named, but no one-to-one setup/action/result fixture has been established; this does not claim the capability is absent. Round 27 promotes AD-027/178/196 and reclassifies ten directly reproduced non-equivalent rows as capability gaps. |
-| 真实能力缺口 (`CAPABILITY_GAP`) | 20 | The ledger records the required user-facing capability/index as absent or explicitly non-equivalent at the current public surface. In addition to the earlier ten gaps, Round 27 adds AD-037, AD-156, AD-159–161, and AD-192–195/197. |
+| 缺 owner (`OWNER_MISSING`) | 10 | The exact baseline capability has no single current public entry/owner, even where an adjacent feature exists. Round 20 adds AD-165/166 for channel-entry/reconnect freshness interests; Round 29 identifies public owner boundaries for AD-256/257. |
+| 缺 fixture / 等价证明 (`FIXTURE_MISSING`) | 10 | A current public owner is named, but no one-to-one setup/action/result fixture has been established; this does not claim the capability is absent. Round 27 promotes AD-027/178/196 and reclassifies ten directly reproduced non-equivalent rows as capability gaps; Round 29 identifies the direct AD-316 owner gap. |
+| 真实能力缺口 (`CAPABILITY_GAP`) | 23 | The ledger records the required user-facing capability/index as absent or explicitly non-equivalent at the current public surface. Round 27 adds AD-037, AD-156, AD-159–161, and AD-192–195/197; Round 29 adds the current-owner gaps AD-256/257 and AD-316. |
 | **Total** | **43** | The remaining rows retain explicit blocked evidence; no row is obsolete, deleted, or skipped. |
 
-### `OWNER_MISSING` — 12 rows
+### `OWNER_MISSING` — 10 rows
 
 | Baseline source | Rows | Evidence boundary |
 |---|---:|---|
 | `channel-create-modal.test.jsx` | 6 | `AD-149`–`AD-153`, `AD-155`; `GovernanceFeature` has an adjacent create panel but no independent owner for the baseline four-step modal contract. AD-154 now has a green public draft/failure/retry fixture. |
-| `control-actions.test.js` | 2 | `AD-256`–`AD-257`; no principal-scoped durable control-recovery owner. |
 | `dynamic-form.test.js` | 2 | `AD-363`–`AD-364`; no public JSON-Schema/control-form owner for typed control payloads. |
 | `channel-feed-startup.test.jsx` | 2 | `AD-165`–`AD-166`; no public channel-entry/reconnect/foreground freshness-interest owner. |
 
-### `CAPABILITY_GAP` — 20 rows
+### `CAPABILITY_GAP` — 23 rows
 
 | Baseline source | Rows | Evidence boundary |
 |---|---:|---|
@@ -185,10 +204,12 @@ The classification is an evidence triage, not a verdict on product scope:
 | `channel-list.test.jsx` | 2 | `AD-202`–`AD-203`; current `VersionIncompatible` is a protocol terminal, not a node-version/update capability, and no node-update port/UI is mounted. |
 | `channel-feed-startup.test.jsx` | 6 | `AD-170`, `AD-182`, `AD-156`, `AD-159`–`AD-161`; AD-157/158 now pass the fixed cache-admission contract, AD-167 passes the fixed refresh-admission contract, and the Round 27 unread/arrival owner gaps are directly reproduced. |
 | `cursors.test.js` | 3 | `AD-284`, `AD-291`, `AD-292`; AD-288/289 now pass the existing authority/head clamp owner `ef67eaf`. |
+| `control-actions.test.js` | 2 | `AD-256`–`AD-257`; `useComposerSubmissionRuntime` is the public owner, but principal-scoped uncertain recovery and serializable errors are non-equivalent. |
+| `devices-panel.test.jsx` | 1 | `AD-316`; `SpaceDevices` exposes the public command port, but terminal create does not refresh the authoritative projection. |
 | `agent-information-architecture.test.jsx` | 1 | `AD-037`; the current Waiting owner has no automatic reconnect `agent.context` operation. |
 | `channel-governance.test.js` | 5 | `AD-192`–`AD-195`, `AD-197`; current Governance selector/convergence/status owners do not expose the required human-only or unavailable-result facts. |
 
-### `FIXTURE_MISSING` — 11 rows
+### `FIXTURE_MISSING` — 10 rows
 
 These rows have a named current owner and an evidence successor, but the
 successor is not yet a one-to-one public fixture for the baseline scenario.
@@ -207,9 +228,8 @@ auditable:
 | `channel-feed-startup.test.jsx` | 0 | AD-178 is now a green same-boot Meta/body fixture in `tests/blocked-round27-fixture-recovery.test.jsx`; AD-156/159–161 are quantified as Feed capability gaps. |
 | `channel-governance.test.js` | 0 | AD-196 is now a green public failed-create fixture in `tests/blocked-round27-fixture-recovery.test.jsx`; AD-192–195/197 are quantified as Governance capability gaps, while AD-191 remains green in `tests/blocked-round18-public-owner.test.jsx`. |
 | `cursors.test.js` | 2 | `AD-306`–`AD-307`; Round 22 promotes AD-295–AD-304; Round 21 promoted AD-277/278/282/283/285/286/287/290/293/294 and reclassified AD-284/288/289/291/292 as capability gaps |
-| `devices-panel.test.jsx` | 1 | `AD-316` |
 | `dynamic-f3.test.jsx` | 2 | `AD-331`, `AD-334`; AD-327–329/333/335–338/340–343/350–351 now have green public presentation/Composer fixtures in `tests/blocked-round16-public-owner.test.jsx` |
-| **Total** | **11** | Round 27 promotes AD-027/178/196 and reclassifies ten direct owner gaps; the remaining fixture rows retain explicit blocked evidence. |
+| **Total** | **10** | Round 27 promotes AD-027/178/196 and reclassifies ten direct owner gaps; Round 29 reclassifies AD-316 after its public owner is directly exercised; the remaining fixture rows retain explicit blocked evidence. |
 
 The remaining categories above retain their ledger `BLOCKED` status. AD-014 and
 AD-017 no longer count as fixture-missing: their public-owner fixtures are
