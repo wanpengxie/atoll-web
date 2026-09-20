@@ -148,3 +148,51 @@ test('Escape dismisses an @ suggestion and sends the restored literal address', 
     contentType: 'application/json',
   });
 });
+
+test('recipient chips remove one-by-one and with Backspace before the remaining default target submits', async ({ page, request }, testInfo) => {
+  const submits = captureSubmitFrames(page);
+  const text = '移除后发送';
+  await reset(request);
+  await login(page);
+
+  const input = page.getByTestId('composer-input');
+  await input.click();
+  await input.pressSequentially('@Cl');
+  const claudeOption = page.getByRole('listbox').getByRole('option').filter({ hasText: 'Claude' }).first();
+  await expect(claudeOption).toBeVisible();
+  await claudeOption.click();
+  await expect(input).toHaveText('');
+  await expect(page.locator('.composer-target-pill.is-picked')).toHaveText('@Claude');
+
+  await input.pressSequentially('@st');
+  const stewardOption = page.getByRole('listbox').getByRole('option').first();
+  await expect(stewardOption).toBeVisible();
+  await stewardOption.click();
+  await expect(input).toHaveText('');
+  await expect(page.locator('.composer-target-pill.is-picked')).toHaveCount(2);
+
+  await page.getByRole('button', { name: '移除收件人 @Claude' }).click();
+  await expect(page.locator('.composer-target-pill.is-picked')).toHaveText('@steward');
+  await input.click();
+  await input.press('Backspace');
+  await expect(page.locator('.composer-target-pill.is-picked')).toHaveCount(0);
+  await expect(page.getByRole('status', { name: '收件人' })).toContainText('@steward');
+
+  await input.pressSequentially(text);
+  await input.press('Enter');
+  const submitted = () => submits.find((frame) => frame?.msg_type === 'agent.ask' && frame?.payload?.text === text);
+  await expect.poll(submitted, { timeout: 10_000 }).toMatchObject({
+    channel_id: 'c0',
+    msg_type: 'agent.ask',
+    kind: 'request',
+    payload: { text },
+    audience: ['steward'],
+    visibility: 'public',
+  });
+  await expect(input).toHaveText('');
+  await expect(page.locator('article.request-message .request-text').filter({ hasText: text })).toBeVisible();
+  await testInfo.attach('composer-recipient-chip-removal-submit.json', {
+    body: JSON.stringify(submitted(), null, 2),
+    contentType: 'application/json',
+  });
+});
