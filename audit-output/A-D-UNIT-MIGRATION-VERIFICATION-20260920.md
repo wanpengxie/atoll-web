@@ -376,6 +376,23 @@ unresolved Governance contracts; no ordinary-red duplicate was added for
 them. Focused AD-153 verification is **1 file passed; 2 tests passed**
 (`tests/channel-create-modal.test.jsx`), and browser TC-0192 is **1 passed**.
 
+## Round 38 — Shell clean Activity candidate and Governance failure/retry
+
+At clean Shell candidate `3847f8f`, strict Chromium re-verification of
+TC-0193/0194/0195 is **3 passed**. TC-0194 now has a canonical channel-create
+Operation projection and returns through the typed turn source; TC-0193's
+WorkItem source and TC-0195's access-revocation/cache assertions remain green.
+The AD-153 unit contract remains green (**2 passed**) and TC-0192 remains green
+(**1 passed**).
+
+The independent Governance failure/retry contract for AD-154 is **RED**:
+matching `creation.failed=true,error='名称已存在'` reaches the public modal and
+shows the terminal error, but the progress header remains `正在收敛`, the action
+remains `创建频道`, and no `重新创建` control is exposed. This is a real
+current-owner product gap, not a selector or fixture issue. The ledger is
+therefore **325 PASS / 1 REGRESSION / 39 BLOCKED**; AD-154 is not counted as
+PASS and no expected-fail result is used.
+
 ## Public-boundary migration completed in this pass
 
 `tests/channel-access.test.js` and `tests/channel-name-cache.test.js` no longer

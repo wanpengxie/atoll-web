@@ -114,7 +114,7 @@ describe('Round 35 Governance public-owner contracts', () => {
     expect(globalThis.location.hash).toBe('#/channels/c0/conversation');
   });
 
-  it('keeps a failed ledger terminal observable and leaves the request retryable', async () => {
+  it('[AD-154] keeps a failed ledger terminal observable and leaves the request retryable', async () => {
     const submit = vi.fn().mockResolvedValue('create-request-37-failed');
 
     function Harness() {
