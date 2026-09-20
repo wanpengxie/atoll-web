@@ -39,6 +39,10 @@ async function seedPartialReplicaCache(principal, boot) {
   await cache.destroy();
 }
 
+function nextTick() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 describe('ChannelFeedRuntime ownership', () => {
   it('waits for the current history grant before cold loading and replays at the granted head', async () => {
     const requests = [];
@@ -113,6 +117,178 @@ describe('ChannelFeedRuntime ownership', () => {
     expect(runtime.getSnapshot().stateFor('c0')?.rows.has(844)).toBe(true);
     expect(runtime.getSnapshot().historyFor('c0')).toMatchObject({
       attached: true, generation: 2, headSeq: 844,
+    });
+    runtime.destroy();
+  });
+
+  it('retires an unfinished history demand after disconnect and regrant', async () => {
+    const requests = [];
+    const wireRef = { current: {
+      historyBefore: vi.fn((channelId, beforeSeq, _limit, detail) => {
+        const ref = `disconnect-history-${requests.length + 1}`;
+        requests.push({ channelId, beforeSeq, ref, ...detail });
+        const receipt = Promise.resolve({ accepted: true, generation: detail.generation, channel_id: channelId });
+        receipt.ref = ref;
+        return receipt;
+      }),
+      cancelHistory: vi.fn(async () => undefined),
+    } };
+    const runtime = createChannelFeedRuntime({ ...runtimeOptions(), wireRef });
+    runtime.mount();
+    const snapshot = runtime.getSnapshot();
+
+    await snapshot.setHistoryGrants([
+      { channel_id: 'c0', head_seq: 844, has_rows: true },
+    ], { generation: 1, boot: 'disconnect-regrant-boot', focus: 'c0' });
+    const pending = snapshot.loadHistory('c0', {
+      intent: 'initial-view', urgency: 'blocking',
+    });
+    await nextTick();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ beforeSeq: 845, generation: 1 });
+
+    expect(snapshot.disconnectHistory(1)).toBe(true);
+    await expect(pending).resolves.toMatchObject({ kind: 'cancelled', reason: 'stale-generation' });
+    await snapshot.setHistoryGrants([
+      { channel_id: 'c0', head_seq: 845, has_rows: true },
+    ], { generation: 2, boot: 'disconnect-regrant-boot', focus: 'c0' });
+    await nextTick();
+
+    // Disconnect retires the unfinished demand. A replacement grant must not
+    // replay an intent that was issued under the revoked authority.
+    expect(requests).toHaveLength(1);
+    expect(snapshot.historyFor('c0')).toMatchObject({
+      attached: true, generation: 2, loading: false,
+      historyDemand: { phase: 'idle' },
+    });
+
+    const replacementDemand = snapshot.loadHistory('c0', {
+      intent: 'initial-view', urgency: 'blocking',
+    });
+    await nextTick();
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toMatchObject({ beforeSeq: 846, generation: 2 });
+    expect(snapshot.pageEnd({
+      ref: requests[1].ref, channel_id: 'c0', generation: 2,
+      rows: 0, scan_low_seq: 0, scan_high_seq: 845, next_before_seq: 0, has_older: false,
+    })).toBe(true);
+    await expect(replacementDemand).resolves.toMatchObject({ kind: 'exhausted', released: 0 });
+    await nextTick();
+    expect(snapshot.historyFor('c0')).toMatchObject({
+      attached: true, generation: 2, loading: false,
+      historyDemand: { phase: 'idle' },
+    });
+    runtime.destroy();
+  });
+
+  it('drops a late in-flight page when the attach world changes', async () => {
+    const requests = [];
+    const wireRef = { current: {
+      historyBefore: vi.fn((channelId, beforeSeq, _limit, detail) => {
+        const ref = `world-history-${requests.length + 1}`;
+        requests.push({ channelId, beforeSeq, ref, ...detail });
+        const receipt = Promise.resolve({ accepted: true, generation: detail.generation, channel_id: channelId });
+        receipt.ref = ref;
+        return receipt;
+      }),
+      cancelHistory: vi.fn(async () => undefined),
+    } };
+    const runtime = createChannelFeedRuntime({ ...runtimeOptions(), wireRef });
+    runtime.mount();
+    const snapshot = runtime.getSnapshot();
+    await snapshot.setHistoryGrants([
+      { channel_id: 'c0', head_seq: 844, has_rows: true },
+    ], { generation: 1, boot: 'world-a', focus: 'c0' });
+    const pending = snapshot.loadHistory('c0', { intent: 'initial-view' });
+    await nextTick();
+    expect(requests).toHaveLength(1);
+
+    await snapshot.setHistoryGrants([
+      { channel_id: 'c0', head_seq: 845, has_rows: true },
+    ], { generation: 2, boot: 'world-b', focus: 'c0' });
+    expect(snapshot.pageEnd({
+      ref: requests[0].ref, channel_id: 'c0', generation: 1,
+      rows: 1, scan_low_seq: 1, scan_high_seq: 844,
+      next_before_seq: 1, has_older: true,
+    })).toBe(false);
+    await expect(pending).resolves.toMatchObject({ kind: 'cancelled', reason: 'stale-generation' });
+    expect(requests).toHaveLength(1);
+    expect(snapshot.historyFor('c0')).toMatchObject({
+      attached: true, generation: 2, headSeq: 845,
+      authority: { serverBoot: 'world-b' },
+      historyDemand: { phase: 'idle' },
+    });
+    expect(snapshot.stateFor('c0')?.rows.has(844)).not.toBe(true);
+    runtime.destroy();
+  });
+
+  it.each(['clear', 'destroy'])('does not resurrect a %s runtime on a late grant', async (lifecycle) => {
+    const requests = [];
+    const wireRef = { current: {
+      historyBefore: vi.fn((channelId, beforeSeq, _limit, detail) => {
+        const ref = `terminal-history-${requests.length + 1}`;
+        requests.push({ channelId, beforeSeq, ref, ...detail });
+        const receipt = Promise.resolve({ accepted: true, generation: detail.generation, channel_id: channelId });
+        receipt.ref = ref;
+        return receipt;
+      }),
+      cancelHistory: vi.fn(async () => undefined),
+    } };
+    const runtime = createChannelFeedRuntime({ ...runtimeOptions(), wireRef });
+    runtime.mount();
+    const snapshot = runtime.getSnapshot();
+    await expect(snapshot.loadHistory('c0', { intent: 'initial-view' }))
+      .resolves.toMatchObject({ kind: 'waiting', reason: 'history-grant-pending' });
+    if (lifecycle === 'clear') snapshot.clear();
+    else runtime.destroy();
+
+    await snapshot.setHistoryGrants([
+      { channel_id: 'c0', head_seq: 844, has_rows: true },
+    ], { generation: 1, boot: 'late-grant-boot', focus: 'c0' });
+    await nextTick();
+    expect(requests).toHaveLength(0);
+    expect(snapshot.stateEntries()).toHaveLength(0);
+    expect(snapshot.historyFor('c0')).toMatchObject({
+      attached: false, generation: 0, loading: false,
+      historyDemand: { phase: 'idle' },
+    });
+  });
+
+  it('starts a clean demand on a normal replacement runtime', async () => {
+    const requests = [];
+    const wireRef = { current: {
+      historyBefore: vi.fn((channelId, beforeSeq, _limit, detail) => {
+        const ref = `replacement-history-${requests.length + 1}`;
+        requests.push({ channelId, beforeSeq, ref, ...detail });
+        const receipt = Promise.resolve({ accepted: true, generation: detail.generation, channel_id: channelId });
+        receipt.ref = ref;
+        return receipt;
+      }),
+      cancelHistory: vi.fn(async () => undefined),
+    } };
+    const retired = createChannelFeedRuntime({ ...runtimeOptions(), wireRef });
+    retired.mount();
+    await retired.getSnapshot().loadHistory('c0', { intent: 'initial-view' });
+    retired.destroy();
+
+    const runtime = createChannelFeedRuntime({ ...runtimeOptions(), wireRef });
+    runtime.mount();
+    const snapshot = runtime.getSnapshot();
+    await snapshot.setHistoryGrants([
+      { channel_id: 'c0', head_seq: 2, has_rows: true },
+    ], { generation: 1, boot: 'replacement-boot', focus: 'c0' });
+    const pending = snapshot.loadHistory('c0', { intent: 'initial-view' });
+    await nextTick();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ beforeSeq: 3, generation: 1 });
+    expect(snapshot.pageEnd({
+      ref: requests[0].ref, channel_id: 'c0', generation: 1,
+      rows: 0, scan_low_seq: 0, scan_high_seq: 2, next_before_seq: 0, has_older: false,
+    })).toBe(true);
+    await expect(pending).resolves.toMatchObject({ kind: 'exhausted', released: 0 });
+    expect(snapshot.historyFor('c0')).toMatchObject({
+      attached: true, generation: 1, loading: false,
+      historyDemand: { phase: 'idle' },
     });
     runtime.destroy();
   });
