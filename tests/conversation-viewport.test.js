@@ -124,6 +124,25 @@ describe('reading session authority', () => {
     expect(requestLatest(current, 'latest').positionRowLease).toBeNull();
   });
 
+  it('rebases an older input epoch onto its existing physical anchor', () => {
+    let current = takeReadingControl(session(), {
+      direction: 'older',
+      gestureID: 'wheel:one',
+      historyAnchor: { messageID: 'm80', viewportOffset: -394 },
+    });
+    const rebased = takeReadingControl(current, {
+      direction: 'older',
+      gestureID: 'wheel:one',
+      historyAnchor: { messageID: 'm80', viewportOffset: 35 },
+    });
+    expect(rebased.inputEpoch).toBe(current.inputEpoch + 1);
+    expect(rebased.intentRevision).toBe(current.intentRevision + 1);
+    expect(rebased.historyAnchor).toMatchObject({
+      messageID: 'm80', viewportOffset: -394,
+      inputEpoch: rebased.inputEpoch, intentRevision: rebased.intentRevision,
+    });
+  });
+
   it('consumes a position lease only after every identity field matches', () => {
     let current = takeReadingControl(session(), {
       direction: 'older',
@@ -142,6 +161,22 @@ describe('reading session authority', () => {
     expect(positionRowLeaseCommand(current)).not.toBeNull();
     expect(consumePositionRowLease(current, wrong)).toBe(current);
     expect(consumePositionRowLease(current, lease).positionRowLease).toBeNull();
+  });
+
+  it('clears the matching history anchor only for a terminal lease revoke', () => {
+    let current = takeReadingControl(session(), {
+      direction: 'older',
+      historyAnchor: { messageID: 'm80', viewportOffset: -394 },
+    });
+    const lease = {
+      type: 'position-row', activationID: 'a1', inputEpoch: current.inputEpoch,
+      intentRevision: current.intentRevision, operationID: 'history:a1:revoke',
+      viewID: 'c0:all', epoch: 'c0:4', presentationRevision: 12,
+      messageID: 'm80', viewportOffset: -394,
+    };
+    current = acceptPositionRowLease(current, lease);
+    expect(revokePositionRowLease(current, lease).historyAnchor).not.toBeNull();
+    expect(revokePositionRowLease(current, lease, { clearHistoryAnchor: true }).historyAnchor).toBeNull();
   });
 
   it('records the new first-row anchor only after the accepted lease is consumed', () => {

@@ -193,6 +193,16 @@ export function takeReadingControl(session, {
 } = {}) {
   const inputEpoch = session.inputEpoch + 1;
   const intentRevision = session.intentRevision + 1;
+  // Wheel delivery can cross the coordinator's quiet deadline while it is
+  // still one semantic older intent (for example while a delayed page is
+  // being admitted).  Keep the first physical row anchor for that intent and
+  // only rebind its identity to the new input epoch/revision.  Re-capturing
+  // the row after it has moved to the top would turn the later grant into a
+  // different viewport offset, so the prepend would be visibly displaced.
+  const olderAnchor = direction === 'older' && session.historyAnchor?.messageID
+    && Number.isFinite(Number(session.historyAnchor.viewportOffset))
+    ? session.historyAnchor
+    : historyAnchor;
   return next(session, {
     inputEpoch,
     intentRevision,
@@ -200,14 +210,14 @@ export function takeReadingControl(session, {
     bottomIntent: idleBottomIntent(),
     contentAnchor: idleContentAnchor(),
     positionRowLease: null,
-    historyAnchor: direction === 'older' && historyAnchor?.messageID
-      && Number.isFinite(Number(historyAnchor.viewportOffset))
+    historyAnchor: direction === 'older' && olderAnchor?.messageID
+      && Number.isFinite(Number(olderAnchor.viewportOffset))
       ? Object.freeze({
         activationID: session.activationID,
         inputEpoch,
         intentRevision,
-        messageID: String(historyAnchor.messageID),
-        viewportOffset: Number(historyAnchor.viewportOffset),
+        messageID: String(olderAnchor.messageID),
+        viewportOffset: Number(olderAnchor.viewportOffset),
       })
       : null,
     tailEvidence: direction === 'newer' ? Object.freeze({
@@ -407,10 +417,19 @@ export function updateHistoryAnchor(session, anchor = null) {
   return next(session, { historyAnchor: normalized });
 }
 
-export function revokePositionRowLease(session, command = null) {
+export function revokePositionRowLease(session, command = null, { clearHistoryAnchor = false } = {}) {
   const lease = session?.positionRowLease;
   if (!lease || (command && !samePositionRowLease(lease, command))) return session;
-  return next(session, { positionRowLease: null });
+  const anchor = session.historyAnchor;
+  const clearAnchor = clearHistoryAnchor && anchor
+    && anchor.activationID === lease.activationID
+    && Number(anchor.inputEpoch) === Number(lease.inputEpoch)
+    && Number(anchor.intentRevision) === Number(lease.intentRevision)
+    && anchor.messageID === lease.messageID;
+  return next(session, {
+    positionRowLease: null,
+    ...(clearAnchor ? { historyAnchor: null } : {}),
+  });
 }
 
 export function contentAnchorCommand(session) {

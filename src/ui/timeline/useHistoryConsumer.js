@@ -24,9 +24,24 @@ function cancelPositionLeaseWait(ref, reason, revoke = false) {
   if (waiter.timer) globalThis.clearTimeout?.(waiter.timer);
   ref.current = null;
   if (revoke && waiter.lease) {
-    waiter.controller.update((active) => revokePositionRowLease(active, waiter.lease));
+    waiter.controller.update((active) => revokePositionRowLease(active, waiter.lease, {
+      clearHistoryAnchor: true,
+    }));
   }
   waiter.resolve?.({ kind: 'cancelled', reason });
+}
+
+// Admission publishes the prepended snapshot before Vendor can paint the
+// accepted position-row lease. During that handoff the old historyAnchor is
+// intentionally absent from the new first-row snapshot. The accepted lease
+// is the stronger proof that continuation may wait for the paint fence.
+function positionLeaseHandoffReady(session) {
+  const lease = session?.positionRowLease;
+  return Boolean(lease?.messageID
+    && lease.activationID === session.activationID
+    && Number(lease.inputEpoch) === Number(session.inputEpoch)
+    && Number(lease.intentRevision) === Number(session.intentRevision)
+    && Number.isFinite(Number(lease.viewportOffset)));
 }
 
 export function useReadingInitialization({
@@ -188,17 +203,13 @@ export function useHistoryConsumer({
       && positionLeaseWaitRef.current?.controller === controller) {
       cancelPositionLeaseWait(positionLeaseWaitRef, 'position-lease-cleared');
     }
-    if (continuation) {
-      const firstID = snapshotRef.current.rows[0]?.id;
-      const anchor = currentSession.historyAnchor;
-      if (!anchor || String(anchor.messageID) !== String(firstID || '')
-        || !Number.isFinite(Number(anchor.viewportOffset))) {
-        return Promise.resolve({ kind: 'position-anchor-missing', deduplicated: true });
-      }
-    }
     // A committed prepend owns the next physical boundary until the accepted
     // position-row lease reaches actual paint. Do not let a continuation or a
-    // second top/runway request race that one-shot restore.
+    // second top/runway request race that one-shot restore. This check must
+    // precede continuation's snapshot-anchor fence: Admission publishes the
+    // prepended rows before Vendor paints/consumes the exact lease, so the
+    // old anchor is necessarily absent from the new snapshot for this brief
+    // handoff window.
     if (currentSession.positionRowLease
       && (continuation || reason === 'top' || reason === 'runway')) {
       const existing = positionLeaseWaitRef.current;
@@ -253,11 +264,19 @@ export function useHistoryConsumer({
       if (!waiter.timer) check();
       return waiter.promise;
     }
+    if (continuation) {
+      const firstID = snapshotRef.current.rows[0]?.id;
+      const anchor = currentSession.historyAnchor;
+      if (!anchor || String(anchor.messageID) !== String(firstID || '')
+        || !Number.isFinite(Number(anchor.viewportOffset))) {
+        return Promise.resolve({ kind: 'position-anchor-missing', deduplicated: true });
+      }
+    }
+    // A top request can arrive while an anticipatory runway request is still
+    // acquiring a page.  Record the physical boundary before looking at the
+    // active operation, so promotion below can hand the exact same older
+    // intent to a successor request after the acquisition settles.
     if (reason === 'top' && !continuation) {
-      // `top` is only emitted by useBrowsingReadingController after the
-      // typed Vendor scroll-position evidence reported the physical boundary.
-      // Keep that evidence as an identity lease; do not re-query global DOM
-      // from this scheduler after prepend/remount changes the native offset.
       topBoundaryRef.current = Object.freeze({
         controller, activationID: controller.activationID, channelID, viewKey,
         inputEpoch: Number(currentSession.inputEpoch || 0),
@@ -354,6 +373,30 @@ export function useHistoryConsumer({
           presentationRevision: Number(snapshotRef.current.revision || 0),
           channelId: channelID, epoch: active.epoch, viewKey, reason, promoted,
         });
+      }
+      if (reason === 'top' && !continuation) {
+        // Do not leave a promoted runway operation as the terminal event.  A
+        // page may have advanced the raw feed without exposing any row in the
+        // active filtered Presentation; the same top intent must issue the
+        // next acquisition until Admission can stage a real prepend or EOF.
+        if (!active.topContinuationPromise) {
+          active.topContinuationPromise = active.promise.then(() => {
+            const owner = committedOwnerRef.current;
+            if (owner?.controller !== controller
+              || owner.activationID !== controller.activationID
+              || owner.channelID !== channelID || owner.viewKey !== viewKey) {
+              return { kind: 'stale-owner', deduplicated: true };
+            }
+            // The active request was born under an older committed-owner
+            // candidate.  A wheel can publish a newer candidate before the
+            // page settles; continuation is the explicit handoff that keeps
+            // this same older operation from failing the ordinary stale-owner
+            // guard, while the anchor/mode fence below still rejects a newer
+            // direction or activation.
+            return request(reason, urgency, { ...options, continuation: true });
+          });
+        }
+        return active.topContinuationPromise;
       }
       return active.promise;
     }
@@ -484,10 +527,11 @@ export function useHistoryConsumer({
           === Number(settledSession?.inputEpoch || activeSession.inputEpoch)
         && Number(topBoundaryRef.current.intentRevision || 0)
           === Number(settledSession?.intentRevision || activeSession.intentRevision);
-        const continuationAnchorReady = settledSession?.historyAnchor?.messageID
+        const continuationAnchorReady = positionLeaseHandoffReady(settledSession)
+          || (settledSession?.historyAnchor?.messageID
           && String(settledSession.historyAnchor.messageID)
             === String(currentOwner.snapshot?.rows?.[0]?.id || '')
-          && Number.isFinite(Number(settledSession.historyAnchor.viewportOffset));
+          && Number.isFinite(Number(settledSession.historyAnchor.viewportOffset)));
       if (continueTop && continuationAnchorReady) {
         const continuation = {
           controller, activationID: controller.activationID, channelID, viewKey,
@@ -522,10 +566,11 @@ export function useHistoryConsumer({
             && ownerInputEpoch === Number(continuation.topBoundary.inputEpoch || 0)
             && Number(ownerSession?.intentRevision || 0)
               === Number(continuation.topBoundary.intentRevision || 0);
-          const ownerAnchorReady = ownerSession?.historyAnchor?.messageID
+          const ownerAnchorReady = positionLeaseHandoffReady(ownerSession)
+            || (ownerSession?.historyAnchor?.messageID
             && String(ownerSession.historyAnchor.messageID)
               === String(owner?.snapshot?.rows?.[0]?.id || '')
-            && Number.isFinite(Number(ownerSession.historyAnchor.viewportOffset));
+            && Number.isFinite(Number(ownerSession.historyAnchor.viewportOffset)));
           if (owner?.controller !== controller || owner.channelID !== channelID
             || owner.viewKey !== viewKey || !sameOlderIntent
             || !ownerAnchorReady

@@ -319,8 +319,29 @@ function useProjectionReadingOwner({
   }, [controller]);
   const beginNavigation = useCallback((input = {}) => {
     const next = controller.update((current) => takeReadingControl(current, input));
+    // A delayed older page may already have staged an Admission token when a
+    // subsequent wheel callback crosses the coordinator quiet deadline.  The
+    // new older epoch is the same semantic intent, so hand that exact token
+    // forward before the next layout validates its viewport owner. Otherwise
+    // Presentation rejects the real prepend as stale before Vendor can paint
+    // and consume its position-row lease.
+    if (input.direction === 'older') {
+      const admission = historyStatus.presentationAdmission;
+      const state = admission?.snapshot?.(channelID);
+      const token = state?.committed || state?.token;
+      if (token && Number(next.inputEpoch) > Number(token.inputEpoch || 0)) {
+        admission.advanceInputEpoch?.(channelID, {
+          operationID: token.operationID,
+          activationID: controller.activationID,
+          direction: 'older',
+          inputEpoch: Number(next.inputEpoch),
+          currentInputEpoch: Number(next.inputEpoch),
+          intentRevision: Number(next.intentRevision),
+        });
+      }
+    }
     return Object.freeze({ inputGeneration: next.inputEpoch });
-  }, [controller]);
+  }, [channelID, controller, historyStatus.presentationAdmission]);
   const captureContentAnchorForReading = useCallback((detail = {}) => {
     const before = controller.getSnapshot().session;
     const after = controller.update((current) => captureContentAnchor(current, detail));
@@ -375,7 +396,9 @@ function useProjectionReadingOwner({
     if (command.viewID !== viewKey
       || command.epoch !== currentEpoch
       || Number(command.presentationRevision) !== Number(snapshotRef.current.revision || 0)) {
-      controller.update((active) => revokePositionRowLease(active, command));
+      controller.update((active) => revokePositionRowLease(active, command, {
+        clearHistoryAnchor: true,
+      }));
       return null;
     }
     return command;
@@ -400,9 +423,9 @@ function useProjectionReadingOwner({
     });
     return after !== before;
   }, [controller]);
-  const revokeHistoryPositionLease = useCallback((command = null) => {
+  const revokeHistoryPositionLease = useCallback((command = null, options = {}) => {
     const before = controller.getSnapshot().session;
-    const after = controller.update((active) => revokePositionRowLease(active, command));
+    const after = controller.update((active) => revokePositionRowLease(active, command, options));
     return after !== before;
   }, [controller]);
   const tailCaughtUp = useMemo(() => {
@@ -756,12 +779,12 @@ export function useConversationProjection({
       }
     }
     if (!presentationCommitted || !projection.admissionCandidate) {
-      if (positionLease) viewport.revokeHistoryPositionLease?.(positionLease);
+      if (positionLease) viewport.revokeHistoryPositionLease?.(positionLease, { clearHistoryAnchor: true });
       return;
     }
     if (presentationGrant) {
       if (admission.commitPresentationGrant?.(state.channelId, presentationGrant) !== true) {
-        if (positionLease) viewport.revokeHistoryPositionLease?.(positionLease);
+        if (positionLease) viewport.revokeHistoryPositionLease?.(positionLease, { clearHistoryAnchor: true });
         setCommitVersion((value) => value + 1);
         return;
       }

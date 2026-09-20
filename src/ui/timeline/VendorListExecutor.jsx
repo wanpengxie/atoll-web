@@ -165,6 +165,22 @@ function firstRowViewportAnchor(root, rows = []) {
   return Object.freeze({ messageID: String(first.id), viewportOffset });
 }
 
+// Chromium delivers a passive wheel callback after the native scroll offset
+// has already moved.  Reconstruct the row offset at the start of that input
+// from the adapter's last painted scroll position; this keeps the semantic
+// lease tied to the same physical frame that the user actually left.
+function firstRowViewportAnchorBeforeWheel(root, rows = [], previousScrollTop) {
+  const anchor = firstRowViewportAnchor(root, rows);
+  const fallback = anchor || topVisibleBookmark(root, rows);
+  const currentScrollTop = Number(root?.scrollTop);
+  const previous = Number(previousScrollTop);
+  if (!fallback || !Number.isFinite(currentScrollTop) || !Number.isFinite(previous)) return fallback;
+  return Object.freeze({
+    ...fallback,
+    viewportOffset: Number(fallback.viewportOffset) + (currentScrollTop - previous),
+  });
+}
+
 /**
  * The sole vendor-list adapter. It owns refs, native input attribution and
  * typed DOM command execution; ReadingSession remains the only semantic
@@ -505,7 +521,7 @@ export function VendorListExecutor({
       // The command may have lost its owner between frames. The model-side
       // identity fence makes this a no-op for a newer lease, while ensuring a
       // stale accepted lease can never leave the scheduler waiting forever.
-      owner?.revokeHistoryPositionLease?.(command);
+      owner?.revokeHistoryPositionLease?.(command, { clearHistoryAnchor: true });
     };
     const transient = Object.freeze({ pending: true });
     const live = () => {
@@ -569,8 +585,10 @@ export function VendorListExecutor({
         };
         if (actualSuccess) {
           const consumed = owner?.consumeHistoryPositionLease?.(command, nextAnchor);
-          if (consumed !== true) owner?.revokeHistoryPositionLease?.(command);
-        } else owner?.revokeHistoryPositionLease?.(command);
+          if (consumed !== true) {
+            owner?.revokeHistoryPositionLease?.(command, { clearHistoryAnchor: true });
+          }
+        } else owner?.revokeHistoryPositionLease?.(command, { clearHistoryAnchor: true });
       }
       if (actualSuccess && current) scheduleObserve('layout', true);
     };
@@ -666,6 +684,20 @@ export function VendorListExecutor({
     return true;
   }, [navigationPolicy, scheduleObserve]);
 
+  // Native input is the synchronous takeover boundary.  Clearing the model
+  // lease in `takeReadingControl` is necessary but not sufficient: an exact
+  // position command may already have a RAF queued in this adapter.  Revoke
+  // that queued work before the coordinator mints the new input epoch, so a
+  // wheel/key/touch event cannot be followed by the old typed writer.
+  const cancelPendingPositionRestore = useCallback(() => {
+    const pending = positionRestoreRef.current;
+    if (pending?.frameID) globalThis.cancelAnimationFrame?.(pending.frameID);
+    positionRestoreRef.current = null;
+    const owner = readingRef.current;
+    const lease = owner?.getSession?.().positionRowLease;
+    if (lease) owner.revokeHistoryPositionLease?.(lease);
+  }, []);
+
   useLayoutEffect(() => {
     if (!rootNode || typeof globalThis.MutationObserver !== 'function') return undefined;
     // Virtuoso commits its measured spacer in a DOM mutation before paint.
@@ -689,9 +721,25 @@ export function VendorListExecutor({
     return () => observer.disconnect();
   }, [enforceFollowingTail, restoreContentAnchor, rootNode, scheduleObserve]);
 
+  // Cold hydration has no imperative scroll command to acknowledge. Once the
+  // first following presentation is actually mounted, publish one settled
+  // paint fence so downstream readers can distinguish readable DOM from the
+  // pre-hydration empty surface. A pending exact history lease remains owned
+  // by its position-row fence and is deliberately excluded here.
+  useLayoutEffect(() => {
+    const root = rootRef.current;
+    const current = reading.getSession();
+    if (!root || !snapshot.rows.length || current.mode !== READING_MODE.following
+      || current.positionRowLease || positionRestoreRef.current) return;
+    scheduleObserve('layout', true);
+  }, [reading, rootNode, scheduleObserve, snapshot.revision, snapshot.rows.length]);
+
   useEffect(() => {
     const root = rootNode;
     if (!root) return undefined;
+    // The first wheel callback may follow the initial browser scroll event;
+    // seed the reconstruction baseline before registering user input.
+    lastScrollTopRef.current = Number(root.scrollTop || 0);
     const host = { activationID: reading.activationID, hostRole: 'conversation', hostToken: root };
     const wheel = (event) => {
       if (!event.deltaY) return;
@@ -702,11 +750,14 @@ export function VendorListExecutor({
       // already been committed, keep that semantic state instead of repeatedly
       // demoting/re-promoting it for every wheel tick at the clamp.
       if (direction === 'newer' && atTail && current.mode === READING_MODE.following) return;
+      cancelPendingPositionRestore();
       coordinator.recordInput({
         ...host,
         source: 'wheel',
         direction,
-        bookmark: direction === 'older' ? firstRowViewportAnchor(root, snapshotRef.current.rows) : null,
+        bookmark: direction === 'older'
+          ? firstRowViewportAnchorBeforeWheel(root, snapshotRef.current.rows, lastScrollTopRef.current)
+          : null,
       });
       const input = navigationPolicy.currentInput();
       // A wheel at an already-clamped tail emits no scroll event. Publish the
@@ -717,6 +768,7 @@ export function VendorListExecutor({
     const keydown = (event) => {
       const direction = directionFromKey(event.key);
       if (!direction) return;
+      cancelPendingPositionRestore();
       coordinator.recordInput({
         ...host,
         source: 'key',
@@ -729,6 +781,7 @@ export function VendorListExecutor({
     const touchstart = (event) => {
       const touch = event.touches?.[0];
       if (!touch) return;
+      cancelPendingPositionRestore();
       touchRef.current = { id: touch.identifier, y: touch.clientY };
       coordinator.beginPotential({
         ...host,
@@ -744,6 +797,7 @@ export function VendorListExecutor({
       if (!current || !touch || Math.abs(touch.clientY - current.y) < 2) return;
       const direction = touch.clientY > current.y ? 'older' : 'newer';
       current.y = touch.clientY;
+      cancelPendingPositionRestore();
       coordinator.recordInput({ ...host, source: 'touch', sourceID: current.id, direction });
     };
     const touchend = () => {
@@ -791,7 +845,7 @@ export function VendorListExecutor({
       root.removeEventListener('scrollend', scrollend);
       coordinator.cancel('host-unmounted');
     };
-  }, [coordinator, navigationPolicy, observe, reading.activationID, reportDomEvidence, rootNode, scheduleObserve]);
+  }, [cancelPendingPositionRestore, coordinator, navigationPolicy, observe, reading.activationID, reportDomEvidence, rootNode, scheduleObserve]);
 
   useLayoutEffect(() => {
     const root = rootRef.current;
@@ -840,7 +894,7 @@ export function VendorListExecutor({
           operationID: positionLease.operationID,
           succeeded: false,
         };
-        reading.revokeHistoryPositionLease?.(positionLease);
+        reading.revokeHistoryPositionLease?.(positionLease, { clearHistoryAnchor: true });
         return;
       }
       const key = `lease:${positionRowIdentity(positionLease)}`;
@@ -857,6 +911,14 @@ export function VendorListExecutor({
       && settledPosition.activationID === current.activationID
       && Number(settledPosition.inputEpoch) === Number(current.inputEpoch)) return;
     if (settledPosition) settledPositionLeaseRef.current = null;
+    // The current input epoch already owns the native viewport.  Its
+    // historyAnchor/tailEvidence are the semantic handoff for that motion,
+    // not invitations to replay the ordinary bookmark command after the
+    // coordinator's quiet deadline. Replaying here is the late `scrollTo`
+    // that can pull a wheel takeover back to its pre-input offset; only an
+    // accepted position-row lease may write during this transaction.
+    if (current.historyAnchor
+      || current.tailEvidence?.inputEpoch === current.inputEpoch) return;
     if (!current.bookmark) return;
     // Native navigation owns the viewport for the lifetime of its input
     // transaction. The bookmark recorded from that same motion is evidence,
@@ -899,7 +961,7 @@ export function VendorListExecutor({
     }
     const owner = readingRef.current;
     const lease = owner?.getSession?.().positionRowLease;
-    if (lease) owner.revokeHistoryPositionLease?.(lease);
+    if (lease) owner.revokeHistoryPositionLease?.(lease, { clearHistoryAnchor: true });
     positionRestoreRef.current = null;
   }, []);
 
@@ -917,7 +979,18 @@ export function VendorListExecutor({
     return <div className="timeline-message-list timeline-reading-restore" role="status">正在恢复上次阅读位置…</div>;
   }
   if (!snapshot.rows.length) {
-    return <div className="timeline-message-list" data-empty="true" role="region" aria-label="频道动态" />;
+    // Delayed following may expose this already-existing empty region before
+    // its first semantic rows arrive. Let the same coordinator receive a
+    // trusted native gesture here; it demotes following synchronously and
+    // therefore prevents the first data paint from issuing a tail write after
+    // the user has taken control. No geometry writer is added.
+    return <div
+      ref={reading.session.mode === READING_MODE.following ? bindScroller : undefined}
+      className="timeline-message-list"
+      data-empty="true"
+      role="region"
+      aria-label="频道动态"
+    />;
   }
 
   return <Virtuoso
