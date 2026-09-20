@@ -1259,6 +1259,44 @@ covered by the current model-selector owner suite. Earlier TC-0938/0939/0943–
 notification/arrival owner, private API, compatibility parser, vendor/package,
 lockfile, or test skip was changed.
 
+## Round 42 red-case classification and public-owner correction
+
+This pass distinguishes current user contracts from the stale vendor initial
+location oracle exposed by the Round-34 tests. Product commit `52706a1`
+intentionally starts browsing at a neutral vendor origin and lets the typed
+Reading position-row command own exact restoration. The three old assertions
+on `initialTopMostItemIndex` therefore measured a removed delayed writer, not
+the user's bookmark capability. The tests now observe the public typed
+`scrollToIndex` port and the rendered rows; no product file was changed.
+
+| case | public user capability / invariant | sole current owner | old operation / current evidence |
+|---|---|---|---|
+| TC-0977 | An abandoned browsing activation cannot replay its exact bookmark after a replacement activation takes the same mounted list. Replacement rows remain readable. | `VendorListExecutor` activation tuple + typed `position-row` restore through the mounted list owner. | Old `initialTopMostItemIndex` assertion was an implementation oracle. The test now proves activation A's `{index:1, offset:20}` command, clears it, then proves activation B emits no stale command and paints its replacement row: **GREEN**. |
+| TC-0978 | An exact browsing bookmark selects the target row and preserves its row-local viewport offset. | `VendorListExecutor` → `resolveReadingBookmark` → typed position-row DOM command. | Old delayed initial-index writer expected index 1. The public port now receives `{index:1, align:'start', offset:24}` and the target row is present: **GREEN**. |
+| TC-0979 | A fallback row remains readable while a late exact target arrives; the exact target then supersedes the fallback without a restore-status flash. | `VendorListExecutor` committed rows + `resolveReadingBookmark` + typed position-row command. | The public command sequence is fallback `{index:0}` then exact `{index:1, offset:12}`; target row is present and no status appears: **GREEN**. |
+| canonical body label | When a canonical body contains user text but its wire type is a known system operation, show the canonical user text and suppress the operation label. | `useTimelineRowRenderer` → `TimelineRowRenderer` `textOf`/`EnvelopeBody` public row presentation. | **RED**: `添加参与者：demo:agent` is rendered instead of `用户正文`; this is a real presentation regression, not an internal renderer oracle. |
+| TC-1010 | A premature target-row commit must not move the user's viewport before committed measurement. | `VendorListExecutor` typed send intent + physical-root writer. | **RED**: public root receives `{top:1000}` before the authorized 1132 boundary. |
+| TC-1011 | A later same-revision height remains ordinary follow while the send join is pending; the earlier baseline must not move the viewport or consume the join. | `VendorListExecutor` typed intent + public height callback. | **RED**: public root receives `{top:1000}` and `{top:1132}` during the pending join. |
+| TC-1012 | Equal-height target acknowledgement establishes no visible move; a later resize is the first authorized follow boundary. | `VendorListExecutor` target fence + physical root. | **RED**: `{top:1000}` is written at the equal-height target baseline. |
+| TC-1014 | A same-revision height cannot write before the user-visible send revoke boundary. | `VendorListExecutor` typed intent fence + public height. | **RED**: `{top:1132}` is written before revoke. |
+| TC-1015 | Revoking an owned send baseline releases ordinary following only at the public revoke boundary, once. | `VendorListExecutor` Reading intent + physical-root writer. | **RED**: `{top:1132}` is written before revoke. |
+| TC-1018 | An unrelated committed tail may follow while a newer send target remains pending; the newer target remains pending. | `VendorListExecutor` ordinary-follow writer + send-target fence. | **RED**: the allowed ordinary `{top:1132}` write is missing while the target is pending. |
+| TC-1019 | Moving a target into Waiting cannot bypass destination-ready presentation or consume the join early. | `VendorListExecutor` typed target presence + public height/Reading owner. | **RED**: `{top:1000}` is written when the queued target first appears, before destination readiness. |
+
+Focused evidence:
+
+* `npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'TC-0977|TC-0978|TC-0979' --retry=2` → **3/3 GREEN** after replacing only the stale initial-index assertions with public typed-command assertions.
+* `npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'canonical body text wins|TC-1010|TC-1011|TC-1012|TC-1014|TC-1015|TC-1018|TC-1019' --retry=2` → **8/8 stable RED** (one canonical presentation regression plus the seven independent Reading/viewport contracts).
+* `npx vitest run tests/i-m-exact-path-contracts.test.jsx --retry=0` → **153/161 GREEN**; the eight reds are exactly the cases listed above. No red assertion was weakened or skipped.
+
+The Round-34 audit rows remain historical evidence of the pre-`52706a1`
+initial-index contract; this correction is the current owner mapping. These
+three cases are not counted as product reds after the public-command rewrite,
+and the seven height/follow cases plus canonical-body case remain returned to
+their respective owners. Only this test file and this audit report changed;
+no private production function, compatibility parser, vendor/package,
+lockfile, notification/arrival owner, or second source of truth was added.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test

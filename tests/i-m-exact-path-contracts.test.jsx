@@ -2666,7 +2666,15 @@ describe('I-M exact-path public-owner recovery (round 34 lifecycle and viewport 
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
-    expect(vendorHarness.props.initialTopMostItemIndex).toBe(1);
+    expect(vendorHarness.scrollToIndex).toHaveBeenCalledWith({
+      index: 1,
+      align: 'start',
+      offset: 20,
+    });
+    // The abandoned command has already been delivered to activation A. A
+    // replacement activation must not replay it through the same mounted
+    // public list owner after the session changes.
+    vendorHarness.scrollToIndex.mockClear();
 
     const replacement = round34Reading({
       activationID: 'activation:replacement-location',
@@ -2685,7 +2693,7 @@ describe('I-M exact-path public-owner recovery (round 34 lifecycle and viewport 
       />,
     );
 
-    expect(vendorHarness.props.initialTopMostItemIndex).toBe(0);
+    expect(vendorHarness.scrollToIndex).not.toHaveBeenCalled();
     expect(view.container.querySelector('[data-presentation-row-id="replacement-head"]')).toBeTruthy();
   });
 
@@ -2708,7 +2716,11 @@ describe('I-M exact-path public-owner recovery (round 34 lifecycle and viewport 
     );
 
     expect(vendorHarness.props.firstItemIndex).toBe(70);
-    expect(vendorHarness.props.initialTopMostItemIndex).toBe(1);
+    expect(vendorHarness.scrollToIndex).toHaveBeenCalledWith({
+      index: 1,
+      align: 'start',
+      offset: 24,
+    });
     expect(view.container.querySelector('[data-presentation-row-id="bookmark-target"]')).toBeTruthy();
   });
 
@@ -2725,7 +2737,7 @@ describe('I-M exact-path public-owner recovery (round 34 lifecycle and viewport 
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
-    expect(vendorHarness.props.initialTopMostItemIndex).toBe(0);
+    expect(vendorHarness.scrollToIndex).toHaveBeenCalledWith({ index: 0, align: 'start' });
 
     view.rerender(
       <VendorListExecutor
@@ -2739,7 +2751,11 @@ describe('I-M exact-path public-owner recovery (round 34 lifecycle and viewport 
       />,
     );
 
-    expect(vendorHarness.props.initialTopMostItemIndex).toBe(1);
+    expect(vendorHarness.scrollToIndex).toHaveBeenLastCalledWith({
+      index: 1,
+      align: 'start',
+      offset: 12,
+    });
     expect(view.container.querySelector('[data-presentation-row-id="late-exact-target"]')).toBeTruthy();
     expect(view.queryByRole('status')).toBeNull();
   });
