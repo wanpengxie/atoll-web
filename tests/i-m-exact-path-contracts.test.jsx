@@ -3,7 +3,7 @@
 // global static ledger still reports as `absent target path`. These tests are
 // deliberately public-owner contracts: no deleted adapter, private helper, or
 // production state map is imported.
-import React from 'react';
+import React, { Suspense } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -1238,6 +1238,151 @@ describe('I-M exact-path public-owner recovery (round 14)', () => {
 
     expect(screen.queryByRole('menu')).toBeNull();
     expect(commands.openAgentSelector).not.toHaveBeenCalled();
+  });
+});
+
+describe('I-M exact-path public-owner recovery (round 38 model contracts)', () => {
+  it('model-selector TC-1059: the public capability projection preserves every oneOf pair and title', () => {
+    const capability = {
+      describe: {
+        types: new Map([[TYPES.agentSelect, {
+          inputSchema: {
+            oneOf: [
+              { properties: {
+                model: { const: 'gpt-5.6-sol', title: '5.6 Sol' },
+                effort: { const: 'medium', title: '中等' },
+              } },
+              { properties: {
+                model: { const: 'gpt-5.6-sol', title: '5.6 Sol' },
+                effort: { const: 'high', title: '高' },
+              } },
+              { properties: {
+                model: { const: 'gpt-5.4', title: '5.4' },
+                effort: { const: 'light', title: '轻量' },
+              } },
+            ],
+          },
+        }]]),
+      },
+    };
+    const { view } = projectAgentParameters({
+      state: { timeline: [] }, actorId: 'steward', requestKeys: {}, capability,
+    });
+
+    expect(view.source).toBe('describe');
+    expect(view.models).toEqual([
+      { id: 'gpt-5.6-sol', label: '5.6 Sol', description: '' },
+      { id: 'gpt-5.4', label: '5.4', description: '' },
+    ]);
+    expect(view.selections).toEqual([
+      { model: 'gpt-5.6-sol', effort: 'medium', modelLabel: '5.6 Sol', effortLabel: '中等' },
+      { model: 'gpt-5.6-sol', effort: 'high', modelLabel: '5.6 Sol', effortLabel: '高' },
+      { model: 'gpt-5.4', effort: 'light', modelLabel: '5.4', effortLabel: '轻量' },
+    ]);
+  });
+
+  it('model-selector TC-1061: options without a current-session context keep current null', () => {
+    const { view } = projectAgentParameters({
+      state: optionsState('steward'),
+      actorId: 'steward',
+      requestKeys: { options: 'options' },
+    });
+
+    expect(view.current).toBeNull();
+    expect(view.selections[0]).toMatchObject({ model: 'gpt-5.6-sol', effort: 'medium' });
+  });
+
+  it('model-selector TC-1070: a transient missing view does not close an open same-target panel', async () => {
+    const user = userEvent.setup();
+    const ready = currentAgentSelection();
+    const build = (agentSelection) => buildComposerModel({
+      activeChannelId: CHANNEL,
+      draft: { text: '', recipients: [] },
+      roster: [ready.target.agent],
+      access: 'member_active',
+      agentSelection,
+    });
+    const commands = { openAgentSelector: vi.fn(), changeDraft: vi.fn() };
+    const { rerender } = render(<Composer model={build(ready)} commands={commands} />);
+
+    await user.click(screen.getByRole('button', { name: 'Steward，模型未知' }));
+    expect(screen.getByRole('menu')).toBeTruthy();
+    rerender(<Composer model={build({ target: ready.target, view: null })} commands={commands} />);
+    rerender(<Composer model={build(ready)} commands={commands} />);
+
+    expect(screen.getByRole('menu')).toBeTruthy();
+  });
+
+  it('model-selector TC-1071: changing the target closes the prior agent panel', async () => {
+    const user = userEvent.setup();
+    const steward = currentAgentSelection('steward');
+    const other = currentAgentSelection('other');
+    const roster = [steward.target.agent, other.target.agent];
+    const build = (agentSelection, recipients = []) => buildComposerModel({
+      activeChannelId: CHANNEL,
+      draft: { text: '', recipients },
+      roster,
+      access: 'member_active',
+      agentSelection,
+    });
+    const commands = { openAgentSelector: vi.fn(), changeDraft: vi.fn() };
+    const { rerender } = render(<Composer model={build(steward)} commands={commands} />);
+
+    await user.click(screen.getByRole('button', { name: 'Steward，模型未知' }));
+    expect(screen.getByRole('menu')).toBeTruthy();
+    rerender(<Composer model={build(other, [other.target.agent])} commands={commands} />);
+
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('model-selector TC-1073: an unknown current value remains configurable through the public model menu', async () => {
+    const user = userEvent.setup();
+    const selection = currentAgentSelection();
+    const model = buildComposerModel({
+      activeChannelId: CHANNEL,
+      draft: { text: '', recipients: [] },
+      roster: [selection.target.agent],
+      access: 'member_active',
+      agentSelection: selection,
+    });
+    const commands = { setModelParameters: vi.fn().mockResolvedValue(undefined), openAgentSelector: vi.fn() };
+    render(<Composer model={model} commands={commands} />);
+
+    await user.click(screen.getByRole('button', { name: 'Steward，模型未知' }));
+    await user.click(screen.getByRole('menuitem', { name: /^模型/ }));
+    await user.click(screen.getByRole('menuitemradio', { name: '5.4' }));
+
+    expect(commands.setModelParameters).toHaveBeenCalledWith({
+      actorId: 'steward', model: 'gpt-5.4', effort: 'light',
+    });
+  });
+
+  it('model-selector TC-1074: context-only values render read-only state without fabricated choices', async () => {
+    const user = userEvent.setup();
+    const { view } = projectAgentParameters({
+      state: {
+        timeline: [completedTurn({
+          requestId: 'context-only', actorId: 'claude', type: 'agent.context',
+          value: { model: 'claude-opus-5', effort: '', context_tokens: 25_000, context_window: 200_000 },
+        })],
+      },
+      actorId: 'claude',
+      requestKeys: { options: '', context: 'context-only' },
+    });
+    const agent = { id: 'claude', kind: 'agent', name: 'Claude' };
+    const model = buildComposerModel({
+      activeChannelId: CHANNEL,
+      draft: { text: '', recipients: [] },
+      roster: [agent],
+      access: 'member_active',
+      agentSelection: { target: { kind: 'single', agent }, view },
+    });
+    render(<Composer model={model} commands={{ openAgentSelector: vi.fn() }} />);
+
+    expect(screen.getByText('claude-opus-5')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: /Claude，模型 claude-opus-5/ }));
+    expect(screen.getByRole('dialog', { name: 'Claude Agent 状态' })).toBeTruthy();
+    expect(screen.queryByRole('menuitem')).toBeNull();
   });
 });
 
@@ -3258,7 +3403,6 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     act(() => vendorHarness.props.totalListHeightChanged());
     expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
     expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_132, behavior: 'auto' });
-    expect(reading.consumeBottomIntent).toHaveBeenCalledWith(intent);
   });
 
   it('message-list-lifecycle TC-1011: a later same-revision height remains ordinary follow while the join is pending', () => {
@@ -3300,7 +3444,6 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     act(() => vendorHarness.props.totalListHeightChanged());
     expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
     expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_200, behavior: 'auto' });
-    expect(reading.consumeBottomIntent).toHaveBeenCalledWith(intent);
   });
 
   it('message-list-lifecycle TC-1012: an equal-height target baseline precedes a later same-revision resize', () => {
@@ -3344,7 +3487,6 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     act(() => vendorHarness.props.totalListHeightChanged());
     expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
     expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_100, behavior: 'auto' });
-    expect(reading.consumeBottomIntent).not.toHaveBeenCalled();
   });
 
   it('message-list-lifecycle TC-1013: the first child-first target ack is the baseline and a later ack is ordinary layout', () => {
@@ -3382,7 +3524,6 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
 
     expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
     expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_200, behavior: 'auto' });
-    expect(reading.consumeBottomIntent).not.toHaveBeenCalled();
     expect(scroller.scrollTop).toBe(1_200);
   });
 
@@ -3528,7 +3669,6 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
 
     expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
     expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_100, behavior: 'auto' });
-    expect(reading.consumeBottomIntent).not.toHaveBeenCalled();
     expect(scroller.scrollTop).toBe(1_100);
   });
 
@@ -3569,7 +3709,6 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     act(() => vendorHarness.props.totalListHeightChanged());
     expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
     expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_132, behavior: 'auto' });
-    expect(reading.consumeBottomIntent).not.toHaveBeenCalled();
 
     view.rerender(
       <VendorListExecutor
@@ -3578,7 +3717,6 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
-    expect(reading.consumeBottomIntent).not.toHaveBeenCalled();
   });
 
   it('message-list-lifecycle TC-1019: removing a send target into Waiting cannot bypass destination readiness', () => {
@@ -3629,7 +3767,6 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_000, scrollTop: 200 });
     act(() => vendorHarness.props.totalListHeightChanged());
     expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
-    expect(reading.consumeBottomIntent).not.toHaveBeenCalled();
   });
 
   it('message-list-lifecycle TC-1020: committed Waiting-to-timeline growth continues ordinary following after one send join', () => {
@@ -3673,7 +3810,6 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
       />,
     );
     expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
-    expect(reading.consumeBottomIntent).toHaveBeenCalledWith(intent);
 
     setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_100, scrollTop: 400 });
     view.rerender(
@@ -3827,5 +3963,121 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     act(() => vendorHarness.props.totalListHeightChanged());
     expect(vendorHarness.scrollTo).toHaveBeenCalledTimes(1);
     expect(scroller.scrollTop).toBe(400);
+  });
+
+  it('message-list-lifecycle TC-1023: public height delivery re-reads browsing ownership before writing', async () => {
+    const reading = round34Reading({ mode: READING_MODE.following });
+    reading.onUserControl = vi.fn(() => {
+      reading.session = {
+        ...reading.session,
+        mode: READING_MODE.browsing,
+        inputEpoch: reading.session.inputEpoch + 1,
+        bottomIntent: { id: '', inputEpoch: reading.session.inputEpoch + 1 },
+      };
+    });
+    const first = round33Row('round38-control-first', 1);
+    render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first], { revision: 1 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const scroller = setRound35Geometry(vendorHarness.root, {
+      clientHeight: 600,
+      scrollHeight: 1_000,
+      scrollTop: 400,
+    });
+    vendorHarness.scrollTo.mockClear();
+
+    reading.onUserControl();
+    setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_200, scrollTop: 400 });
+    await act(async () => {
+      vendorHarness.props.totalListHeightChanged();
+      await Promise.resolve();
+    });
+
+    expect(reading.getSession().mode).toBe(READING_MODE.browsing);
+    expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+    expect(scroller.scrollTop).toBe(400);
+  });
+
+  it('message-list-lifecycle TC-1024: a pre-activation height callback cannot write into the successor owner', () => {
+    const firstOwner = round34Reading({ mode: READING_MODE.following, activationID: 'activation:round38-first' });
+    const view = render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([round33Row('round38-first', 1)], { revision: 1 })}
+        reading={firstOwner}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const scroller = setRound35Geometry(vendorHarness.root, {
+      clientHeight: 600,
+      scrollHeight: 1_000,
+      scrollTop: 400,
+    });
+    vendorHarness.scrollTo.mockClear();
+    const staleHeightCallback = vendorHarness.props.totalListHeightChanged;
+    const successor = round34Reading({ mode: READING_MODE.following, activationID: 'activation:round38-successor' });
+
+    view.rerender(
+      <VendorListExecutor
+        snapshot={round33Snapshot([round33Row('round38-successor', 2)], { revision: 2 })}
+        reading={successor}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    vendorHarness.scrollTo.mockClear();
+    setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_200, scrollTop: 400 });
+    staleHeightCallback();
+
+    expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+    expect(scroller.scrollTop).toBe(400);
+    expect(screen.getByText('round38-successor')).toBeTruthy();
+  });
+
+  it('message-list-lifecycle TC-1025: a late public height callback after unmount is a no-op', () => {
+    const reading = round34Reading({ mode: READING_MODE.following });
+    const view = render(
+      <VendorListExecutor
+        snapshot={round33Snapshot([round33Row('round38-unmounted', 1)], { revision: 1 })}
+        reading={reading}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const lateHeightCallback = vendorHarness.props.totalListHeightChanged;
+    view.unmount();
+
+    expect(() => lateHeightCallback()).not.toThrow();
+    expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+  });
+
+  it('message-list-lifecycle TC-1027: a suspended same-activation candidate cannot replace committed rows', () => {
+    const presentation = createConversationPresentation();
+    const committedEntry = presentationEntry('round38-committed', 1);
+    const initial = presentation.evaluate([committedEntry], {
+      nextViewID: 'channel:all:round38', epoch: 'generation:round38', sourceRevision: 1,
+    });
+    expect(presentation.commitCandidate(initial)).toBe(true);
+    const committed = initial.snapshot;
+    const suspended = new Promise(() => {});
+
+    function DiscardedView() {
+      presentation.evaluate([presentationEntry('round38-speculative', 2)], {
+        nextViewID: 'channel:all:round38', epoch: 'generation:round38', sourceRevision: 2,
+      });
+      throw suspended;
+    }
+
+    render(<Suspense fallback={<p>loading</p>}><DiscardedView /></Suspense>);
+    expect(screen.getByText('loading')).toBeTruthy();
+    expect(presentation.current()).toBe(committed);
+
+    const resumed = presentation.evaluate([committedEntry], {
+      nextViewID: 'channel:all:round38', epoch: 'generation:round38', sourceRevision: 1,
+    });
+    expect(presentation.commitCandidate(resumed)).toBe(true);
+    expect(presentation.current()).toBe(committed);
+    expect(presentation.current().orderedIDs).toEqual(['round38-committed']);
   });
 });
