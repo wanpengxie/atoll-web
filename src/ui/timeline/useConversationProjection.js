@@ -202,6 +202,14 @@ function useProjectionReadingOwner({
   }));
   const [observationRevision, setObservationRevision] = useState(0);
   const [documentVisible, setDocumentVisible] = useState(pageIsVisible);
+  // Document and surface visibility are two observations of one effective
+  // Reading boundary. Keep that boundary in the session owner so a browser
+  // visibility edge and the matching surface cleanup cannot mint two epochs
+  // for the same leave/re-entry transaction.
+  const visibilityBoundaryRef = useRef({
+    documentVisible: pageIsVisible(),
+    surfaceVisible: surfaceVisible === true,
+  });
   // Keep the last positive tail receipt available to the synchronous native
   // takeover path. A later layout/settled sample may already have replaced the
   // public observation with a transient `following: false` frame while the
@@ -227,11 +235,36 @@ function useProjectionReadingOwner({
     controller.start();
     return () => controller.suspend();
   }, [controller]);
+  const advanceVisibilityEpoch = useCallback(({ documentVisible: nextDocumentVisible, surfaceVisible: nextSurfaceVisible }) => {
+    const boundary = visibilityBoundaryRef.current;
+    const previousEffective = boundary.documentVisible && boundary.surfaceVisible;
+    if (typeof nextDocumentVisible === 'boolean') boundary.documentVisible = nextDocumentVisible;
+    if (typeof nextSurfaceVisible === 'boolean') boundary.surfaceVisible = nextSurfaceVisible;
+    const nextEffective = boundary.documentVisible && boundary.surfaceVisible;
+    if (previousEffective === nextEffective) return false;
+    const current = controller.getSnapshot().session;
+    if (current.mode !== READING_MODE.following) return false;
+    // A hidden boundary invalidates the current positive receipt; a visible
+    // boundary must mint a successor only after a real prior input epoch.
+    if (!nextEffective) {
+      controller.update((active) => advanceReadingInputEpoch(active));
+      return true;
+    }
+    if (nextEffective && Number(current.inputEpoch || 0) > 0) {
+      controller.update((active) => advanceReadingInputEpoch(active));
+      return true;
+    }
+    return false;
+  }, [controller]);
   useEffect(() => {
-    const publish = () => setDocumentVisible(pageIsVisible());
+    const publish = () => {
+      const visible = pageIsVisible();
+      advanceVisibilityEpoch({ documentVisible: visible });
+      setDocumentVisible((current) => current === visible ? current : visible);
+    };
     globalThis.document?.addEventListener?.('visibilitychange', publish);
     return () => globalThis.document?.removeEventListener?.('visibilitychange', publish);
-  }, []);
+  }, [advanceVisibilityEpoch]);
   useEffect(() => {
     if (session.mode !== READING_MODE.following || surfaceVisible !== true) return;
     arrivals?.acknowledge?.(Number(arrivals.revision || 0));
@@ -680,8 +713,9 @@ function useProjectionReadingOwner({
         && Number(observation.presentationRevision) === Number(snapshotRef.current.revision || 0);
     },
     onSurfaceVisibilityChange(visible) {
+      const nextVisible = visible === true;
+      advanceVisibilityEpoch({ surfaceVisible: nextVisible });
       if (visible) {
-        const current = controller.getSnapshot().session;
         const reentering = observationRef.current.surfaceVisible !== true;
         // ReadingContainerHandoff observes the whole reading object. Mark the
         // transition before updating the session so the new object cannot
@@ -694,24 +728,15 @@ function useProjectionReadingOwner({
             installedHighSeq: 0,
           });
         }
-        // The hidden callback has already published a typed revoke at the
-        // successor epoch.  Re-entry is a second semantic boundary: mint one
-        // more session epoch before the first visible DOM observation so its
-        // positive receipt is strictly newer than that revoke.  Do not mint
-        // on the initial visible mount (the initial session is still epoch 0).
-        if (reentering && current.mode === READING_MODE.following && current.inputEpoch > 0) {
-          controller.update((active) => advanceReadingInputEpoch(active));
-        }
+        // The shared effective-visibility fence above mints this re-entry
+        // once. A document edge and this surface edge therefore cannot each
+        // advance the same session boundary.
         return;
       }
       if (observationRef.current.atTail === false
         && observationRef.current.surfaceVisible === false) return;
-      // Hidden is a lease boundary even without native input. Keep the
-      // semantic mode, but mint a newer Reading epoch synchronously so the
-      // first visible tail observation cannot reuse the revoked epoch.
-      if (controller.getSnapshot().session.mode === READING_MODE.following) {
-        controller.update((current) => advanceReadingInputEpoch(current));
-      }
+      // Hidden is a lease boundary even without native input. The shared
+      // effective-visibility fence minted the epoch synchronously above.
       observationRef.current = Object.freeze({
         ...observationRef.current,
         atTail: false,
@@ -742,7 +767,7 @@ function useProjectionReadingOwner({
     isFollowing: () => controller.getSnapshot().session.mode === READING_MODE.following,
     getSession: () => controller.getSnapshot().session,
   }), [
-    arrivals?.events?.length, authoritativeEmpty, availability, availabilityError, beginNavigation,
+    advanceVisibilityEpoch, arrivals?.events?.length, authoritativeEmpty, availability, availabilityError, beginNavigation,
     bottomReady, cancelNavigation, captureBottomIntent, captureContentAnchorForReading, channelID, controller,
     acceptHistoryPositionLease, consumeContentAnchorCommand, consumeHistoryPositionLease,
     currentAdmissionAuthority, getContentAnchorCommand, historyPositionLeaseCommand,

@@ -167,6 +167,62 @@ describe('S-Z canonical Presentation authority receipt', () => {
     );
   });
 
+  it('mints document visibility epochs once and dedupes matching surface edges', () => {
+    const initialVisibility = document.visibilityState;
+    const { result, args } = renderProjection(historyFor());
+    const receiptSink = args.onTailCaughtUp;
+    const activationID = result.current.viewport.activationID;
+    const setVisibility = (value) => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value });
+      act(() => document.dispatchEvent(new Event('visibilitychange')));
+    };
+
+    try {
+      act(() => {
+        result.current.viewport.onReadingObservation({
+          activationID,
+          atTail: true,
+          surfaceVisible: true,
+          installedHighSeq: 2,
+        });
+      });
+      expect(result.current.viewport.getSession().inputEpoch).toBe(0);
+
+      setVisibility('hidden');
+      expect(result.current.viewport.getSession().inputEpoch).toBe(1);
+      expect(receiptSink).toHaveBeenLastCalledWith(expect.objectContaining({
+        kind: 'notification-lease-revoke',
+        reason: 'surface-hidden',
+        inputEpoch: 1,
+      }));
+
+      setVisibility('hidden');
+      expect(result.current.viewport.getSession().inputEpoch).toBe(1);
+
+      setVisibility('visible');
+      expect(result.current.viewport.getSession().inputEpoch).toBe(2);
+      act(() => {
+        result.current.viewport.onSurfaceVisibilityChange(true);
+        result.current.viewport.onReadingObservation({
+          activationID,
+          atTail: true,
+          surfaceVisible: true,
+          installedHighSeq: 2,
+        });
+      });
+      expect(result.current.viewport.getSession().inputEpoch).toBe(2);
+      expect(receiptSink).toHaveBeenLastCalledWith(expect.objectContaining({
+        caughtUp: true,
+        inputEpoch: 2,
+      }));
+    } finally {
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        value: initialVisibility,
+      });
+    }
+  });
+
   it('emits a typed activation-cleanup revoke at a newer input epoch', () => {
     const { result, unmount, args } = renderProjection(historyFor());
     const receiptSink = args.onTailCaughtUp;
