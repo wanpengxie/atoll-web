@@ -64,6 +64,15 @@ const ACCESS_NOTICE = Object.freeze({
   loading: '正在确认频道访问状态。',
 });
 
+// The daemon has no verified safe node-upgrade capability in this client.
+// Keep this as a read-only shell projection: it deliberately has no command
+// function, network owner, or polling lifecycle to imply an upgrade contract.
+const NODE_UPDATE_UNAVAILABLE = Object.freeze({
+  status: 'unsupported',
+  currentVersion: null,
+  detail: '当前版本不支持安全升级，请刷新或联系管理员/手动升级',
+});
+
 const ACTIVITY_KIND_LABELS = Object.freeze({
   approval: '审批',
   agent_run: 'Agent 回合',
@@ -1912,6 +1921,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       openRoster: memberVisible ? () => setPanel('roster') : undefined,
       openSearch: () => setPanel('search'),
       openActivity: () => setPanel('activity'),
+      update: NODE_UPDATE_UNAVAILABLE,
       openReadingHistory: contentVisible ? () => setPanel('reading-history') : undefined,
       openChannelAdministration: memberVisible
         ? (initialTab = 'members') => setPanel(initialTab === 'overview'

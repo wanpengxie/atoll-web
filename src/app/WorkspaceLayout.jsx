@@ -37,12 +37,20 @@ function canReadChannel(channel) {
     .includes(String(channel?.access || ''));
 }
 
+function nodeUpdateCurrentVersion(update) {
+  const value = update?.currentVersion;
+  return value == null || value === '' ? '未提供' : String(value);
+}
+
 function WorkspaceRail({ session, navigation, onClose, closeButtonRef, railRef, onSelect }) {
   const memberChannels = navigation.channels.filter((channel) => String(channel.access || '').startsWith('member_'));
   const otherChannels = navigation.channels.filter((channel) => !String(channel.access || '').startsWith('member_'));
   const activeCount = Object.values(navigation.agentActivity?.byChannel || {})
     .reduce((count, channel) => count + (channel.active?.length || 0), 0);
   const [now, setNow] = useState(Date.now);
+  const nodeUpdate = navigation.update;
+  const nodeUpdateUnavailable = nodeUpdate?.status === 'unsupported';
+  const nodeUpdateDetail = nodeUpdate?.detail || '当前版本不支持安全升级，请刷新或联系管理员/手动升级';
   useEffect(() => {
     if (!activeCount) return undefined;
     setNow(Date.now());
@@ -101,6 +109,10 @@ function WorkspaceRail({ session, navigation, onClose, closeButtonRef, railRef, 
       <p className="rail-caption space-caption">空间 <span>{otherChannels.length}</span></p>
       {renderRows(otherChannels, '没有可发现频道')}
     </nav>
+    {nodeUpdateUnavailable && <div className="node-update-action" aria-label="节点升级">
+      <button type="button" disabled title={nodeUpdateDetail}>{nodeUpdateDetail}</button>
+      <div className="node-version" aria-label="当前版本（只读）">当前版本：{nodeUpdateCurrentVersion(nodeUpdate)}（只读）</div>
+    </div>}
     <footer className="account-card">
       <span className="avatar">{String(session.me?.display_name || session.me?.id || '?').slice(0, 1).toUpperCase()}</span>
       <span><strong>{session.me?.display_name || '已登录用户'}</strong><small>{session.me?.id}</small></span>

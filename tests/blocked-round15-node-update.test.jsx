@@ -21,25 +21,27 @@ function navigation() {
 }
 
 describe('A-D round 15 node-update blocked evidence', () => {
-  it.fails('[AD-202] shows one confirmation-gated update action only when a node update is available', () => {
-    // 用户能力：节点有新版本时，用户看到唯一的升级入口并在真正中断连接前确认。
-    // 不变量：VersionIncompatible 终态不能冒充 node-update owner；当前公开入口是 WorkspaceLayout。
+  it('[AD-202] shows a stable unavailable update action without a command owner', () => {
+    // 用户能力：当前版本不支持安全升级时，用户看到明确的有界失败态。
+    // 不变量：无真实 command port 时不得伪造可升级、确认或网络副作用。
     const nav = navigation();
     render(<WorkspaceLayout
       session={session()}
-      navigation={{ ...nav, update: { value: { current_version: 'v0.06', latest_version: 'v0.07', available: true, status: 'idle' }, start: vi.fn() } }}
+      navigation={{ ...nav, update: { status: 'unsupported', currentVersion: null, detail: '当前版本不支持安全升级，请刷新或联系管理员/手动升级' } }}
     />);
-    expect(screen.getByRole('button', { name: '升级到 v0.07' })).toBeTruthy();
+    const action = screen.getByRole('button', { name: '当前版本不支持安全升级，请刷新或联系管理员/手动升级' });
+    expect(action.disabled).toBe(true);
   });
 
-  it.fails('[AD-203] reports node-update progress through the same disabled action and shows the current version', () => {
-    // 用户能力：升级校验/执行期间按钮不可重复提交，完成后只显示当前版本。
-    // 不变量：进度、成功和版本事实必须来自同一公开 node-update owner。
+  it('[AD-203] keeps the current version read-only beside the unavailable action', () => {
+    // 用户能力：版本事实仍可只读查看，但没有升级进度或重试假象。
+    // 不变量：unsupported 终态没有 start/POST/polling owner。
     const nav = navigation();
     render(<WorkspaceLayout
       session={session()}
-      navigation={{ ...nav, update: { value: { current_version: 'v0.07', latest_version: 'v0.07', available: false, status: 'succeeded' }, start: vi.fn() } }}
+      navigation={{ ...nav, update: { status: 'unsupported', currentVersion: 'v0.06', detail: '当前版本不支持安全升级，请刷新或联系管理员/手动升级' } }}
     />);
-    expect(screen.getByTitle('Atoll v0.07')).toBeTruthy();
+    expect(screen.getByLabelText('当前版本（只读）').textContent).toContain('当前版本：v0.06（只读）');
+    expect(screen.getByRole('button', { name: '当前版本不支持安全升级，请刷新或联系管理员/手动升级' }).disabled).toBe(true);
   });
 });
