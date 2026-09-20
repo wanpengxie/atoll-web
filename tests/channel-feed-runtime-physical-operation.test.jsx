@@ -197,6 +197,41 @@ describe('Feed PhysicalOperation / WaiterLease boundary', () => {
     runtime.destroy();
   });
 
+  it('keeps one reveal transaction pending across underfilled concurrent ranges', async () => {
+    const { requests, runtime, snapshot } = await attachedRuntime();
+    const reveal = (operationID) => ({
+      operationID, activationID: 'activation-shared', viewID: 'c0:timeline', epoch: 'c0:1',
+      inputEpoch: 1, intentRevision: 1, durableBaselineIDs: [], uiBaselineIDs: [], demandUnits: 2,
+    });
+    const first = snapshot.loadHistory('c0', {
+      beforeSeq: 3, limit: 1, urgency: 'blocking', intent: 'scroll-history',
+      historyRevealIntent: reveal('history:shared:a'),
+    });
+    const second = snapshot.loadHistory('c0', {
+      beforeSeq: 6, limit: 1, urgency: 'blocking', intent: 'scroll-history',
+      historyRevealIntent: reveal('history:shared:b'),
+    });
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+    expect(snapshot.enqueue({ ...row(2), ref: requests[0].ref, generation: 1 })).toBe(true);
+    expect(snapshot.pageEnd({
+      ref: requests[0].ref, channel_id: 'c0', generation: 1,
+      rows: 1, scan_low_seq: 1, scan_high_seq: 2, next_before_seq: 1, has_older: true,
+    })).toBe(true);
+    await expect(first).resolves.toMatchObject({ kind: 'satisfied' });
+    expect(snapshot.historyFor('c0').presentationAdmissionState.phase).toBe('pending');
+
+    expect(snapshot.enqueue({ ...row(5), ref: requests[1].ref, generation: 1 })).toBe(true);
+    expect(snapshot.pageEnd({
+      ref: requests[1].ref, channel_id: 'c0', generation: 1,
+      rows: 1, scan_low_seq: 4, scan_high_seq: 5, next_before_seq: 4, has_older: true,
+    })).toBe(true);
+    await expect(second).resolves.toMatchObject({ kind: 'satisfied' });
+    expect(snapshot.historyFor('c0').presentationAdmissionState).toMatchObject({
+      phase: 'pending-baseline-commit', completeUnits: 2,
+    });
+    runtime.destroy();
+  });
+
   it('detaches only the aborted caller and keeps the physical operation for its joiner', async () => {
     const { requests, wireRef, runtime, snapshot } = await attachedRuntime();
     const firstController = new AbortController();
@@ -231,6 +266,23 @@ describe('Feed PhysicalOperation / WaiterLease boundary', () => {
     runtime.destroy();
   });
 
+  it('aborts the physical operation when its last waiter leaves', async () => {
+    const { requests, wireRef, runtime, snapshot } = await attachedRuntime();
+    const controller = new AbortController();
+    const pending = snapshot.loadHistory('c0', {
+      beforeSeq: 3, limit: 1, urgency: 'blocking', signal: controller.signal,
+    });
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    controller.abort('last waiter retired');
+    await expect(pending).resolves.toMatchObject({ kind: 'cancelled', reason: 'aborted' });
+    await vi.waitFor(() => expect(wireRef.current.cancelHistory).toHaveBeenCalledTimes(1));
+    expect(snapshot.historyFor('c0')).toMatchObject({
+      loading: false, foregroundLoading: false, backgroundLoading: false,
+      historyDemand: { phase: 'idle' },
+    });
+    runtime.destroy();
+  });
+
   it('fences a late principal replacement before canonical commit', async () => {
     const { requests, runtime, snapshot } = await attachedRuntime();
     const pending = snapshot.loadHistory('c0', { beforeSeq: 3, limit: 2 });
@@ -260,6 +312,23 @@ describe('Feed PhysicalOperation / WaiterLease boundary', () => {
       ref: requests[0].ref, channel_id: 'c0', generation: 1,
       rows: 1, scan_low_seq: 1, scan_high_seq: 2,
       next_before_seq: 1, has_older: false,
+    })).toBe(false);
+    expect(snapshot.stateFor('c0')?.rows.size).toBe(0);
+    runtime.destroy();
+  });
+
+  it('rejects an old ref after same-generation attach replacement', async () => {
+    const { requests, runtime, snapshot } = await attachedRuntime();
+    const pending = snapshot.loadHistory('c0', { beforeSeq: 3, limit: 1, urgency: 'blocking' });
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    await snapshot.setHistoryGrants([
+      { channel_id: 'c0', head_seq: 2, has_rows: true },
+    ], { generation: 1, boot: 'physical-operation-boot', focus: 'c0' });
+    await expect(pending).resolves.toMatchObject({ kind: 'cancelled', reason: 'stale-generation' });
+    expect(snapshot.enqueue({ ...row(2), ref: requests[0].ref, generation: 1 })).toBe(false);
+    expect(snapshot.pageEnd({
+      ref: requests[0].ref, channel_id: 'c0', generation: 1,
+      rows: 1, scan_low_seq: 1, scan_high_seq: 2, next_before_seq: 1, has_older: true,
     })).toBe(false);
     expect(snapshot.stateFor('c0')?.rows.size).toBe(0);
     runtime.destroy();

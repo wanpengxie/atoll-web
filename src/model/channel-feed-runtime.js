@@ -1468,8 +1468,16 @@ export function createChannelFeedRuntime(options = {}) {
         sourceRevision: replica.state(operation.channelId)?._timelineRevision || 0,
       });
       demand.lastObservation = observed;
-      admission.settle(operation.channelId, observed?.fulfilled ? 'fulfilled' : 'exhausted');
-      demand.revealSettled = true;
+      const anotherPhysicalPending = [...demand.operations]
+        .some((candidate) => candidate !== operation && !candidate.settled && !candidate.retired);
+      // A shared reveal authority may span concurrent physical ranges. Keep
+      // its one admission transaction pending after an underfilled range so
+      // a later range can contribute candidates; settle immediately only
+      // when the demand is fulfilled or no physical range remains.
+      if (observed?.fulfilled || !anotherPhysicalPending) {
+        admission.settle(operation.channelId, observed?.fulfilled ? 'fulfilled' : 'exhausted');
+        demand.revealSettled = true;
+      }
     }
     const status = histories.get(operation.channelId);
     settleWaiter(waiter, {
@@ -1663,6 +1671,10 @@ export function createChannelFeedRuntime(options = {}) {
       ? payloadOrChannel
       : detail || { channel_id: payloadOrChannel, seq, envelope, source: 'live' };
     const batch = payload?.ref ? networkBatches.get(payload.ref) : null;
+    // A ref identifies one Feed-owned network batch. Once an attach fence
+    // retires that batch, an unknown ref is a stale receipt, never a live-row
+    // fallback that could reinstall old physical facts.
+    if (payload?.ref && !batch) return false;
     if (batch) return adapters.appendRow(batch, payload);
     if (payload.generation && historyNumeric(payload.generation) !== generation) return false;
     const source = payload.source || 'live';
