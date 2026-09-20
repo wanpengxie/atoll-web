@@ -241,6 +241,17 @@ The focused result is **10 passed / 10 ordinary red (20 total)**. AD-295–304
 move to PASS; the ten priority product gaps remain BLOCKED. The ledger is now
 **314 PASS / 0 REGRESSION / 51 BLOCKED**.
 
+Round 23 selects twenty remaining BLOCKED rows with current public
+Activity, Workspace, and Governance owners: AD-002/003/004,
+AD-093/097/099/105/106/108, AD-149/150/151/152/153/155, and
+AD-192/193/194/195/196. The independent packet is
+[`tests/blocked-round23-public-owner.test.jsx`](../tests/blocked-round23-public-owner.test.jsx),
+with its case-level report in
+[`A-D-BLOCKED-EVIDENCE-ROUND23-20260920.md`](./A-D-BLOCKED-EVIDENCE-ROUND23-20260920.md).
+The focused result is **20 ordinary red (20 total)**. All twenty remain
+BLOCKED; no expected-fail result is counted as completion. The ledger remains
+**314 PASS / 0 REGRESSION / 51 BLOCKED**.
+
 ## Public-boundary migration completed in this pass
 
 `tests/channel-access.test.js` and `tests/channel-name-cache.test.js` no longer
@@ -295,6 +306,7 @@ The focused slices were run with Vitest against current public owners:
 | `tests/blocked-round20-public-owner.test.jsx` | 6 passed, 14 expected fail, 20 total | AD-163/168/169/171/172/173 pass through public Feed/Replica owners; the remaining Waiting/startup rows retain fixture, owner, or capability-gap evidence |
 | `tests/blocked-round21-public-owner.test.jsx` | 10 passed, 10 ordinary red, 20 total | AD-277/278/282/283/285/286/287/290/293/294 pass through public Replica/Feed owners; AD-157/158/167/170/182 and AD-284/288/289/291/292 remain BLOCKED product-gap evidence |
 | `tests/blocked-round22-public-owner.test.jsx` | 10 passed, 10 ordinary red, 20 total | AD-295–AD-304 pass through public Feed/Replica/diagnostic owners; the ten Round21 red gaps retain precise ordinary-red evidence |
+| `tests/blocked-round23-public-owner.test.jsx` | 20 ordinary red, 20 total | AD-002/003/004, AD-093/097/099/105/106/108, AD-149/150/151/152/153/155, and AD-192/193/194/195/196 retain precise public Activity/Workspace/Governance product-gap evidence |
 | Round 15–20 blocked packets combined | 42 passed, 59 expected fail, 101 total | seven packet files remain green as suites; expected-fail rows are unresolved evidence and are not counted as completion |
 | A–D owner slices including Agent/Waiting/Composer/Artifact/Content/Workspace tests | PASS cases green; no registered regression case red | AD-011 and AD-143 are closed through their existing public owners; no AD-123 `it.fails` case remains |
 
@@ -341,6 +353,10 @@ scope), not to the 42-suite A–D baseline ledger.
   public owners and adds green AD-295–AD-304 fixtures. No expected-fail
   assertion, product source, Feed/Replica implementation, vendor, package,
   lockfile, or private export changed.
+- Round 23 changes only `tests/blocked-round23-public-owner.test.jsx` and A–D
+  evidence/ledger reports. It adds twenty ordinary red Activity/Workspace/
+  Governance owner reproductions; no expected-fail assertion, product source,
+  vendor, package, lockfile, or private export changed.
 - No Reading, Outbox, vendor, package manifest,
   lockfile, or private production export changed.
 - No baseline declaration was deleted or skipped. BLOCKED rows remain explicit

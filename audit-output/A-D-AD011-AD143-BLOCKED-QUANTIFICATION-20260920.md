@@ -53,6 +53,11 @@ Feed/Replica/diagnostic owners. The ledger is now **51 BLOCKED** (**314 PASS /
 0 REGRESSION / 51 BLOCKED**); no expected-fail result is counted as
 completion.
 
+Round 23 adds ordinary red public-owner evidence for twenty remaining Activity,
+Workspace terminal, create-channel, and governance rows. No row moves category
+or status: the ledger remains **51 BLOCKED** (**314 PASS / 0 REGRESSION /
+51 BLOCKED**), and red results are not expected-fail completion signals.
+
 ## Minimal regression packets
 
 ### AD-011 — Activity retained-work settlement after reconnect
@@ -313,6 +318,24 @@ Feed/Replica/diagnostic owners and are promoted to PASS. The ledger is now
 OWNER_MISSING 12, FIXTURE_MISSING 24, and CAPABILITY_GAP 15; no row is
 obsolete, deleted, skipped, or judged complete from a red result.
 
+## Round 23 evidence packet
+
+Round 23 selects twenty remaining BLOCKED rows with current public
+Activity, Workspace, and Governance owners: AD-002/003/004,
+AD-093/097/099/105/106/108, AD-149/150/151/152/153/155, and
+AD-192/193/194/195/196.
+
+```text
+npx vitest run tests/blocked-round23-public-owner.test.jsx --reporter=dot
+
+Test Files  1 failed (1)
+Tests      20 failed (20)
+```
+
+All twenty remain ordinary red BLOCKED evidence at their first public owner.
+They are not converted to `it.fails`, deleted, skipped, or judged obsolete;
+the category counts and ledger status remain unchanged.
+
 ## Boundary audit
 
 This packet changes A–D unit tests and audit-output reports only. It does not
@@ -334,4 +357,7 @@ or private production export changed. Round 22 adds
 `tests/blocked-round22-public-owner.test.jsx` and the corresponding A–D audit
 reports only; its ten red cases remain BLOCKED and its ten green cursor cases
 are recorded individually. No product source, private export, package, or
-lockfile changed.
+lockfile changed. Round 23 adds
+`tests/blocked-round23-public-owner.test.jsx` and corresponding A–D audit
+evidence only; its twenty ordinary red cases remain BLOCKED. No product source,
+private export, package, or lockfile changed.
