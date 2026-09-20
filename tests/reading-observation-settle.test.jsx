@@ -8,6 +8,7 @@ import {
   READING_MODE,
   takeReadingControl,
 } from '../src/model/reading-session.js';
+import { clearDiagnostics, diagnosticsSnapshot } from '../src/model/diagnostics.js';
 import { VendorListExecutor } from '../src/ui/timeline/VendorListExecutor.jsx';
 
 const harness = vi.hoisted(() => ({ props: null, scrollToIndex: null }));
@@ -213,6 +214,54 @@ async function renderSavedBookmark(bookmark) {
 }
 
 describe('reading observation settlement authority (VendorListExecutor)', () => {
+  it('admits a changed presentation revision but exposes identical public coverage detail', () => {
+    const owner = readingOwner();
+    owner.status = {
+      attached: true,
+      generation: 7,
+      messageCurrent: true,
+      headSeq: 0,
+      hasOlder: true,
+      completedPages: 1,
+      revealVersion: 0,
+    };
+    owner.onUnderfill = vi.fn(() => Promise.resolve({ kind: 'satisfied' }));
+    clearDiagnostics();
+    const view = render(
+      <VendorListExecutor
+        snapshot={snapshot()}
+        reading={owner}
+        surfaceVisible
+        renderRow={(value) => <article>{value.id}</article>}
+      />,
+    );
+    const scroller = screen.getByRole('region', { name: '频道动态' });
+    setScrollerGeometry(scroller, { scrollTop: 0 });
+    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, value: 500 });
+
+    act(() => harness.props.rangeChanged({ startIndex: 99, endIndex: 99 }));
+    expect(owner.onUnderfill).toHaveBeenCalledTimes(1);
+
+    const revised = { ...snapshot(), revision: 2, rows: [row('revised')] };
+    view.rerender(
+      <VendorListExecutor
+        snapshot={revised}
+        reading={owner}
+        surfaceVisible
+        renderRow={(value) => <article>{value.id}</article>}
+      />,
+    );
+    act(() => harness.props.rangeChanged({ startIndex: 99, endIndex: 99 }));
+    expect(owner.onUnderfill).toHaveBeenCalledTimes(2);
+
+    const events = diagnosticsSnapshot().filter((entry) => entry.event === 'history.viewport_underfilled');
+    expect(events).toHaveLength(2);
+    // The source key includes presentationRevision, but the public diagnostic
+    // detail does not. A revision change is therefore indistinguishable from
+    // a same-coverage replay to a consumer that only has this event detail.
+    expect(events[1].detail).toEqual(events[0].detail);
+  });
+
   it('replays the latest physical coverage once when Reading readiness commits', () => {
     const owner = readingOwner();
     owner.status = {
