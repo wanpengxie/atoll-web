@@ -156,7 +156,36 @@ function createSessionAccess({ principalId }) {
         next.unavailable = false;
       });
     },
-    directoryObserved(directory) { spaceDirectory = directory; },
+    directoryObserved(directory) {
+      const incoming = directory && typeof directory === 'object' ? directory : {};
+      // OBS refreshes do not own Registrar facts. Preserve the last canonical
+      // template projection until the session/world owner explicitly resets it.
+      spaceDirectory = Object.freeze({
+        ...incoming,
+        channelTemplates: Array.isArray(incoming.channelTemplates)
+          ? incoming.channelTemplates
+          : spaceDirectory.channelTemplates,
+      });
+    },
+    channelTemplatesObserved(rows) {
+      if (!Array.isArray(rows)) return false;
+      spaceDirectory = Object.freeze({
+        ...spaceDirectory,
+        channelTemplates: mergeChannelTemplateRows(spaceDirectory.channelTemplates, rows),
+      });
+      return true;
+    },
+    channelTemplateObserved(value) {
+      const row = normalizeChannelTemplate(value);
+      if (!row) return false;
+      const rows = [...(spaceDirectory.channelTemplates || []), row];
+      const byId = new Map(rows.map((entry) => [entry.id, entry]));
+      spaceDirectory = Object.freeze({
+        ...spaceDirectory,
+        channelTemplates: mergeChannelTemplateRows([], [...byId.values()]),
+      });
+      return true;
+    },
     membershipsObserved(rows, { complete = true } = {}) {
       const active = new Set();
       for (const row of rows || []) {
@@ -256,6 +285,33 @@ function projectDirectoryRows(observation, { withOnline = false } = {}) {
       online: measures.online ?? measures.device_online,
     })];
   }));
+}
+
+function normalizeChannelTemplate(value) {
+  const row = value?.declared || value;
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return null;
+  const id = String(row?.id || '').trim();
+  if (!id) return null;
+  const { body, ...withoutBody } = row;
+  return Object.freeze({
+    ...withoutBody,
+    id,
+    ...(body && typeof body === 'object' && !Array.isArray(body) ? { body } : {}),
+  });
+}
+
+function mergeChannelTemplateRows(previous, incoming) {
+  const prior = new Map((previous || []).map((row) => [String(row?.id || ''), row]));
+  return Object.freeze((incoming || []).map((value) => {
+    const row = normalizeChannelTemplate(value);
+    if (!row) return null;
+    const old = prior.get(row.id);
+    return normalizeChannelTemplate({
+      ...old,
+      ...row,
+      ...(!row.body && old?.body ? { body: old.body } : {}),
+    });
+  }).filter(Boolean));
 }
 
 async function loadSpaceDirectory(obs) {

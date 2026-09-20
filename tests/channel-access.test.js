@@ -210,4 +210,25 @@ describe('channel access model (public useWireConnection port)', () => {
     expect(access.rows().find((row) => row.id === 'public').access).toBe('observer_active');
     harness.unmount();
   });
+
+  it('keeps Registrar channel templates in the session directory across OBS refreshes and hydrates bodies by id', async () => {
+    const harness = await accessPort({ profiles: [{ id: 'c0', status: 'present', open: true }], memberships: [{ channel_id: 'c0', status: 'active' }] });
+    const access = harness.result.current.accessRef.current;
+    expect(access.channelTemplatesObserved([{ id: 'mock:team', name: 'Team channel' }])).toBe(true);
+    expect(access.directory().channelTemplates).toEqual([{ id: 'mock:team', name: 'Team channel' }]);
+
+    expect(access.channelTemplateObserved({
+      id: 'mock:team',
+      name: 'Team channel',
+      body: { declarations: [{ decl_id: 'mock:steward' }] },
+    })).toBe(true);
+    expect(access.directory().channelTemplates).toEqual([expect.objectContaining({
+      id: 'mock:team',
+      body: { declarations: [{ decl_id: 'mock:steward' }] },
+    })]);
+
+    access.directoryObserved({ principals: [], declarations: [], devices: [], channelTemplates: null, support: {} });
+    expect(access.directory().channelTemplates).toEqual([expect.objectContaining({ id: 'mock:team', body: expect.any(Object) })]);
+    harness.unmount();
+  });
 });

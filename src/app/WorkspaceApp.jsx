@@ -33,6 +33,7 @@ import {
   selectFeatureWaitingFacts,
 } from '../model/feature-tasks.js';
 import { selectFeatureSearchIndex } from '../model/feature-search.js';
+import { terminalResultPayload, terminalResultState } from '../model/terminal-result.js';
 import { isManageableDeclaration } from '../model/actor-visibility.js';
 import { SYSTEM_ACTOR_ID, TYPES } from '../protocol/vocab.js';
 import { Auth } from '../ui/Auth.jsx';
@@ -147,6 +148,35 @@ function isRetiredOwnerError(error) {
   return error?.code === 'cache_owner_changed';
 }
 
+function timelineTurnForRequest(state, requestId) {
+  const wanted = String(requestId || '');
+  if (!wanted) return null;
+  const visit = (entry) => {
+    if (entry?.kind === 'turn' && String(entry.turn?.requestId || '') === wanted) return entry.turn;
+    for (const child of entry?.thread || []) {
+      const found = visit(child);
+      if (found) return found;
+    }
+    return null;
+  };
+  for (const entry of state?.timeline || []) {
+    const found = visit(entry);
+    if (found) return found;
+  }
+  return null;
+}
+
+function governanceRequestId(value) {
+  if (typeof value === 'string') return value;
+  return String(value?.message_id || value?.messageId || value?.id || '');
+}
+
+function governanceTerminalError(payload, fallback = '治理命令未完成') {
+  const error = new Error(String(payload?.detail || payload?.error || payload?.reason || fallback));
+  error.code = String(payload?.error_code || payload?.reason || 'governance_failed');
+  return error;
+}
+
 function IdentityBoundary() {
   const [error, setError] = useState('');
   const onError = useCallback((reason) => setError(reason?.detail || reason?.message || String(reason)), []);
@@ -188,6 +218,11 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const filePickerRef = useRef(null);
   const filePickerIDRef = useRef(0);
   const [filePickerRequest, setFilePickerRequest] = useState(null);
+  const governanceRequestsRef = useRef(new Map());
+  const templateListRequestRef = useRef('');
+  const templateGetRequestRef = useRef(new Map());
+  const [governanceRequestRevision, setGovernanceRequestRevision] = useState(0);
+  const [channelCreationRequest, setChannelCreationRequest] = useState(null);
 
   const submissionProxy = useMemo(() => {
     const submissionCorrelationPort = Object.freeze({
@@ -435,13 +470,153 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       payload,
     });
   }, [submission.send, wire.accessRef]);
-  const sendGovernanceCommand = useCallback(async (channelId, msgType, payload) => {
+  const refreshDirectoryFacts = useCallback(() => {
     const refresh = accessActionsRef.current.refresh;
-    if (typeof refresh !== 'function') throw unavailableError('directory.refresh');
+    if (typeof refresh !== 'function') return Promise.reject(unavailableError('directory.refresh'));
+    return refresh();
+  }, []);
+  const trackGovernanceRequest = useCallback((record) => {
+    governanceRequestsRef.current.set(record.requestId, record);
+    setGovernanceRequestRevision((current) => current + 1);
+  }, []);
+  const waitForGovernanceTerminal = useCallback((record) => new Promise((resolve, reject) => {
+    trackGovernanceRequest({ ...record, resolve, reject });
+  }), [trackGovernanceRequest]);
+  const requestChannelTemplateList = useCallback(async (channelId = navigation.activeChannelId) => {
+    const requestId = governanceRequestId(await sendSystemCommand(channelId, TYPES.channelTemplate.list, {}));
+    if (!requestId) throw new TypeError('频道模板列表请求没有返回可追踪的请求编号');
+    templateListRequestRef.current = requestId;
+    return waitForGovernanceTerminal({
+      channelId,
+      requestId,
+      msgType: TYPES.channelTemplate.list,
+      kind: 'template-list',
+    });
+  }, [navigation.activeChannelId, sendSystemCommand, waitForGovernanceTerminal]);
+  const requestChannelTemplate = useCallback(async (channelId, templateId) => {
+    const id = String(templateId || '').trim();
+    if (!id) throw new TypeError('频道模板缺少稳定编号');
+    const requestId = governanceRequestId(await sendSystemCommand(channelId, TYPES.channelTemplate.get, { id }));
+    if (!requestId) throw new TypeError('频道模板详情请求没有返回可追踪的请求编号');
+    templateGetRequestRef.current.set(id, requestId);
+    return waitForGovernanceTerminal({
+      channelId,
+      requestId,
+      msgType: TYPES.channelTemplate.get,
+      kind: 'template-get',
+      templateId: id,
+    });
+  }, [sendSystemCommand, waitForGovernanceTerminal]);
+  const sendGovernanceCommand = useCallback(async (channelId, msgType, payload) => {
     const result = await sendSystemCommand(channelId, msgType, payload);
-    await refresh();
+    const requestId = governanceRequestId(result);
+    if (msgType === TYPES.channel.create) {
+      if (!requestId) throw new TypeError('创建命令没有返回可追踪的请求编号');
+      setChannelCreationRequest({
+        requestId,
+        parentId: channelId,
+        name: String(payload?.name || '').trim(),
+        accepted: true,
+        ledger: false,
+        targetId: '',
+        failed: false,
+        error: '',
+      });
+      trackGovernanceRequest({ channelId, requestId, msgType, kind: 'channel-create' });
+    }
+    await refreshDirectoryFacts();
     return result;
-  }, [sendSystemCommand]);
+  }, [refreshDirectoryFacts, sendSystemCommand, trackGovernanceRequest]);
+  const refreshGovernanceDirectory = useCallback(async () => {
+    await refreshDirectoryFacts();
+    try {
+      await requestChannelTemplateList(navigation.activeChannelId);
+      return true;
+    } catch (failure) {
+      showError(failure);
+      return false;
+    }
+  }, [navigation.activeChannelId, refreshDirectoryFacts, requestChannelTemplateList, showError]);
+  useEffect(() => {
+    for (const [requestId, record] of governanceRequestsRef.current) {
+      const turn = timelineTurnForRequest(feed.stateFor(record.channelId), requestId);
+      if (!turn?.terminal) continue;
+      const resultState = terminalResultState(turn);
+      const payload = terminalResultPayload(turn) || {};
+      const finishFailure = (failure) => {
+        governanceRequestsRef.current.delete(requestId);
+        if (record.kind === 'channel-create') {
+          setChannelCreationRequest((current) => current?.requestId === requestId
+            ? { ...current, failed: true, error: errorText(failure) }
+            : current);
+        }
+        record.reject?.(failure);
+      };
+      if (resultState.phase === 'unavailable') {
+        finishFailure(Object.assign(new Error(resultState.error), { code: 'governance_terminal_unavailable' }));
+        continue;
+      }
+      if (payload.status !== 'completed') {
+        finishFailure(governanceTerminalError(payload));
+        continue;
+      }
+      const value = payload.value;
+      if (record.kind === 'template-list') {
+        if (!Array.isArray(value)) {
+          finishFailure(Object.assign(new TypeError('Registrar 模板列表结果格式无效'), { code: 'template_list_invalid' }));
+          continue;
+        }
+        if (templateListRequestRef.current === requestId) {
+          const observed = wire.accessRef.current?.channelTemplatesObserved?.(value);
+          if (observed !== true) {
+            finishFailure(unavailableError('session.directory.channelTemplates'));
+            continue;
+          }
+          navigation.bump();
+        }
+        governanceRequestsRef.current.delete(requestId);
+        record.resolve?.(value);
+        continue;
+      }
+      if (record.kind === 'template-get') {
+        const templateId = String(record.templateId || '');
+        const validBody = value && typeof value === 'object' && !Array.isArray(value.body)
+          && value.body && typeof value.body === 'object';
+        if (!validBody) {
+          finishFailure(Object.assign(new TypeError('Registrar 模板详情缺少 recipe body'), { code: 'template_body_invalid' }));
+          continue;
+        }
+        if (templateGetRequestRef.current.get(templateId) === requestId) {
+          const observed = wire.accessRef.current?.channelTemplateObserved?.(value);
+          if (observed !== true) {
+            finishFailure(unavailableError('session.directory.channelTemplates'));
+            continue;
+          }
+          navigation.bump();
+        }
+        governanceRequestsRef.current.delete(requestId);
+        record.resolve?.(value);
+        continue;
+      }
+      if (record.kind === 'channel-create') {
+        const targetId = String(value?.channel_id || value?.channelId || '');
+        if (!targetId) {
+          finishFailure(Object.assign(new TypeError('频道创建终态缺少 channel_id'), { code: 'channel_create_target_missing' }));
+          continue;
+        }
+        governanceRequestsRef.current.delete(requestId);
+        setChannelCreationRequest((current) => current?.requestId === requestId
+          ? { ...current, ledger: true, targetId, error: '', failed: false }
+          : current);
+      }
+    }
+  }, [feed, governanceRequestRevision, navigation, wire]);
+  useEffect(() => () => {
+    for (const record of governanceRequestsRef.current.values()) {
+      record.reject?.(Object.assign(new Error('工作区已关闭'), { code: 'workspace_closed' }));
+    }
+    governanceRequestsRef.current.clear();
+  }, []);
   const attachments = useAttachmentTransactions({
     activeChannel: navigation.activeChannel,
     activeChannelId: navigation.activeChannelId,
@@ -1148,6 +1323,31 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       }),
     },
   };
+  const channelCreation = useMemo(() => {
+    const request = channelCreationRequest;
+    if (!request) return null;
+    const targetId = String(request.targetId || '');
+    const channel = targetId
+      ? navigation.channels.find((row) => String(row?.id || '') === targetId) || null
+      : null;
+    const accessState = targetId ? wire.accessRef.current?.state?.(targetId) : null;
+    return Object.freeze({
+      requestId: request.requestId,
+      accepted: request.accepted === true,
+      ledger: request.ledger === true,
+      observable: Boolean(channel),
+      membership: accessState?.relationship === 'member',
+      serving: channel?.open === true
+        || channel?.serving === true
+        || accessState?.runtime === 'open',
+      channel,
+      failed: request.failed === true,
+      error: String(request.error || ''),
+    });
+  }, [channelCreationRequest, navigation.channels, navigation.revision, wire.accessRef]);
+  useEffect(() => {
+    setChannelCreationRequest((current) => current && current.parentId !== navigation.activeChannelId ? null : current);
+  }, [navigation.activeChannelId]);
   const submitGovernance = ({ scope, action, payload }) => {
     if (scope !== 'channel') return Promise.reject(unavailableError('governance.space'));
     const channelId = String(payload.channelId || navigation.activeChannelId || '');
@@ -1157,28 +1357,27 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     });
     if (action === 'create_child') {
       const templateId = String(payload.templateId || '').trim();
-      const template = templateId
-        ? (Array.isArray(directory.channelTemplates)
-          ? directory.channelTemplates.find((row) => String(row?.id || '') === templateId)
-          : null)
-        : null;
-      if (templateId && (!template?.body || typeof template.body !== 'object' || Array.isArray(template.body))) {
-        return Promise.reject(unavailableError('governance.channel.template.body'));
-      }
-      const body = template?.body || {};
-      return sendGovernanceCommand(channelId, TYPES.channel.create, {
-        name: String(payload.name || '').trim(),
-        recipe: {
-          ...body,
-          declarations: Array.isArray(body.declarations) ? body.declarations : [],
-          profile: {
-            ...(body.profile && typeof body.profile === 'object' && !Array.isArray(body.profile) ? body.profile : {}),
-            ...(attachments.deviceId ? { default_storage_device_id: attachments.deviceId } : {}),
-            ...(String(payload.purpose || '').trim() ? { description: String(payload.purpose).trim() } : {}),
+      let template = null;
+      return (async () => {
+        if (templateId) template = await requestChannelTemplate(channelId, templateId);
+        if (templateId && (!template?.body || typeof template.body !== 'object' || Array.isArray(template.body))) {
+          throw unavailableError('governance.channel.template.body');
+        }
+        const body = template?.body || {};
+        return sendGovernanceCommand(channelId, TYPES.channel.create, {
+          name: String(payload.name || '').trim(),
+          recipe: {
+            ...body,
+            declarations: Array.isArray(body.declarations) ? body.declarations : [],
+            profile: {
+              ...(body.profile && typeof body.profile === 'object' && !Array.isArray(body.profile) ? body.profile : {}),
+              ...(attachments.deviceId ? { default_storage_device_id: attachments.deviceId } : {}),
+              ...(String(payload.purpose || '').trim() ? { description: String(payload.purpose).trim() } : {}),
+            },
           },
-        },
-        initial_actor_ids: [selfId].filter(Boolean),
-      });
+          initial_actor_ids: [selfId].filter(Boolean),
+        });
+      })();
     }
     if (action === 'introduce_actor') {
       const human = payload.candidateType === 'principal';
@@ -1194,6 +1393,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     channel: {
       disabled: !canWrite,
       children: navigation.channels.filter((channel) => channel.parent_id === navigation.activeChannelId),
+      creation: channelCreation,
       // Templates are a directory projection only when the session owner has
       // actually supplied them. `null` keeps the unavailable distinction; the
       // governance feature must not read the space owner or invent rows.
@@ -1210,15 +1410,20 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       commands: {
         refresh: (kind) => {
           if (kind === 'members') return roster.refresh(navigation.activeChannelId, true);
-          const refresh = accessActionsRef.current.refresh;
-          if (typeof refresh !== 'function') throw unavailableError('directory.refresh');
-          return refresh();
+          if (kind === 'directory') return refreshGovernanceDirectory();
+          return refreshDirectoryFacts();
         },
         selectActor: (actor) => setPanel({ kind: 'actor', actor, channelId: navigation.activeChannelId }),
-        listTemplates: () => sendGovernanceCommand(navigation.activeChannelId, TYPES.channelTemplate.list, {}),
-        getTemplate: (templateId) => sendGovernanceCommand(navigation.activeChannelId, TYPES.channelTemplate.get, {
-          id: String(templateId || ''),
-        }),
+        listTemplates: () => requestChannelTemplateList(navigation.activeChannelId),
+        getTemplate: (templateId) => requestChannelTemplate(navigation.activeChannelId, templateId),
+        enterChannel: ({ channelId, view = 'conversation' } = {}) => {
+          const target = String(channelId || '');
+          if (!target || !navigation.channels.some((row) => row.id === target)) return false;
+          const selected = navigation.select(target);
+          navigation.setActiveView(view);
+          setPanel('');
+          return selected || navigation.activeChannelId === target;
+        },
         submit: submitGovernance,
       },
     },
