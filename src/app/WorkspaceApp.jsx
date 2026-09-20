@@ -941,16 +941,25 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     stopIncompatibleFeed: feedCommands.stopIncompatible,
   });
 
+  // Channel entry owns its explicit freshness interest. The grant lifecycle
+  // trigger lives in useWireConnection; omitting wire/access/render changes
+  // here prevents a grant from replaying the same channel_meta request.
   useEffect(() => {
     if (!navigation.activeChannelId) return;
     feedCommands.focusHistory(navigation.activeChannelId);
     void feedCommands.refreshChannel(navigation.activeChannelId);
-    if (contentVisible && wire.state === 'open') {
-      void feedCommands.loadHistory(navigation.activeChannelId, {
-        intent: 'initial-view',
-        urgency: 'blocking',
-      });
-    }
+  }, [feedCommands, navigation.activeChannelId]);
+
+  useEffect(() => {
+    if (!navigation.activeChannelId || !contentVisible || wire.state !== 'open') return;
+    void feedCommands.loadHistory(navigation.activeChannelId, {
+      intent: 'initial-view',
+      urgency: 'blocking',
+    });
+  }, [contentVisible, feedCommands, navigation.activeChannelId, wire.state]);
+
+  useEffect(() => {
+    if (!navigation.activeChannelId) return;
     if (memberVisible) {
       const generation = Number(feedCommands.generationFor(navigation.activeChannelId) || 0);
       const authority = roster.authorities.get(navigation.activeChannelId);
@@ -959,7 +968,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
         && authority?.generation === generation;
       void roster.refresh(navigation.activeChannelId, generation > 0 && !attempted).catch(showError);
     } else roster.clearChannel(navigation.activeChannelId);
-  }, [contentVisible, feedCommands, memberVisible, navigation.activeChannelId, principalId, roster.authorities, roster.clearChannel, roster.refresh, showError, wire.state]);
+  }, [feedCommands, memberVisible, navigation.activeChannelId, principalId, roster.authorities, roster.clearChannel, roster.refresh, showError]);
 
   useEffect(() => {
     if (contentVisible) return;
