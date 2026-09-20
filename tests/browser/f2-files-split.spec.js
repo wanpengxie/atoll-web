@@ -26,6 +26,47 @@ async function openFilesAtWorkspace(page) {
   return files;
 }
 
+test('F2-FS-02c desktop restores Files after a Tasks excursion', async ({ page, request }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await reset(request, 222);
+  await login(page);
+  const files = await openFilesAtWorkspace(page);
+
+  await page.getByRole('tab', { name: '任务', exact: true }).click();
+  await expect(page.getByRole('tabpanel', { name: '任务' })).toBeVisible();
+  await expect(files).toHaveCount(0);
+
+  await page.getByRole('tab', { name: '动态', exact: true }).click();
+  await expect(files).toBeVisible();
+  await expect(files.getByRole('row', { name: /README\.md/ })).toBeVisible();
+  await expect(page.locator('#workspace-files-toggle')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page).toHaveURL(/#\/channels\/c0\/files$/);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test('F2-FS-02c mobile restores Files after a Tasks excursion', async ({ page, request }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  await reset(request, 223);
+  await login(page);
+
+  await page.getByRole('button', { name: '频道操作', exact: true }).click();
+  await page.getByRole('menuitem', { name: '打开文件', exact: true }).click();
+  const files = page.getByRole('region', { name: '频道文件' });
+  await expect(files).toBeVisible();
+  await files.getByRole('row', { name: /workspace/ }).click();
+  await expect(files.getByRole('row', { name: /README\.md/ })).toBeVisible();
+
+  await page.getByRole('tab', { name: '任务', exact: true }).click();
+  await expect(page.getByRole('tabpanel', { name: '任务' })).toBeVisible();
+  await expect(files).toHaveCount(0);
+
+  await page.getByRole('tab', { name: '动态', exact: true }).click();
+  await expect(files).toBeVisible();
+  await expect(files.getByRole('row', { name: /README\.md/ })).toBeVisible();
+  await expect(page.locator('#workspace-files-toggle')).toHaveAttribute('aria-pressed', 'true');
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
 test('F2-FS-03 desktop keeps the selected Files surface beside Terminal', async ({ page, request }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await reset(request, 220);

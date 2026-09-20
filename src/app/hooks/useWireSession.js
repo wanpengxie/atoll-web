@@ -489,10 +489,15 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
   const activeChannelRef = useRef(activeChannelId);
   const activeViewRef = useRef(activeView);
   const focusRef = useRef(focus);
+  // Tasks is a temporary excursion from the committed Files route. Keep this
+  // handoff fact inside the existing navigation owner so Layout does not grow
+  // a second route store or infer it from mounted DOM.
+  const filesReturnIntentRef = useRef(null);
   useLayoutEffect(() => { activeChannelRef.current = activeChannelId; }, [activeChannelId]);
   useLayoutEffect(() => { activeViewRef.current = activeView; }, [activeView]);
   useLayoutEffect(() => { focusRef.current = focus; }, [focus]);
   const commitActiveChannel = useCallback((channelId) => {
+    if (activeChannelRef.current !== channelId) filesReturnIntentRef.current = null;
     activeChannelRef.current = channelId;
     setActiveChannelId(channelId);
   }, []);
@@ -532,6 +537,9 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
       const route = readInitialRoute();
       if (route.channelId && channels.some((row) => row.id === route.channelId)) {
         const changedChannel = route.channelId !== activeChannelRef.current;
+        // A browser route is an authoritative navigation request. It must not
+        // inherit an in-memory Files→Tasks return handoff from an older route.
+        filesReturnIntentRef.current = null;
         commitActiveChannel(route.channelId);
         commitActiveView(route.view);
         commitFocus(route.focus);
@@ -558,9 +566,23 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
   }, [commitActiveChannel, commitFocus, onSelect]);
   const setActiveView = useCallback((view) => {
     if (!['conversation', 'files', 'tasks'].includes(view)) return;
-    commitActiveView(view);
+    const channelId = activeChannelRef.current;
+    let nextView = view;
+    if (view === 'tasks') {
+      if (activeViewRef.current === 'files' && channelId) filesReturnIntentRef.current = channelId;
+    } else if (view === 'files') {
+      // Opening or explicitly staying on Files is a new primary intent.
+      filesReturnIntentRef.current = null;
+    } else if (filesReturnIntentRef.current === channelId) {
+      // The Dynamic tab is the return edge for a temporary Tasks excursion.
+      nextView = 'files';
+      filesReturnIntentRef.current = null;
+    } else {
+      filesReturnIntentRef.current = null;
+    }
+    commitActiveView(nextView);
     commitFocus(null);
-    writeRoute(activeChannelRef.current, view);
+    writeRoute(channelId, nextView);
   }, [commitActiveView, commitFocus]);
   const setFocus = useCallback((nextFocus) => {
     const normalized = nextFocus?.type && nextFocus?.key
@@ -584,7 +606,12 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
     return true;
   }, []);
   const bump = useCallback(() => setRevision((value) => value + 1), []);
+  const setChannels = useCallback((next) => {
+    if (next instanceof Map && next.size === 0) filesReturnIntentRef.current = null;
+    setProfiles(next);
+  }, []);
   const clear = useCallback(() => {
+    filesReturnIntentRef.current = null;
     setProfiles(new Map());
     setTerminalChannels(new Set());
     commitActiveChannel('');
@@ -608,7 +635,7 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
     setActiveChannelId: commitActiveChannel,
     setActiveView,
     setFocus,
-    setChannels: setProfiles,
+    setChannels,
     terminalVisible: terminalChannels.has(activeChannelId),
   };
 }
