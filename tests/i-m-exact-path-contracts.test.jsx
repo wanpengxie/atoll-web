@@ -10,12 +10,14 @@ import userEvent from '@testing-library/user-event';
 import {
   createChannelReplicaStore,
 } from '../src/model/channel-replica.js';
+import { createChannelFeedRuntime } from '../src/model/channel-feed-runtime.js';
 import {
   CONVERSATION_SCOPE,
   createConversationPresentation,
   selectTimelineItems,
 } from '../src/model/conversation-presentation.js';
 import { isStandardActorIdentity } from '../src/model/actor-visibility.js';
+import { acknowledgeLivePresentationArrivals } from '../src/model/live-arrivals.js';
 import { isRailNotifiableDisposition, notificationDisposition } from '../src/model/notification-policy.js';
 import {
   bindLatestIntentTargets,
@@ -226,6 +228,23 @@ function presentationEntry(id, seq, text = id) {
 
 function readingSession(saved = {}, activationID = 'activation:round-13') {
   return createReadingSession({ key: `${CHANNEL}:all`, activationID, saved });
+}
+
+function liveCheckpointOptions() {
+  return {
+    wireRef: { current: null },
+    rosterRef: { current: { self: () => '', observeFeed: () => '', handleEnvelope: () => {} } },
+    accessRef: { current: { live: () => false } },
+    activeChannelRef: { current: CHANNEL },
+    onRoster: vi.fn(),
+    onError: vi.fn(),
+    onChannelsDiscovered: vi.fn(),
+    onDirectoryInvalidated: vi.fn(),
+    onTimerFired: vi.fn(),
+    onSubmissionFeed: vi.fn(),
+    onAccessChanged: vi.fn(),
+    onAgentActivity: vi.fn(),
+  };
 }
 
 describe('I-M exact-path public-owner recovery (round 12)', () => {
@@ -979,5 +998,104 @@ describe('I-M exact-path public-owner recovery (round 16)', () => {
       expect(isRailNotifiableDisposition(notificationDisposition(store.state(CHANNEL), row.envelope, SELF))).toBe(false);
     }
     release();
+  });
+});
+
+describe('I-M exact-path public-owner recovery (round 27 live contracts)', () => {
+  it('live-checkpoint-ordering TC-0918: landing precedes the accepted coverage checkpoint', async () => {
+    const options = liveCheckpointOptions();
+    const ownerToken = Object.freeze({ principalId: 'round27-live' });
+    const runtime = createChannelFeedRuntime(options);
+    runtime.bind({ ...options, ownerToken });
+    await runtime.getSnapshot().setHistoryGrants([
+      { channel_id: CHANNEL, head_seq: 2, has_rows: true },
+    ], { generation: 27, boot: 'round27-boot', focus: CHANNEL });
+
+    const owner = runtime.getOwnerSnapshot(ownerToken);
+    expect(owner.enqueue({
+      source: 'live', generation: 27, channel_id: CHANNEL, seq: 1,
+      envelope: { id: 'round27-live-1', kind: 'event', type: 'human.note', payload: { body: { text: 'one' } } },
+    })).toBe(true);
+    expect(owner.enqueue({
+      source: 'live', generation: 27, channel_id: CHANNEL, seq: 2,
+      envelope: { id: 'round27-live-2', kind: 'event', type: 'human.note', payload: { body: { text: 'two' } } },
+    })).toBe(true);
+
+    expect(owner.liveCheckpoint({
+      generation: 27, channel_id: CHANNEL, scan_low_seq: 1, scanned_seq: 2,
+    })).toBe(true);
+    expect([...runtime.getSnapshot().stateFor(CHANNEL).rows.keys()]).toEqual([1, 2]);
+    expect(runtime.getSnapshot().historyFor(CHANNEL).controlCoverage).toEqual([
+      { lowSeq: 1, highSeq: 2 },
+    ]);
+    runtime.destroy();
+  });
+
+  it('live-checkpoint-ordering TC-0919: an empty checkpoint never fabricates a live row', async () => {
+    const options = liveCheckpointOptions();
+    const ownerToken = Object.freeze({ principalId: 'round27-empty' });
+    const runtime = createChannelFeedRuntime(options);
+    runtime.bind({ ...options, ownerToken });
+    await runtime.getSnapshot().setHistoryGrants([
+      { channel_id: CHANNEL, head_seq: 0, has_rows: false },
+    ], { generation: 27, boot: 'round27-empty-boot', focus: CHANNEL });
+
+    const owner = runtime.getOwnerSnapshot(ownerToken);
+    expect(owner.liveCheckpoint({
+      generation: 27, channel_id: CHANNEL, scan_low_seq: 1, scanned_seq: 1,
+    })).toBe(true);
+    expect(runtime.getSnapshot().stateFor(CHANNEL).rows.size).toBe(0);
+    expect(runtime.getSnapshot().stateFor(CHANNEL).timeline).toEqual([]);
+    expect(runtime.getSnapshot().historyFor(CHANNEL).controlCoverage).toEqual([
+      { lowSeq: 1, highSeq: 1 },
+    ]);
+    runtime.destroy();
+  });
+
+  it('live-presentation-arrivals TC-0920: only an attached consumer receives a live backlog', () => {
+    const store = createChannelReplicaStore();
+    const state = store.ensure(CHANNEL).state;
+    store.commit(request(1, 'before-round27-mount'), SELF, (value) => value, { source: 'live' });
+    expect(state.arrivalReceipts.presentation().events).toEqual([]);
+
+    const release = state.arrivalReceipts.attachPresentationConsumer(Symbol('round27-timeline'));
+    store.commit(request(2, 'during-round27-mount'), SELF, (value) => value, { source: 'live' });
+    expect(state.arrivalReceipts.presentation().events).toEqual([
+      expect.objectContaining({ rowIDs: ['during-round27-mount'], sourceRevision: 2 }),
+    ]);
+
+    release();
+    expect(state.arrivalReceipts.presentation().events).toEqual([]);
+    store.commit(request(3, 'after-round27-release'), SELF, (value) => value, { source: 'live' });
+    expect(state.arrivalReceipts.presentation().events).toEqual([]);
+  });
+
+  it('live-presentation-arrivals TC-0921: acknowledging one source prefix leaves the later event', () => {
+    const store = createChannelReplicaStore();
+    const state = store.ensure(CHANNEL).state;
+    state.arrivalReceipts.attachPresentationConsumer(Symbol('round27-prefix'));
+    store.commit(request(1, 'round27-first'), SELF, (value) => value, { source: 'live' });
+    store.commit(request(2, 'round27-second'), SELF, (value) => value, { source: 'live' });
+
+    const first = state.arrivalReceipts.presentation(1);
+    expect(first).toMatchObject({ revision: 1, headRevision: 2 });
+    expect(first.events.map((event) => event.rowIDs[0])).toEqual(['round27-first']);
+    expect(state.arrivalReceipts.dispatch(acknowledgeLivePresentationArrivals(first.revision))).toBe(1);
+    expect(state.arrivalReceipts.presentation(2).events.map((event) => event.rowIDs[0])).toEqual([
+      'round27-second',
+    ]);
+  });
+
+  it('live-presentation-arrivals TC-0922: a response arrival keeps root and exact envelope identities', () => {
+    const store = createChannelReplicaStore();
+    const state = store.ensure(CHANNEL).state;
+    state.arrivalReceipts.attachPresentationConsumer(Symbol('round27-response'));
+    store.commit(request(1, 'round27-root'), SELF, (value) => value, { source: 'live' });
+    state.arrivalReceipts.dispatch(acknowledgeLivePresentationArrivals(1));
+
+    store.commit(progress(2, 'round27-root', 'round27-progress'), SELF, (value) => value, { source: 'live' });
+    expect(state.arrivalReceipts.presentation(2).events).toEqual([
+      expect.objectContaining({ rowIDs: ['round27-root', 'round27-root-progress-2'], sourceRevision: 2 }),
+    ]);
   });
 });

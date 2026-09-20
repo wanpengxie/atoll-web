@@ -761,6 +761,27 @@ the Round 25 closure/cache/feed/model recheck remains **5 files, 69/69
 GREEN**. Re-running all 17 current I–M owner files gives **109/109 GREEN**;
 the baseline remains 159 cases and this is an additive row-21 owner proof.
 
+## Round 27 exact-path recovery: live checkpoint and Presentation arrival contracts
+
+The next unverified static slice is the five live-owner declarations
+TC-0918–TC-0922; no memory-window, model-selector, sparse-coverage, or
+Reading case is repeated. Each row below is an independent public-owner
+contract, so the five user capabilities are not compressed into one assertion.
+
+| baseline case | user capability and invariant | current public owner | executable evidence and result |
+|---|---|---|---|
+| TC-0918 | A live coverage checkpoint is accepted only after the two buffered live rows are visible; coverage cannot outrun landing. | createChannelFeedRuntime().getOwnerSnapshot().enqueue/liveCheckpoint and historyFor(channel).controlCoverage | tests/i-m-exact-path-contracts.test.jsx:1005-1031 — rows [1, 2] are visible before { lowSeq: 1, highSeq: 2 }; **PASS** |
+| TC-0919 | An empty live scan may record coverage, but it must not synthesize a row or timeline entry. | Same feed runtime owner, through stateFor(channel).rows/timeline | tests/i-m-exact-path-contracts.test.jsx:1034-1053 — zero rows and empty timeline after the accepted checkpoint; **PASS** |
+| TC-0920 | Arrivals are delivered only while a visual consumer is attached; release clears the backlog and later rows stay unseen. | createChannelReplicaStore().state.arrivalReceipts.attachPresentationConsumer and presentation() | tests/i-m-exact-path-contracts.test.jsx:1055-1071 — pre-mount/after-release rows are absent and the mounted row is delivered; **PASS** |
+| TC-0921 | Acknowledging a Presentation source prefix cannot consume a later source revision. | Replica public arrivalReceipts.presentation() plus acknowledgeLivePresentationArrivals/dispatch | tests/i-m-exact-path-contracts.test.jsx:1073-1087 — revision 1 is acknowledged while the revision-2 event remains; **PASS** |
+| TC-0922 | A response arrival remains addressable by its stable root and exact response envelope identity. | Replica public live commit and Presentation arrival receipt | tests/i-m-exact-path-contracts.test.jsx:1089-1100 — receipt carries ['round27-root', 'round27-root-progress-2']; **PASS** |
+
+Targeted evidence: npx vitest run tests/i-m-exact-path-contracts.test.jsx →
+**50/50 GREEN** (the prior 45 exact-path contracts plus these five
+independent live contracts). The current-owner focused count remains 109/109;
+the baseline remains 159 cases. No production source, notification owner,
+memory/model selector, vendor/package/lockfile, or compatibility API changed.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test
@@ -790,6 +811,10 @@ the baseline remains 159 cases and this is an additive row-21 owner proof.
   compatibility oracle remains deliberately unmodified. Round 17 reclassified
   the deleted fold revision split as an implementation fingerprint, then
   fixed the real no-op invalidation at the current Replica boundary.
+- Round 27 adds five independent exact-path live-owner contracts (TC-0918
+  through TC-0922); the exact bridge is now 50/50 GREEN. These additions do
+  not inflate the 159-case baseline and do not repeat memory/model-selector
+  cases.
 - No old API, old store, compatibility parser, vendor/package/lockfile, or
   second source of truth was restored. The deleted virtualizer/list was not
   mocked. The migration report is the unresolved-case handoff for root review.
