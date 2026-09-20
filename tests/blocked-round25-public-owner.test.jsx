@@ -509,7 +509,10 @@ describe('A-D round 25 public-owner evidence', () => {
   });
 
   it('[AD-093] provides a recent-reading drawer at the right edge', () => {
-    // 用户能力：从终端/频道边缘打开最近阅读；不变量：Reading owner 提供入口与返回焦点；公开 owner：WorkspaceLayout。
+    // 用户能力：从终端/频道边缘打开最近阅读；不变量：Reading owner 提供入口与返回焦点。
+    // 公开 owner contract：WorkspaceApp panel state → WorkspaceLayout edge
+    // entry → WorkspaceRightPanel reading-history route；本fixture落在首个
+    // WorkspaceLayout边界，确认该公开入口未被当前组合提供。
     renderWorkspace(navigation());
     expect(screen.queryByRole('button', { name: '打开最近阅读' })).toBeTruthy();
   });

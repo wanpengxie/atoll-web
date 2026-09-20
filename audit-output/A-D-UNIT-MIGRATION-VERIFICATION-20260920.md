@@ -476,6 +476,27 @@ BLOCKED**. The case-level packet is in
 No duplicate red declaration, expected-fail completion, product source, or
 private/compatibility API was added or changed.
 
+## Round 44 — AD-093 real capability and owner definition
+
+Round 44 separates the AD-093 capability from the generic Reading runtime. The
+historical public contract is: `AppShell` edge button `打开最近阅读` →
+`panel.open('reading-history')` → `RightPanelHost`/`RecentFilesContext` backed
+by the recent-files port, with `ContextHost` restoring opener focus. In the
+current composition the first boundary is `WorkspaceApp` panel/navigation plus
+`WorkspaceLayout` shell; the dispatcher is `WorkspaceRightPanel`. It has no
+Reading entry command or `reading-history` branch. The current Files surface's
+inline “最近查看的文件” list is a different channel-files owner and is not
+equivalent in scope, route, or focus lifecycle.
+
+At shared HEAD `9896328` the ordinary public AD-093 fixture remains **1 failed
+/ 19 focused-out skips** (`打开最近阅读` query returns `null`). AD-093 remains
+BLOCKED pending the explicitly assigned Workspace/Reading owner; the ledger is
+still **329 PASS / 0 REGRESSION / 36 BLOCKED**. The complete owner contract and
+handoff packet is in
+[`A-D-ROUND44-AD093-OWNER-DEFINITION-20260920.md`](./A-D-ROUND44-AD093-OWNER-DEFINITION-20260920.md).
+Only the test annotation and A-D audit files changed; no product source,
+private/compatibility API, or duplicate red declaration changed.
+
 ## Public-boundary migration completed in this pass
 
 `tests/channel-access.test.js` and `tests/channel-name-cache.test.js` no longer
