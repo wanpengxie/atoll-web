@@ -830,6 +830,33 @@ Targeted evidence: npx vitest run tests/i-m-exact-path-contracts.test.jsx
 current-owner run remains **17 files, 109/109 GREEN**. No product source or
 compatibility behavior was changed.
 
+## Round 30 exact-path recovery: projection, wire, and scenario-access contracts
+
+The next ten unique declarations cover stable media/semantic-block projection,
+date formatting, wire-frame/attach validation, and mock scenario access
+projections. They do not repeat TC-0923, TC-0925–0929, TC-0930–0932,
+TC-1032/1035, TC-1047/1048/1050/1051, or any live/memory/model case. Each
+baseline maps to one independently executable public-owner contract.
+
+| baseline case | user capability and invariant | current public owner | executable evidence and result |
+|---|---|---|---|
+| TC-0933 | Remote-image decode keeps one stable media frame and does not move the reading anchor. | MarkdownContent stable-media owner | tests/i-m-exact-path-contracts.test.jsx:1314-1323 — loading and ready phases retain the same frame node; **PASS** |
+| TC-0934 | Prefix insertion and streaming growth preserve semantic block identities. | MarkdownContent semantic block projection | tests/i-m-exact-path-contracts.test.jsx:1325-1337 — prior block IDs survive both rerenders; **PASS** |
+| TC-0935 | Tail streaming preserves completed block DOM and native selection. | MarkdownContent semantic block/DOM owner | tests/i-m-exact-path-contracts.test.jsx:1339-1358 — node identity, text node, and selection remain stable; **PASS** |
+| TC-1033 | Older same-year messages expose day plus clock without a year. | messageTimeLabel | tests/i-m-exact-path-contracts.test.jsx:1360-1364 — same-year labels are 8/26 23:59 and 1/3 08:00; **PASS** |
+| TC-1034 | Prior-year messages include the year, day, and clock. | messageTimeLabel | tests/i-m-exact-path-contracts.test.jsx:1366-1370 — prior-year label is 2025/12/31 18:45; **PASS** |
+| TC-1046 | Downstream frames retain wire version, byte ceiling, and the closed upstream payload set. | downstreamFrame / FRAME_VERSION / PAYLOAD_FIELDS | tests/i-m-exact-path-contracts.test.jsx:1372-1385 — v5 frame and exact field set assert; **PASS** |
+| TC-1049 | Attach accepts a string client label and rejects a non-string label. | validatePayload attach boundary | tests/i-m-exact-path-contracts.test.jsx:1387-1394 — string is accepted and number returns label error; **PASS** |
+| TC-1052 | The public scenario catalog retains every supported user flow. | scenarioIds | tests/i-m-exact-path-contracts.test.jsx:1396-1406 — all 25 declared scenario IDs remain discoverable; **PASS** |
+| TC-1053 | Channel availability and membership independently gate read/write access. | createMockDomain channel/membership authority | tests/i-m-exact-path-contracts.test.jsx:1408-1418 — closed/revoked denies and regrant restores access; **PASS** |
+| TC-1055 | Space discovery is distinct from active membership and channel access. | createMockDomain channelRows/attachMemberships/canRead/canWrite | tests/i-m-exact-path-contracts.test.jsx:1420-1426 — discovered public channel remains unreadable while project membership is writable; **PASS** |
+
+Targeted evidence: npx vitest run tests/i-m-exact-path-contracts.test.jsx
+-t 'TC-0933|TC-0934|TC-0935|TC-1033|TC-1034|TC-1046|TC-1049|TC-1052|TC-1053|TC-1055'
+→ **10/10 GREEN**. The full exact bridge is now **75/75 GREEN**, and the
+current-owner run remains **17 files, 109/109 GREEN**. No product source or
+compatibility behavior was changed.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test
@@ -871,6 +898,10 @@ compatibility behavior was changed.
 - Round 29 adds nine independent protocol/projection/validation contracts
   (TC-0929–TC-0932, TC-1032, TC-1035, and TC-1048/1050/1051); the exact bridge
   is now 65/65 GREEN. These additions do not change the 159-case baseline.
+- Round 30 adds ten independent projection/wire/scenario-access contracts
+  (TC-0933–TC-0935, TC-1033/1034, TC-1046/1049, and TC-1052/1053/1055);
+  the exact bridge is now 75/75 GREEN. These additions do not change the
+  159-case baseline.
 - No old API, old store, compatibility parser, vendor/package/lockfile, or
   second source of truth was restored. The deleted virtualizer/list was not
   mocked. The migration report is the unresolved-case handoff for root review.

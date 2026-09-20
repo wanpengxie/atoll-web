@@ -46,7 +46,15 @@ import { useTimelineRowRenderer } from '../src/ui/timeline/TimelineRowRenderer.j
 import { projectAgentParameters } from '../src/ui/composer/agent-parameters.js';
 import { normalizeMathMarkdown } from '../src/model/math-markdown.js';
 import { messageTimeLabel } from '../src/util/time.js';
-import { validatePayload } from '../mock/protocol.mjs';
+import {
+  downstreamFrame,
+  FRAME_VERSION,
+  MAX_FRAME_BYTES,
+  PAYLOAD_FIELDS,
+  validatePayload,
+} from '../mock/protocol.mjs';
+import { createMockDomain } from '../mock/domain.mjs';
+import { loadScenario, scenarioIds } from '../mock/scenarios.mjs';
 
 afterEach(cleanup);
 
@@ -1299,5 +1307,121 @@ describe('I-M exact-path public-owner recovery (round 29 protocol contracts)', (
     expect(validatePayload('after', {
       channel_id: CHANNEL, duration_ms: 0, msg_type: TYPES.agentAsk,
     })).toContain('positive');
+  });
+});
+
+describe('I-M exact-path public-owner recovery (round 30 projection and wire contracts)', () => {
+  it('markdown-content TC-0933: image decoding keeps one stable media frame', () => {
+    const { container } = render(<MarkdownContent text={'![架构图](https://example.com/diagram.png)'} />);
+    const frame = container.querySelector('[data-viewport-stable-media="image"]');
+    const image = frame.querySelector('img');
+
+    expect(frame.dataset.imagePhase).toBe('loading');
+    fireEvent.load(image);
+    expect(frame.dataset.imagePhase).toBe('ready');
+    expect(container.querySelector('[data-viewport-stable-media="image"]')).toBe(frame);
+  });
+
+  it('markdown-content TC-0934: semantic block ids survive prefix insertion and streaming growth', () => {
+    const view = render(<MarkdownContent contentKey="message:round30:stable" text={'第一段\n\n保留段落'} />);
+    const ids = () => Object.fromEntries([...view.container.querySelectorAll('[data-reading-block-id]')]
+      .map((node) => [node.textContent, node.dataset.readingBlockId]));
+    const initial = ids();
+
+    view.rerender(<MarkdownContent contentKey="message:round30:stable" text={'新前文\n\n第一段\n\n保留段落'} />);
+    expect(ids()['第一段']).toBe(initial['第一段']);
+    expect(ids()['保留段落']).toBe(initial['保留段落']);
+    const beforeGrowth = ids()['保留段落'];
+    view.rerender(<MarkdownContent contentKey="message:round30:stable" text={'新前文\n\n第一段\n\n保留段落继续生成'} />);
+    expect(ids()['保留段落继续生成']).toBe(beforeGrowth);
+  });
+
+  it('markdown-content TC-0935: completed block DOM and native selection survive tail streaming', () => {
+    const view = render(<MarkdownContent contentKey="message:round30:selection" text={'已完成段落\n\n生成中'} />);
+    const sealed = [...view.container.querySelectorAll('[data-reading-block-id]')]
+      .find((node) => node.textContent === '已完成段落');
+    const textNode = sealed.querySelector('p').firstChild;
+    const range = document.createRange();
+    range.setStart(textNode, 0);
+    range.setEnd(textNode, 3);
+    getSelection().removeAllRanges();
+    getSelection().addRange(range);
+
+    view.rerender(<MarkdownContent contentKey="message:round30:selection" text={'已完成段落\n\n生成中继续'} />);
+    const surviving = [...view.container.querySelectorAll('[data-reading-block-id]')]
+      .find((node) => node.textContent === '已完成段落');
+
+    expect(surviving.isSameNode(sealed)).toBe(true);
+    expect(surviving.querySelector('p').firstChild.isSameNode(textNode)).toBe(true);
+    expect(getSelection().anchorNode?.isSameNode(textNode)).toBe(true);
+    expect(getSelection().toString()).toBe('已完成');
+  });
+
+  it('message-time TC-1033: an older same-year message includes day and clock once', () => {
+    const now = new Date(2026, 7, 27, 9, 30).getTime();
+    expect(messageTimeLabel(new Date(2026, 7, 26, 23, 59).getTime(), now)).toBe('8/26 23:59');
+    expect(messageTimeLabel(new Date(2026, 0, 3, 8, 0).getTime(), now)).toBe('1/3 08:00');
+  });
+
+  it('message-time TC-1034: a prior-year message includes the year, day, and clock', () => {
+    const now = new Date(2026, 7, 27, 9, 30).getTime();
+    expect(messageTimeLabel(new Date(2025, 11, 31, 18, 45).getTime(), now))
+      .toBe('2025/12/31 18:45');
+  });
+
+  it('mock-protocol TC-1046: the public wire frame remains versioned and closed-set', () => {
+    expect(FRAME_VERSION).toBe(5);
+    expect(MAX_FRAME_BYTES).toBe(512 * 1024);
+    expect(Object.keys(PAYLOAD_FIELDS).sort()).toEqual([
+      'after', 'attach', 'cancel', 'cancel_timer', 'channel_meta', 'history_before',
+      'history_cancel', 'observe', 'resolve', 'resource', 'submit', 'unobserve',
+    ]);
+    expect(downstreamFrame('receipt', 'r1', { message_id: 'm1' })).toEqual({
+      v: 5,
+      frame_type: 'receipt',
+      ref: 'r1',
+      payload: { message_id: 'm1' },
+    });
+  });
+
+  it('mock-protocol TC-1049: attach accepts a string client label and rejects non-string labels', () => {
+    expect(validatePayload('attach', {
+      focus: '', history_protocol: 5, generation: 1, label: 'Mac Chrome',
+    })).toBe('');
+    expect(validatePayload('attach', {
+      focus: '', history_protocol: 5, generation: 1, label: 42,
+    })).toContain('label must be a string');
+  });
+
+  it('mock-scenarios TC-1052: the public scenario catalog retains every supported flow', () => {
+    expect(scenarioIds()).toEqual(expect.arrayContaining([
+      'first-login', 'multi-channel', 'deep-history-delayed', 'message-flow', 'approval', 'network-drop',
+      'permission-revoked', 'channel-retired', 'projection-delay', 'actor-capability',
+      'channel-governance', 'space-governance', 'resource-workflow', 'scheduled-action',
+      'message-structured-success', 'message-empty-success', 'message-failed',
+      'business-provisional', 'provisional-after-terminal', 'terminal-conflict',
+      'receipt-delayed', 'feed-delayed', 'receipt-lost-feed-landed', 'obs-partial',
+      'real-backend-shape',
+    ]));
+  });
+
+  it('mock-scenarios TC-1053: channel availability and membership independently gate access', () => {
+    const domain = createMockDomain(loadScenario('message-structured-success'));
+    expect(domain.behavior.message).toBe('structured');
+    expect(domain.setChannelOpen('c0.project', false).open).toBe(false);
+    expect(domain.canWrite('root', 'c0.project')).toBe(false);
+    domain.setChannelOpen('c0.project', true);
+    domain.revokeMembership('root', 'c0.project');
+    expect(domain.canRead('root', 'c0.project')).toBe(false);
+    expect(domain.grantMembership('root', 'c0.project')).toMatchObject({ status: 'active' });
+    expect(domain.canWrite('root', 'c0.project')).toBe(true);
+  });
+
+  it('mock-scenarios TC-1055: space discovery stays separate from active membership', () => {
+    const domain = createMockDomain(loadScenario('multi-channel'));
+    expect(domain.channelRows('c0').map((item) => item.declared.id)).toEqual(['c0.project', 'c0.public']);
+    expect(domain.attachMemberships('root').map((entry) => entry.channel_id)).toEqual(['c0', 'c0.project']);
+    expect(domain.canRead('root', 'c0.public')).toBe(false);
+    expect(domain.canWrite('root', 'c0.project')).toBe(true);
   });
 });
