@@ -48,10 +48,13 @@ test('F7-002 桌面端消息区与终端左右各占一半', async ({ page }) =>
   expect(terminalBox.x).toBeGreaterThanOrEqual(messageBox.x + messageBox.width - 1);
 });
 
-test('F7-003 收起再打开：消息恢复全宽', async ({ page }) => {
+test('F7-003 收起再打开：消息恢复全宽，且终端恒不重建', async ({ page }) => {
   await login(page);
   await terminalToggle(page).click();
   await expect(page.locator('.terminal-view .xterm')).toBeVisible({ timeout: 15_000 });
+
+  // 记下 xterm 根节点的身份；重建会换一个新节点。
+  await page.evaluate(() => { document.querySelector('.terminal-view .xterm').dataset.probe = 'first'; });
 
   const splitWidth = (await page.getByRole('region', { name: '频道动态' }).boundingBox()).width;
   await terminalToggle(page).click();
@@ -61,16 +64,35 @@ test('F7-003 收起再打开：消息恢复全宽', async ({ page }) => {
   await terminalToggle(page).click();
   await expect(page.locator('.terminal-view')).toBeVisible();
 
+  const probe = await page.evaluate(() => document.querySelector('.terminal-view .xterm')?.dataset.probe || '');
+  expect(probe, '终端被重建了——切页签本不该断开').toBe('first');
 });
 
-test('F7-004 终端配色可切换', async ({ page }) => {
+test('F7-004 配色可切换，且切换恒不重建终端', async ({ page }) => {
   await login(page);
   await terminalToggle(page).click();
   const view = page.locator('.terminal-view');
   await expect(view.locator('.xterm')).toBeVisible({ timeout: 15_000 });
   await expect(view).toHaveAttribute('data-terminal-theme', 'dark');
 
+  await page.evaluate(() => { document.querySelector('.terminal-view .xterm').dataset.probe = 'first'; });
   await page.getByRole('button', { name: '切到浅色', exact: true }).click();
   await expect(view).toHaveAttribute('data-terminal-theme', 'light');
 
+  const probe = await page.evaluate(() => document.querySelector('.terminal-view .xterm')?.dataset.probe || '');
+  expect(probe, '切配色重建了终端——那会清空屏幕').toBe('first');
+});
+
+test('F7-005 Ctrl+F12 与按钮使用同一个分屏开关', async ({ page }) => {
+  await login(page);
+  // 连接 open 不等于频道就绪：toggleTerminal 在 workspace.channel 落定前是空操作，
+  // 按键会被静默吞掉。按钮的 disabled 正是同一个就绪条件，等它再按。
+  await expect(terminalToggle(page)).toBeEnabled();
+  await page.keyboard.press('Control+F12');
+  await expect(page.locator('.terminal-view')).toBeVisible();
+  await expect(terminalToggle(page)).toHaveAttribute('aria-pressed', 'true');
+
+  await page.keyboard.press('Control+F12');
+  await expect(page.locator('.terminal-view')).toBeHidden();
+  await expect(terminalToggle(page)).toHaveAttribute('aria-pressed', 'false');
 });
