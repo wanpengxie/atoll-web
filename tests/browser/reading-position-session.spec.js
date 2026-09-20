@@ -191,7 +191,7 @@ test('F7 reading position is document-session memory: cold and cached page start
       firstHitTested: afterSwitch.firstVisible,
       exactAnchor: restoredAnchor,
     },
-    contract: 'preserve the hit-tested painted first user anchor; exact row is diagnostic only',
+    contract: 'preserve the exact visible anchor row, not DOM first row or a neighboring sliver',
   };
   const anchorEvidencePath = testInfo.outputPath('reading-user-anchor-position.json');
   await writeFile(anchorEvidencePath, `${JSON.stringify(anchorEvidence, null, 2)}\n`, 'utf8');
@@ -199,12 +199,10 @@ test('F7 reading position is document-session memory: cold and cached page start
     path: anchorEvidencePath,
     contentType: 'application/json',
   });
-  // `firstHitTested` is the first painted row the user can see. The exact
-  // retained row may still exist in the overscan DOM after a one-row shift;
-  // accepting that would hide a user-visible 112 -> 111 jump. Keep the strict
-  // painted-anchor contract separate from the diagnostic exact-row evidence.
-  expect(afterSwitch.firstVisible?.id).toBe(beforeSwitch.firstVisible.id);
-  expect(Math.abs(afterSwitch.firstVisible.top - beforeSwitch.firstVisible.top)).toBeLessThanOrEqual(80);
+  // The exact row the user was reading must still be visibly painted. Do not
+  // redefine that anchor as DOM's first row or as an adjacent top-edge sliver.
+  expect(restoredAnchor?.id).toBe(beforeSwitch.firstVisible.id);
+  expect(Math.abs(restoredAnchor.top - beforeSwitch.firstVisible.top)).toBeLessThanOrEqual(80);
   expect(await cachedRows(page, 'c0')).toBeGreaterThan(0);
 
   // Re-inject an old-position payload to prove the read boundary, rather than
