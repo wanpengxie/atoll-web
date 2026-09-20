@@ -40,6 +40,83 @@ async function seedPartialReplicaCache(principal, boot) {
 }
 
 describe('ChannelFeedRuntime ownership', () => {
+  it('waits for the current history grant before cold loading and replays at the granted head', async () => {
+    const requests = [];
+    const wireRef = { current: {
+      historyBefore: vi.fn((channelId, beforeSeq, limit, detail) => {
+        const ref = `cold-history-${requests.length + 1}`;
+        requests.push({ channelId, beforeSeq, limit, ref, ...detail });
+        const receipt = Promise.resolve({ accepted: true, generation: detail.generation, channel_id: channelId });
+        receipt.ref = ref;
+        return receipt;
+      }),
+      cancelHistory: vi.fn(async () => undefined),
+    } };
+    const runtime = createChannelFeedRuntime({ ...runtimeOptions(), wireRef });
+    runtime.mount();
+
+    await expect(runtime.getSnapshot().loadHistory('c0', {
+      intent: 'initial-view', urgency: 'blocking',
+    })).resolves.toMatchObject({ kind: 'waiting', reason: 'history-grant-pending' });
+    expect(wireRef.current.historyBefore).not.toHaveBeenCalled();
+    expect(runtime.getSnapshot().historyFor('c0')).toMatchObject({
+      attached: false, headSeq: 0, historyDemand: { phase: 'pending' },
+    });
+
+    await runtime.getSnapshot().setHistoryGrants([
+      { channel_id: 'c0', head_seq: 844, has_rows: true },
+    ], { generation: 1, boot: 'cold-history-boot', focus: 'c0' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
+      channelId: 'c0', beforeSeq: 845, generation: 1,
+    });
+
+    // Replacing the attach generation retires the first physical request.
+    // Its late rows/page cannot repopulate the current Replica.
+    await runtime.getSnapshot().setHistoryGrants([
+      { channel_id: 'c0', head_seq: 844, has_rows: true },
+    ], { generation: 2, boot: 'cold-history-boot-next', focus: 'c0' });
+    expect(runtime.getSnapshot().enqueue({
+      ref: requests[0].ref, channel_id: 'c0', seq: 844, generation: 1,
+      envelope: { id: 'stale-844', kind: 'event', type: 'human.note' },
+    })).toBe(false);
+    expect(runtime.getSnapshot().pageEnd({
+      ref: requests[0].ref, channel_id: 'c0', generation: 1,
+      rows: 1, scan_low_seq: 1, scan_high_seq: 844,
+      next_before_seq: 1, has_older: true,
+    })).toBe(false);
+
+    const current = runtime.getSnapshot().loadHistory('c0', {
+      intent: 'initial-view', urgency: 'blocking',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toMatchObject({
+      channelId: 'c0', beforeSeq: 845, generation: 2,
+    });
+    expect(runtime.getSnapshot().enqueue({
+      ref: requests[1].ref, channel_id: 'c0', seq: 844, generation: 2,
+      envelope: {
+        id: 'active-844', kind: 'event', type: 'human.note', visibility: 'public',
+        sender: { id: 'agent:cold:worker', kind: 'agent' }, audience: [],
+        payload: { body: { text: 'active' } },
+      },
+    })).toBe(true);
+    expect(runtime.getSnapshot().pageEnd({
+      ref: requests[1].ref, channel_id: 'c0', generation: 2,
+      rows: 1, scan_low_seq: 1, scan_high_seq: 844,
+      next_before_seq: 1, has_older: true,
+    })).toBe(true);
+    await current;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(runtime.getSnapshot().stateFor('c0')?.rows.has(844)).toBe(true);
+    expect(runtime.getSnapshot().historyFor('c0')).toMatchObject({
+      attached: true, generation: 2, headSeq: 844,
+    });
+    runtime.destroy();
+  });
+
   it('uses the Composer correlation port for owned landed identities and no retired roster callback', () => {
     const options = runtimeOptions();
     const ownerToken = Object.freeze({ principalId: 'root' });

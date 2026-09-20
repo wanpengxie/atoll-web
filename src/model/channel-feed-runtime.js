@@ -262,6 +262,17 @@ function historyInitial(channelId) {
   };
 }
 
+// A history demand may be issued by Workspace as soon as the wire reports
+// `open`, while the grant/meta frame is still in flight. Keep only the
+// replay-safe request fields; AbortSignal and operation callbacks belong to
+// the superseded call and must never be replayed into a new generation.
+function replayableHistoryRequest(request = {}) {
+  const replay = { ...request };
+  delete replay.signal;
+  delete replay.onOperation;
+  return replay;
+}
+
 function controlTailRange(status) {
   const target = historyNumeric(status?.headSeq);
   if (!target) return null;
@@ -350,6 +361,7 @@ export function createChannelFeedRuntime(options = {}) {
   const admission = createHistoryPresentationAdmission({ onChange: publish });
   const histories = new Map();
   const grants = new Map();
+  const deferredHistoryRequests = new Map();
   const subscribers = new Set();
   const ownerCommands = new Map();
   // Background interests are owned by Feed, not by a consumer's component
@@ -851,8 +863,51 @@ export function createChannelFeedRuntime(options = {}) {
     }
   }
 
+  function removeDeferredHistoryRequest(channelId, expected = null) {
+    const current = deferredHistoryRequests.get(channelId);
+    if (!current || (expected && current !== expected)) return false;
+    current.signal?.removeEventListener?.('abort', current.onAbort);
+    deferredHistoryRequests.delete(channelId);
+    return true;
+  }
+
+  function deferHistoryRequest(channelId, request, demandRevision) {
+    removeDeferredHistoryRequest(channelId);
+    const record = {
+      request: replayableHistoryRequest(request),
+      signal: request.signal,
+      onAbort: null,
+    };
+    record.onAbort = () => {
+      if (!removeDeferredHistoryRequest(channelId, record)) return;
+      const status = histories.get(channelId);
+      if (status?.historyDemand?.revision !== demandRevision) return;
+      status.historyDemand = Object.freeze({ revision: demandRevision, phase: 'idle', error: '' });
+      Object.assign(status, { loading: false, foregroundLoading: false, backgroundLoading: false });
+      publish();
+    };
+    if (request.signal?.aborted) return false;
+    deferredHistoryRequests.set(channelId, record);
+    request.signal?.addEventListener?.('abort', record.onAbort, { once: true });
+    return true;
+  }
+
+  function takeDeferredHistoryRequest(channelId) {
+    const record = deferredHistoryRequests.get(channelId);
+    if (!record) return null;
+    removeDeferredHistoryRequest(channelId, record);
+    return record.request;
+  }
+
+  function clearDeferredHistoryRequests() {
+    for (const [channelId, record] of deferredHistoryRequests) {
+      removeDeferredHistoryRequest(channelId, record);
+    }
+  }
+
   async function loadHistory(channelId, request = {}) {
     if (incompatible) return { kind: 'cancelled', reason: 'version-incompatible' };
+    if (request.signal?.aborted) return { kind: 'cancelled', reason: 'aborted' };
     const status = historyState(channelId);
     const demandRevision = status.historyDemand.revision + 1;
     const clearOwnedDemand = () => {
@@ -868,6 +923,16 @@ export function createChannelFeedRuntime(options = {}) {
       error: '', errorCode: '',
       historyDemand: Object.freeze({ revision: demandRevision, phase: 'pending', error: '' }),
     });
+    const admitted = generation > 0
+      && grants.has(channelId)
+      && status.attached === true
+      && status.generation === generation;
+    if (!admitted) {
+      deferHistoryRequest(channelId, request, demandRevision);
+      publish();
+      return { kind: 'waiting', reason: 'history-grant-pending' };
+    }
+    removeDeferredHistoryRequest(channelId);
     const revealToken = request.intent === 'scroll-history' && request.historyRevealIntent
       ? admission.begin(channelId, request.historyRevealIntent)
       : null;
@@ -1097,6 +1162,7 @@ export function createChannelFeedRuntime(options = {}) {
     const selectedPrincipal = String(nextPrincipal || '');
     if (principal && principal !== selectedPrincipal) {
       for (const channelId of histories.keys()) admission.reset(channelId);
+      clearDeferredHistoryRequests();
       histories.clear(); grants.clear(); replica.reset(); cursors.clearReadAuthority();
       followingObservations.clear();
       activityEntries.clear(); timerEvents.splice(0); timerOverflow = null;
@@ -1158,6 +1224,7 @@ export function createChannelFeedRuntime(options = {}) {
       timerOverflow = null;
       activityRevision += 1;
     }
+    const replayAfterAttach = [];
     const nextChannelIDs = new Set(entries.map((entry) => String(entry?.channel_id || '')).filter(Boolean));
     for (const [channelId, status] of histories) {
       if (nextChannelIDs.has(channelId)) {
@@ -1249,6 +1316,14 @@ export function createChannelFeedRuntime(options = {}) {
       if (epoch !== attachEpoch || generation !== nextGeneration) return { stale: true, meta: selectedMeta };
       applyRows(cached.rows, { source: 'cache', persist: false, publishChange: false });
     }
+    // Do not consume a deferred demand until every attach-owned cache/meta
+    // await above has passed the current attach epoch fence. A replacement
+    // attach must inherit the obligation instead of losing it to a stale
+    // generation that happened to finish its cache work first.
+    for (const channelId of nextChannelIDs) {
+      const deferred = takeDeferredHistoryRequest(channelId);
+      if (deferred) replayAfterAttach.push([channelId, deferred]);
+    }
     let activityGenerationChanged = false;
     for (const entry of activityEntries.values()) {
       if (entry.state !== 'active' || entry.generation === generation) continue;
@@ -1267,6 +1342,9 @@ export function createChannelFeedRuntime(options = {}) {
     localReplicaReady = true;
     for (const [channelId, status] of histories) refreshControlCurrent(channelId, status);
     publish({ index: true });
+    for (const [channelId, request] of replayAfterAttach) {
+      void loadHistory(channelId, request).catch((error) => callback('onError', error));
+    }
     return { changed: true, meta: selectedMeta };
   }
 
@@ -1338,6 +1416,7 @@ export function createChannelFeedRuntime(options = {}) {
     for (const batch of networkBatches.values()) void cancelOwnedBatch(batch, 'replica cleared');
     networkBatches.clear();
     for (const channelId of histories.keys()) admission.reset(channelId);
+    clearDeferredHistoryRequests();
     histories.clear(); grants.clear();
     activityEntries.clear();
     followingObservations.clear();
@@ -1590,6 +1669,7 @@ export function createChannelFeedRuntime(options = {}) {
     releaseRailDiagnostic = null;
     for (const batch of networkBatches.values()) void cancelOwnedBatch(batch, 'feed runtime destroyed');
     networkBatches.clear(); executor.clear('feed runtime destroyed');
+    clearDeferredHistoryRequests();
     activityEntries.clear(); timerEvents.splice(0);
     replica.destroy(); cursors.destroy(); void cache.destroy();
     subscribers.clear(); ownerCommands.clear();

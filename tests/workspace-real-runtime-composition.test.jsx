@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => {
   const noOp = vi.fn(() => undefined);
   const transportSubmissions = [];
   const deferredReceipts = new Map();
+  let historyRequestNumber = 0;
   const submit = vi.fn((frame) => {
     transportSubmissions.push(frame);
     if (frame.msg_type === TYPES.agentOptions) {
@@ -58,6 +59,22 @@ const mocks = vi.hoisted(() => {
         submit,
         resolve: vi.fn(),
         cancel: vi.fn(),
+        historyBefore: vi.fn((channelId, beforeSeq, _limit, detail) => {
+          historyRequestNumber += 1;
+          const accepted = Promise.resolve({
+            accepted: true, generation: detail.generation, channel_id: channelId,
+          });
+          accepted.ref = `workspace-history-${historyRequestNumber}`;
+          queueMicrotask(() => {
+            mocks.feedRuntime?.getSnapshot().pageEnd({
+              ref: accepted.ref, channel_id: channelId, generation: detail.generation,
+              rows: 0, scan_low_seq: Math.max(0, beforeSeq - 1),
+              scan_high_seq: Math.max(0, beforeSeq - 1), next_before_seq: 0, has_older: false,
+            });
+          });
+          return accepted;
+        }),
+        cancelHistory: vi.fn(async () => undefined),
         channelMeta: vi.fn(async () => ({ channel_id: channelId, head_seq: 0, has_rows: false })),
       },
     },
@@ -277,6 +294,57 @@ afterEach(async () => {
 });
 
 describe('真实 Workspace owner composition', () => {
+  it('keeps cold Workspace history pending until the grant head arrives, then exposes active rows', async () => {
+    const requests = [];
+    const previousHistoryBefore = mocks.wire.wireRef.current.historyBefore;
+    const previousCancelHistory = mocks.wire.wireRef.current.cancelHistory;
+    mocks.wire.wireRef.current.historyBefore = vi.fn((channelId, beforeSeq, limit, detail) => {
+      const ref = `workspace-cold-history-${requests.length + 1}`;
+      requests.push({ channelId, beforeSeq, limit, ref, ...detail });
+      const receipt = Promise.resolve({ accepted: true, generation: detail.generation, channel_id: channelId });
+      receipt.ref = ref;
+      return receipt;
+    });
+    mocks.wire.wireRef.current.cancelHistory = vi.fn(async () => undefined);
+
+    try {
+      render(<WorkspaceApp />);
+      await waitFor(() => expect(mocks.feedRuntime).toBeTruthy());
+      expect(mocks.wire.wireRef.current.historyBefore).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await mocks.feedRuntime.getSnapshot().setHistoryGrants([
+          { channel_id: mocks.channelId, head_seq: 844, has_rows: true },
+        ], { generation: 1, boot: 'workspace-cold-history-boot', focus: mocks.channelId });
+      });
+      await waitFor(() => expect(requests).toHaveLength(1));
+      expect(requests[0]).toMatchObject({
+        channelId: mocks.channelId, beforeSeq: 845, generation: 1,
+      });
+
+      expect(mocks.feedRuntime.getSnapshot().enqueue({
+        ref: requests[0].ref, channel_id: mocks.channelId, seq: 844, generation: 1,
+        envelope: {
+          id: 'workspace-active-844', kind: 'event', type: 'human.note', visibility: 'public',
+          sender: { id: mocks.agentId, kind: 'agent' }, audience: [mocks.humanId],
+          payload: { body: { text: 'active' } },
+        },
+      })).toBe(true);
+      expect(mocks.feedRuntime.getSnapshot().pageEnd({
+        ref: requests[0].ref, channel_id: mocks.channelId, generation: 1,
+        rows: 1, scan_low_seq: 1, scan_high_seq: 844,
+        next_before_seq: 1, has_older: true,
+      })).toBe(true);
+      await waitFor(() => expect(mocks.layoutProps?.conversation?.state?.rows?.has(844)).toBe(true));
+      expect(mocks.layoutProps.conversation.history.status).toMatchObject({
+        attached: true, generation: 1, headSeq: 844,
+      });
+    } finally {
+      mocks.wire.wireRef.current.historyBefore = previousHistoryBefore;
+      mocks.wire.wireRef.current.cancelHistory = previousCancelHistory;
+    }
+  });
+
   it('routes the conversation refresh action through the current Feed grant', async () => {
     render(<WorkspaceApp />);
     await waitFor(() => expect(mocks.feedRuntime).toBeTruthy());
@@ -396,24 +464,32 @@ describe('真实 Workspace owner composition', () => {
     expect(screen.queryByRole('button', { name: '停止' })).toBeNull();
     staleTasks.unmount();
 
-    await waitFor(() => expect(mocks.transportSubmissions.some((frame) => frame.msg_type === TYPES.describe)).toBe(true));
-    const describeFrame = mocks.transportSubmissions.find((frame) => frame.msg_type === TYPES.describe);
     await mocks.feedRuntime.getSnapshot().setHistoryGrants([
       { channel_id: mocks.channelId, head_seq: 4, has_rows: true },
     ], { generation: 1, boot: 'world-real', focus: mocks.channelId });
-    enqueue(3, requestEnvelope(describeFrame.id, TYPES.describe));
-    enqueue(4, responseEnvelope(`${describeFrame.id}-done`, describeFrame.id, TYPES.describe, {
-      status: 'completed',
-      class: 'codex',
-      interfaces: ['actor', 'agent'],
-      capabilities: { steer: true },
-      words: {
-        [TYPES.agentOptions]: {},
-        [TYPES.agentContext]: {},
-      },
-    }));
+    const handledDescribe = new Set();
+    let nextProbeSeq = 3;
+    await waitFor(() => {
+      for (const frame of mocks.transportSubmissions.filter((item) => item.msg_type === TYPES.describe)) {
+        if (handledDescribe.has(frame.id)) continue;
+        const requestSeq = nextProbeSeq;
+        nextProbeSeq = requestSeq === 3 ? 100 : requestSeq + 2;
+        handledDescribe.add(frame.id);
+        enqueue(requestSeq, requestEnvelope(frame.id, TYPES.describe));
+        enqueue(requestSeq + 1, responseEnvelope(`${frame.id}-done`, frame.id, TYPES.describe, {
+          status: 'completed',
+          class: 'codex',
+          interfaces: ['actor', 'agent'],
+          capabilities: { steer: true },
+          words: {
+            [TYPES.agentOptions]: {},
+            [TYPES.agentContext]: {},
+          },
+        }));
+      }
+      expect(mocks.probeResult?.capabilitiesFor(mocks.channelId).get(mocks.agentId)?.describe).toBeTruthy();
+    });
 
-    await waitFor(() => expect(mocks.probeResult?.capabilitiesFor(mocks.channelId).get(mocks.agentId)?.describe).toBeTruthy());
     act(() => {
       mocks.probeResult.pickAgent(mocks.agentId);
       mocks.probeResult.targetChanged(mocks.agentId);
