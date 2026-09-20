@@ -151,7 +151,12 @@ describe('ChannelFeedRuntime ownership', () => {
 
     expect(snapshot.disconnectHistory(1)).toBe(true);
     await expect(pending).resolves.toMatchObject({ kind: 'cancelled', reason: 'stale-generation' });
-    await snapshot.setHistoryGrants([
+    await expect(snapshot.setHistoryGrants([
+      { channel_id: 'c0', head_seq: 845, has_rows: true },
+    ], { generation: 2, boot: 'disconnect-regrant-boot', focus: 'c0' }))
+      .resolves.toMatchObject({ stale: true });
+    const reconnected = runtime.getSnapshot();
+    await reconnected.setHistoryGrants([
       { channel_id: 'c0', head_seq: 845, has_rows: true },
     ], { generation: 2, boot: 'disconnect-regrant-boot', focus: 'c0' });
     await nextTick();
@@ -159,27 +164,27 @@ describe('ChannelFeedRuntime ownership', () => {
     // Disconnect retires the unfinished demand. A replacement grant must not
     // replay an intent that was issued under the revoked authority.
     expect(requests).toHaveLength(1);
-    expect(snapshot.historyFor('c0')).toMatchObject({
+    expect(reconnected.historyFor('c0')).toMatchObject({
       attached: true, generation: 2, loading: false,
       historyDemand: { phase: 'idle' },
     });
-    expect(snapshot.historyFor('c1')).toMatchObject({
+    expect(reconnected.historyFor('c1')).toMatchObject({
       attached: false, loading: false, historyDemand: { phase: 'idle' },
     });
 
-    const replacementDemand = snapshot.loadHistory('c0', {
+    const replacementDemand = reconnected.loadHistory('c0', {
       intent: 'initial-view', urgency: 'blocking',
     });
     await nextTick();
     expect(requests).toHaveLength(2);
     expect(requests[1]).toMatchObject({ beforeSeq: 846, generation: 2 });
-    expect(snapshot.pageEnd({
+    expect(reconnected.pageEnd({
       ref: requests[1].ref, channel_id: 'c0', generation: 2,
       rows: 0, scan_low_seq: 0, scan_high_seq: 845, next_before_seq: 0, has_older: false,
     })).toBe(true);
     await expect(replacementDemand).resolves.toMatchObject({ kind: 'exhausted', released: 0 });
     await nextTick();
-    expect(snapshot.historyFor('c0')).toMatchObject({
+    expect(reconnected.historyFor('c0')).toMatchObject({
       attached: true, generation: 2, loading: false,
       historyDemand: { phase: 'idle' },
     });
@@ -257,6 +262,17 @@ describe('ChannelFeedRuntime ownership', () => {
     expect(snapshot.historyFor('c1')).toMatchObject({
       attached: false, loading: false, historyDemand: { phase: 'idle' },
     });
+    await expect(snapshot.setHistoryGrants([
+      { channel_id: 'c0', head_seq: 12, has_rows: true },
+    ], { generation: 3, boot: 'world-c', focus: 'c0' }))
+      .resolves.toMatchObject({ stale: true });
+    const current = runtime.getSnapshot();
+    await current.setHistoryGrants([
+      { channel_id: 'c0', head_seq: 12, has_rows: true },
+    ], { generation: 3, boot: 'world-c', focus: 'c0' });
+    expect(current.historyFor('c0')).toMatchObject({
+      attached: true, generation: 3, authority: { serverBoot: 'world-c' },
+    });
     runtime.destroy();
   });
 
@@ -329,6 +345,163 @@ describe('ChannelFeedRuntime ownership', () => {
       historyDemand: { phase: 'idle' },
     });
     runtime.destroy();
+  });
+
+  it('rejects a live frame from an old snapshot after destroy', async () => {
+    const runtime = createChannelFeedRuntime(runtimeOptions());
+    runtime.mount();
+    const snapshot = runtime.getSnapshot();
+    await snapshot.setHistoryGrants([
+      { channel_id: 'c0', head_seq: 1, has_rows: true },
+    ], { generation: 1, boot: 'destroy-enqueue-boot', focus: 'c0' });
+    runtime.destroy();
+
+    expect(snapshot.enqueue({
+      channel_id: 'c0', seq: 1, generation: 1, source: 'live',
+      envelope: {
+        id: 'destroyed-frame', kind: 'event', type: 'message',
+        sender: { id: 'agent:old:1', kind: 'agent' }, audience: [],
+        payload: { text: 'must not land' },
+      },
+    })).toBe(false);
+    expect(snapshot.stateEntries()).toHaveLength(0);
+  });
+
+  it('cancels loadHistory invoked through an old snapshot after destroy', async () => {
+    const requests = [];
+    const wireRef = { current: {
+      historyBefore: vi.fn((channelId, beforeSeq, _limit, detail) => {
+        const ref = `destroyed-load-${requests.length + 1}`;
+        requests.push({ channelId, beforeSeq, ref, ...detail });
+        const receipt = Promise.resolve({ accepted: true, generation: detail.generation, channel_id: channelId });
+        receipt.ref = ref;
+        return receipt;
+      }),
+      cancelHistory: vi.fn(async () => undefined),
+    } };
+    const runtime = createChannelFeedRuntime({ ...runtimeOptions(), wireRef });
+    runtime.mount();
+    const snapshot = runtime.getSnapshot();
+    await snapshot.setHistoryGrants([
+      { channel_id: 'c0', head_seq: 1, has_rows: true },
+    ], { generation: 1, boot: 'destroy-load-boot', focus: 'c0' });
+    runtime.destroy();
+
+    const result = await snapshot.loadHistory('c0', { intent: 'initial-view' });
+    expect(result).toMatchObject({ kind: 'cancelled' });
+    expect(requests).toHaveLength(0);
+    expect(snapshot.stateEntries()).toHaveLength(0);
+  });
+
+  it('rejects setHistoryGrants invoked through an old snapshot after destroy', async () => {
+    const requests = [];
+    const wireRef = { current: {
+      historyBefore: vi.fn((channelId, beforeSeq, _limit, detail) => {
+        const ref = `destroyed-grant-${requests.length + 1}`;
+        requests.push({ channelId, beforeSeq, ref, ...detail });
+        const receipt = Promise.resolve({ accepted: true, generation: detail.generation, channel_id: channelId });
+        receipt.ref = ref;
+        return receipt;
+      }),
+      cancelHistory: vi.fn(async () => undefined),
+    } };
+    const runtime = createChannelFeedRuntime({ ...runtimeOptions(), wireRef });
+    runtime.mount();
+    const snapshot = runtime.getSnapshot();
+    await snapshot.setHistoryGrants([
+      { channel_id: 'c0', head_seq: 1, has_rows: true },
+    ], { generation: 1, boot: 'destroy-grant-boot', focus: 'c0' });
+    runtime.destroy();
+
+    await expect(snapshot.setHistoryGrants([
+      { channel_id: 'c0', head_seq: 844, has_rows: true },
+    ], { generation: 1, boot: 'destroyed-grant-boot', focus: 'c0' }))
+      .resolves.toMatchObject({ stale: true });
+    expect(requests).toHaveLength(0);
+    expect(snapshot.stateEntries()).toHaveLength(0);
+  });
+
+  it('starts a fresh runtime with an independent demand after destroy', async () => {
+    const requests = [];
+    const wireRef = { current: {
+      historyBefore: vi.fn((channelId, beforeSeq, _limit, detail) => {
+        const ref = `fresh-runtime-${requests.length + 1}`;
+        requests.push({ channelId, beforeSeq, ref, ...detail });
+        const receipt = Promise.resolve({ accepted: true, generation: detail.generation, channel_id: channelId });
+        receipt.ref = ref;
+        return receipt;
+      }),
+      cancelHistory: vi.fn(async () => undefined),
+    } };
+    const retired = createChannelFeedRuntime({ ...runtimeOptions(), wireRef });
+    retired.mount();
+    const retiredSnapshot = retired.getSnapshot();
+    retired.destroy();
+
+    const runtime = createChannelFeedRuntime({ ...runtimeOptions(), wireRef });
+    runtime.mount();
+    const snapshot = runtime.getSnapshot();
+    await snapshot.setHistoryGrants([
+      { channel_id: 'c0', head_seq: 2, has_rows: true },
+    ], { generation: 1, boot: 'fresh-runtime-boot', focus: 'c0' });
+    const pending = snapshot.loadHistory('c0', { intent: 'initial-view' });
+    await nextTick();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({ beforeSeq: 3, generation: 1 });
+    expect(snapshot.pageEnd({
+      ref: requests[0].ref, channel_id: 'c0', generation: 1,
+      rows: 0, scan_low_seq: 0, scan_high_seq: 2, next_before_seq: 0, has_older: false,
+    })).toBe(true);
+    await expect(pending).resolves.toMatchObject({ kind: 'exhausted', released: 0 });
+    expect(retiredSnapshot.stateEntries()).toHaveLength(0);
+    // The fresh grant may install an empty metadata record for c0; the
+    // independent-runtime fence is about canonical rows, not that metadata.
+    expect(snapshot.stateFor('c0')?.rows.size).toBe(0);
+    runtime.destroy();
+  });
+
+  it('fails closed for every public mutation after destroy', async () => {
+    const runtime = createChannelFeedRuntime(runtimeOptions());
+    runtime.mount();
+    const snapshot = runtime.getSnapshot();
+    const ownerToken = Object.freeze({ principalId: 'destroyed-owner' });
+    runtime.destroy();
+
+    expect(snapshot.bump()).toBe(false);
+    expect(snapshot.enqueue({ channel_id: 'c0', seq: 1, envelope: historyRow(1).envelope })).toBe(false);
+    expect(snapshot.pageEnd({ ref: 'late-page' })).toBe(false);
+    expect(snapshot.liveCheckpoint({ generation: 1, channel_id: 'c0', scan_low_seq: 1, scanned_seq: 1 })).toBe(false);
+    await expect(snapshot.loadHistory('c0')).resolves.toMatchObject({
+      kind: 'cancelled', reason: 'runtime-destroyed',
+    });
+    await expect(snapshot.prepareLocalReplica('destroyed-owner')).resolves.toEqual({ resume: {} });
+    await expect(snapshot.refreshChannel('c0')).resolves.toBe(false);
+    expect(snapshot.disconnectHistory()).toBe(false);
+    expect(snapshot.stopIncompatible()).toBe(false);
+    expect(snapshot.clear()).toBe(false);
+    await expect(snapshot.resetPersistent()).resolves.toBe(false);
+    expect(snapshot.focusHistory('c0')).toBe(false);
+    expect(snapshot.reconcileIdentity('c0')).toBe(false);
+    expect(snapshot.markRead('c0')).toBe(false);
+    expect(snapshot.acknowledgeNotifications({})).toBe(false);
+    expect(snapshot.acknowledgeAgentActivity('c0', 'agent:destroyed:1')).toBe(false);
+    expect(snapshot.acknowledgeTimerFirings()).toBe(false);
+    expect(snapshot.agentActivityPort.attach({ generation: 1 })).toBe(false);
+    expect(snapshot.agentActivityPort.disconnect()).toBe(false);
+    expect(snapshot.notificationAuthorityPort.reset()).toBe(false);
+    expect(snapshot.requestBackgroundInterest('c0', { intent: 'search-context' })).toMatchObject({
+      accepted: false,
+    });
+    expect(runtime.getOwnerSnapshot(ownerToken).enqueue({
+      channel_id: 'c0', seq: 2, envelope: historyRow(2).envelope,
+    })).toBe(false);
+    expect(runtime.getOwnerSnapshot(ownerToken).liveCheckpoint({
+      generation: 1, channel_id: 'c0', scan_low_seq: 1, scanned_seq: 1,
+    })).toBe(false);
+    expect(snapshot.stateEntries()).toHaveLength(0);
+    expect(snapshot.historyFor('c0')).toMatchObject({
+      attached: false, generation: 0, loading: false, historyDemand: { phase: 'idle' },
+    });
   });
 
   it('uses the Composer correlation port for owned landed identities and no retired roster callback', () => {
