@@ -404,7 +404,7 @@ export function createChannelFeedRuntime(options = {}) {
   let releaseRailDiagnostic = null;
 
   const cacheError = (error) => {
-    if (error?.code !== 'cache_owner_changed') callback('onError', error);
+    if (!destroyed && error?.code !== 'cache_owner_changed') callback('onError', error);
   };
 
   function observeAgentActivity(row, source) {
@@ -534,6 +534,7 @@ export function createChannelFeedRuntime(options = {}) {
       .then(() => adapters.cancel(batch, reason))
       .catch((error) => {
         if (isDetachedCancellation(error)) return { kind: 'cancelled', detached: true };
+        if (destroyed) return { kind: 'cancelled', destroyed: true };
         // The local operation is already cancelled, but an attached-wire
         // failure must remain observable instead of being silently swallowed
         // by a void cancellation call.
@@ -545,6 +546,7 @@ export function createChannelFeedRuntime(options = {}) {
   // Access failures belong to the attach generation that sent the request. A
   // late result must never revoke or degrade a replacement generation.
   function projectAccessFailure(channelId, error, requestGeneration) {
+    if (destroyed) return false;
     const code = String(error?.code || error || '');
     if (!channelId || !requestGeneration || requestGeneration !== generation
       || (code !== 'forbidden' && !ACCESS_UNAVAILABLE_CODES.has(code))) return false;
@@ -573,11 +575,14 @@ export function createChannelFeedRuntime(options = {}) {
   }
 
   function historyState(channelId) {
-    if (!histories.has(channelId)) histories.set(channelId, historyInitial(channelId));
-    return histories.get(channelId);
+    if (histories.has(channelId)) return histories.get(channelId);
+    const status = historyInitial(channelId);
+    if (!destroyed) histories.set(channelId, status);
+    return status;
   }
 
   function refreshControlCurrent(channelId, status = historyState(channelId)) {
+    if (destroyed) return false;
     const target = historyNumeric(status.headSeq);
     const attached = status.attached === true
       && status.generation > 0
@@ -606,7 +611,7 @@ export function createChannelFeedRuntime(options = {}) {
   function applyRows(rows, {
     source = 'live', persist = true, publishChange = true, producerToken = ownerToken,
   } = {}) {
-    if (incompatible || (source === 'live' && producerToken !== ownerToken)) return [];
+    if (destroyed || incompatible || (source === 'live' && producerToken !== ownerToken)) return [];
     const accepted = [];
     const landedMessageIDs = new Set();
     const closedRequestIDs = new Set();
@@ -907,12 +912,13 @@ export function createChannelFeedRuntime(options = {}) {
   }
 
   async function loadHistory(channelId, request = {}) {
+    if (destroyed) return { kind: 'cancelled', reason: 'runtime-destroyed' };
     if (incompatible) return { kind: 'cancelled', reason: 'version-incompatible' };
     if (request.signal?.aborted) return { kind: 'cancelled', reason: 'aborted' };
     const status = historyState(channelId);
     const demandRevision = status.historyDemand.revision + 1;
     const clearOwnedDemand = () => {
-      if (status.historyDemand.revision !== demandRevision) return false;
+      if (destroyed || status.historyDemand.revision !== demandRevision) return false;
       status.historyDemand = Object.freeze({ revision: demandRevision, phase: 'idle', error: '' });
       Object.assign(status, { loading: false, foregroundLoading: false, backgroundLoading: false });
       return true;
@@ -943,7 +949,7 @@ export function createChannelFeedRuntime(options = {}) {
     let outcome = await executeBatch(batch, request.signal);
     let released = 0;
     let cacheContinuation = 0;
-    const staleBatch = () => batch.generation !== generation
+    const staleBatch = () => destroyed || batch.generation !== generation
       || batch.attachEpoch !== attachEpoch
       || status.generation !== generation
       || !status.attached;
@@ -1053,7 +1059,7 @@ export function createChannelFeedRuntime(options = {}) {
   function requestBackgroundInterest(channelId, request = {}) {
     const id = String(channelId || '');
     const intent = String(request.intent || '');
-    if (incompatible || !id || !BACKGROUND_INTEREST_TYPES.has(intent)) {
+    if (destroyed || incompatible || !id || !BACKGROUND_INTEREST_TYPES.has(intent)) {
       return Object.freeze({ accepted: false, channelId: id, intent, release: () => false });
     }
     const key = `${intent}\u0000${id}`;
@@ -1075,6 +1081,7 @@ export function createChannelFeedRuntime(options = {}) {
         urgency: HISTORY_URGENCY.anticipatory,
         signal: abortController.signal,
       })).catch(() => ({ kind: 'failed' })).finally(() => {
+        if (destroyed) return;
         record.settled = true;
         if (backgroundInterests.get(key) === record) backgroundInterests.delete(key);
       });
@@ -1086,7 +1093,7 @@ export function createChannelFeedRuntime(options = {}) {
       channelId: id,
       intent,
       release() {
-        if (released) return false;
+        if (destroyed || released) return false;
         released = true;
         record.leases = Math.max(0, record.leases - 1);
         if (record.leases === 0 && !record.settled) {
@@ -1100,7 +1107,7 @@ export function createChannelFeedRuntime(options = {}) {
   }
 
   function enqueue(payloadOrChannel, seq, envelope, detail, producerToken = ownerToken) {
-    if (incompatible) return false;
+    if (destroyed || incompatible) return false;
     const payload = typeof payloadOrChannel === 'object'
       ? payloadOrChannel
       : detail || { channel_id: payloadOrChannel, seq, envelope, source: 'live' };
@@ -1124,6 +1131,7 @@ export function createChannelFeedRuntime(options = {}) {
   }
 
   function pageEnd(payload = {}) {
+    if (destroyed) return false;
     const batch = networkBatches.get(payload.ref);
     if (!batch || batch.attachEpoch !== attachEpoch) return false;
     if (payload.error_code && projectAccessFailure(batch.channelId, {
@@ -1134,9 +1142,11 @@ export function createChannelFeedRuntime(options = {}) {
   }
 
   async function refreshChannel(channelId) {
+    if (destroyed) return false;
     const requestGeneration = generation;
     const wire = wireRef.current;
     const isAdmitted = () => {
+      if (destroyed) return false;
       const status = histories.get(channelId);
       return Boolean(
         channelId
@@ -1159,6 +1169,7 @@ export function createChannelFeedRuntime(options = {}) {
   }
 
   async function prepareLocalReplica(nextPrincipal, { focus = activeChannelRef.current || '' } = {}) {
+    if (destroyed) return { resume: {} };
     const epoch = ++principalEpoch;
     const selectedPrincipal = String(nextPrincipal || '');
     if (principal && principal !== selectedPrincipal) {
@@ -1181,14 +1192,14 @@ export function createChannelFeedRuntime(options = {}) {
     }
     try {
       const selected = await cache.ensureOwner(principal, { world });
-      if (epoch !== principalEpoch) return { resume: {} };
+      if (destroyed || epoch !== principalEpoch) return { resume: {} };
       for (const [channelId, value] of selected.meta) replica.installMeta(channelId, value);
       if (world) cursors.selectReadAuthority({ principalId: principal, serverBoot: world });
       cursors.reconcileReads(replicaResumeSnapshot(selected.meta));
       if (focus && selected.meta.has(focus)) {
         const before = historyNumeric(selected.meta.get(focus)?.headSeq || selected.meta.get(focus)?.newestSeq) + 1;
         const cached = await cache.readBefore(focus, before, HISTORY_PAGE_SIZE, HISTORY_BATCH_BYTES);
-        if (epoch !== principalEpoch) return { resume: {} };
+        if (destroyed || epoch !== principalEpoch) return { resume: {} };
         applyRows(cached.rows, { source: 'cache', persist: false, publishChange: false });
       }
       localReplicaReady = true;
@@ -1196,7 +1207,7 @@ export function createChannelFeedRuntime(options = {}) {
       publish({ index: true });
       return { resume: replicaResumeSnapshot(selected.meta) };
     } catch (error) {
-      if (epoch !== principalEpoch || error?.code === 'cache_owner_changed') return { resume: {} };
+      if (destroyed || epoch !== principalEpoch || error?.code === 'cache_owner_changed') return { resume: {} };
       localReplicaError = error?.message || '本地缓存初始化失败';
       localReplicaErrorCode = String(error?.code || 'cache_selection_failed');
       callback('onError', error);
@@ -1219,6 +1230,7 @@ export function createChannelFeedRuntime(options = {}) {
     const worldChanged = Boolean(world) && nextWorld !== world;
     world = nextWorld;
     if (worldChanged) {
+      lifecycleEpoch += 1;
       for (const channelId of histories.keys()) admission.reset(channelId);
       clearDeferredHistoryRequests();
       histories.clear(); grants.clear(); replica.reset(); cursors.clearReadAuthority();
@@ -1256,10 +1268,10 @@ export function createChannelFeedRuntime(options = {}) {
       try {
         selected = await cache.ensureOwner(principal, { world });
       } catch (error) {
-        if (epoch !== attachEpoch || error?.code === 'cache_owner_changed') return { stale: true, meta: new Map() };
+        if (destroyed || epoch !== attachEpoch || error?.code === 'cache_owner_changed') return { stale: true, meta: new Map() };
         throw error;
       }
-      if (epoch !== attachEpoch || generation !== nextGeneration) return { stale: true, meta: new Map() };
+      if (destroyed || epoch !== attachEpoch || generation !== nextGeneration) return { stale: true, meta: new Map() };
       selectedMeta = selected.meta;
     }
     if (principal && world) cursors.selectReadAuthority({ principalId: principal, serverBoot: world });
@@ -1301,7 +1313,7 @@ export function createChannelFeedRuntime(options = {}) {
     if (focus && selectedMeta.has(focus) && replica.visibleNewest(focus) === 0) {
       const head = historyNumeric(selectedMeta.get(focus)?.headSeq || selectedMeta.get(focus)?.newestSeq);
       const cached = await cache.readBefore(focus, head + 1, HISTORY_PAGE_SIZE, HISTORY_BATCH_BYTES);
-      if (epoch !== attachEpoch || generation !== nextGeneration) return { stale: true, meta: selectedMeta };
+      if (destroyed || epoch !== attachEpoch || generation !== nextGeneration) return { stale: true, meta: selectedMeta };
       applyRows(cached.rows, { source: 'cache', persist: false, publishChange: false });
     }
     // A persisted notification obligation is a cache admission demand even
@@ -1318,7 +1330,7 @@ export function createChannelFeedRuntime(options = {}) {
       );
       if (!targetHead || cursors.notificationHighWater(channelId) >= targetHead) continue;
       const cached = await cache.readBefore(channelId, targetHead + 1, HISTORY_PAGE_SIZE, HISTORY_BATCH_BYTES);
-      if (epoch !== attachEpoch || generation !== nextGeneration) return { stale: true, meta: selectedMeta };
+      if (destroyed || epoch !== attachEpoch || generation !== nextGeneration) return { stale: true, meta: selectedMeta };
       applyRows(cached.rows, { source: 'cache', persist: false, publishChange: false });
     }
     // Do not consume a deferred demand until every attach-owned cache/meta
@@ -1354,7 +1366,7 @@ export function createChannelFeedRuntime(options = {}) {
   }
 
   function liveCheckpoint(payload = {}, producerToken = ownerToken) {
-    if (producerToken !== ownerToken || historyNumeric(payload.generation) !== generation) return false;
+    if (destroyed || producerToken !== ownerToken || historyNumeric(payload.generation) !== generation) return false;
     const low = historyNumeric(payload.scan_low_seq);
     const high = historyNumeric(payload.scanned_seq);
     if (!payload.channel_id || !low || high < low) return false;
@@ -1414,6 +1426,7 @@ export function createChannelFeedRuntime(options = {}) {
   }
 
   function clear() {
+    if (destroyed) return false;
     lifecycleEpoch += 1;
     principalEpoch += 1;
     attachEpoch += 1;
@@ -1432,22 +1445,28 @@ export function createChannelFeedRuntime(options = {}) {
     activityConnected = false;
     activityRevision += 1;
     replica.reset(); publish({ index: true });
+    return true;
   }
 
   function resetNotificationAuthority() {
+    if (destroyed) return false;
     const changed = cursors.resetAuthority();
     followingObservations.clear();
     if (changed) publish();
     return changed;
   }
   async function resetPersistent() {
+    if (destroyed) return false;
     await cache.clear();
-    clear();
+    if (destroyed) return false;
+    if (!clear()) return false;
     resetNotificationAuthority();
     return true;
   }
   function disconnectHistory(requestGeneration = generation) {
+    if (destroyed) return false;
     if (requestGeneration && requestGeneration !== generation) return false;
+    lifecycleEpoch += 1;
     cancelBackgroundInterests('history disconnected');
     clearDeferredHistoryRequests();
     for (const status of histories.values()) {
@@ -1480,10 +1499,12 @@ export function createChannelFeedRuntime(options = {}) {
     networkBatches.clear(); publish(); return true;
   }
   function stopIncompatible(requestGeneration = generation) {
+    if (destroyed) return false;
     if (requestGeneration && generation && requestGeneration !== generation) return false;
     incompatible = true; disconnectHistory(generation); return true;
   }
   function markRead(channelId, acknowledgement = {}) {
+    if (destroyed) return false;
     const status = histories.get(channelId);
     const physicalSeq = historyNumeric(acknowledgement.physicalSeq);
     const authority = acknowledgement.authority;
@@ -1501,6 +1522,7 @@ export function createChannelFeedRuntime(options = {}) {
   // boundary selected by its producing Presentation/DOM observation; this
   // reducer must never replace it with the mutable current head.
   function acknowledgeNotifications(channelOrEvent, maybeConfirmation = {}) {
+    if (destroyed) return false;
     const event = channelOrEvent && typeof channelOrEvent === 'object'
       ? channelOrEvent
       : maybeConfirmation;
@@ -1596,6 +1618,7 @@ export function createChannelFeedRuntime(options = {}) {
     return acknowledged;
   }
   function acknowledgeAgentActivity(channelId, agentId) {
+    if (destroyed) return false;
     let changed = false;
     for (const [key, entry] of activityEntries) {
       if (entry.state !== 'settled' || entry.channelId !== channelId || entry.agentId !== agentId) continue;
@@ -1606,6 +1629,7 @@ export function createChannelFeedRuntime(options = {}) {
     return changed;
   }
   function acknowledgeTimerFirings(throughRevision = timerRevision) {
+    if (destroyed) return false;
     const next = Math.min(timerRevision, Math.max(timerAcknowledgedRevision, historyNumeric(throughRevision)));
     if (next === timerAcknowledgedRevision) return false;
     timerAcknowledgedRevision = next;
@@ -1615,6 +1639,7 @@ export function createChannelFeedRuntime(options = {}) {
     return true;
   }
   function attachAgentActivity(detail = {}) {
+    if (destroyed) return false;
     const nextGeneration = historyNumeric(detail.generation);
     if (!nextGeneration || nextGeneration !== generation || incompatible) return false;
     if (activityConnected) return true;
@@ -1624,6 +1649,7 @@ export function createChannelFeedRuntime(options = {}) {
     return true;
   }
   function disconnectAgentActivity() {
+    if (destroyed) return false;
     if (!activityConnected) return false;
     activityConnected = false;
     activityRevision += 1;
@@ -1635,7 +1661,9 @@ export function createChannelFeedRuntime(options = {}) {
     disconnect: disconnectAgentActivity,
   });
   const notificationAuthorityPort = Object.freeze({ reset: resetNotificationAuthority });
-  const resumeLocalReplica = () => localReplicaReady ? replicaResumeSnapshot(cache.metaSnapshot()) : {};
+  const resumeLocalReplica = () => destroyed || !localReplicaReady
+    ? {}
+    : replicaResumeSnapshot(cache.metaSnapshot());
 
   function buildSnapshot() {
     const agentActivity = agentActivitySnapshot();
@@ -1644,7 +1672,7 @@ export function createChannelFeedRuntime(options = {}) {
     return Object.freeze({
       version, indexVersion, localReplicaReady, localReplicaError, localReplicaErrorCode,
       agentActivity, timerFirings, agentActivityPort, notificationAuthorityPort,
-      bump: () => publish({ index: true }),
+      bump: () => destroyed ? false : publish({ index: true }),
       enqueue, pageEnd, liveCheckpoint,
       setHistoryGrants: (entries, detail) => setHistoryGrants(entries, detail, snapshotEpoch),
       prepareLocalReplica, resumeLocalReplica,
@@ -1653,9 +1681,18 @@ export function createChannelFeedRuntime(options = {}) {
       stateEntries: () => Object.freeze([...replica.states().entries()]),
       revisionFor: (channelId) => replica.revision(channelId),
       historyFor, unreadFor, generationFor: () => generation,
-      focusHistory: (channelId) => { activeChannelRef.current = channelId; publish(); },
+      focusHistory: (channelId) => {
+        if (destroyed) return false;
+        activeChannelRef.current = channelId;
+        publish();
+        return true;
+      },
       refreshChannel,
-      reconcileIdentity: (channelId) => { if (!replica.state(channelId)) return false; publish(); return true; },
+      reconcileIdentity: (channelId) => {
+        if (destroyed || !replica.state(channelId)) return false;
+        publish();
+        return true;
+      },
       loadHistory, requestBackgroundInterest, markRead, acknowledgeNotifications,
       agentActivityFor: (channelId) => agentActivity.byChannel[channelId]
         || Object.freeze({ active: Object.freeze([]), agents: Object.freeze({}) }),
@@ -1675,6 +1712,9 @@ export function createChannelFeedRuntime(options = {}) {
     if (destroyed) return;
     destroyed = true;
     lifecycleEpoch += 1;
+    principalEpoch += 1;
+    attachEpoch += 1;
+    generation = 0;
     cancelBackgroundInterests('feed runtime destroyed');
     releaseRailDiagnostic?.();
     releaseRailDiagnostic = null;
@@ -1692,6 +1732,13 @@ export function createChannelFeedRuntime(options = {}) {
     subscribe(subscriber) { if (destroyed) return () => {}; subscribers.add(subscriber); return () => subscribers.delete(subscriber); },
     getSnapshot: () => snapshot,
     getOwnerSnapshot(producerToken, base = snapshot) {
+      if (destroyed) {
+        return Object.freeze({
+          ...base,
+          enqueue: () => false,
+          liveCheckpoint: () => false,
+        });
+      }
       let commands = ownerCommands.get(producerToken);
       if (!commands) {
         commands = Object.freeze({
@@ -1703,6 +1750,7 @@ export function createChannelFeedRuntime(options = {}) {
       return Object.freeze({ ...base, ...commands });
     },
     bind(nextBindings) {
+      if (destroyed) return () => {};
       bindings = nextBindings;
       const nextOwner = nextBindings.ownerToken ?? null;
       ownerToken = nextOwner;
