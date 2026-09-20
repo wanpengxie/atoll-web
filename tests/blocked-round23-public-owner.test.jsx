@@ -196,12 +196,18 @@ describe('A-D round 23 ordinary public-owner product-gap evidence', () => {
   });
 
   it('[AD-097] lets a fast reselect of the committed channel cancel the pending target', () => {
-    // 用户能力：A→B 未 commit 时可立即反选 A；不变量：最新选择是唯一 pending owner；公开 owner：WorkspaceLayout。
+    // 用户能力：A→B 未 commit 时可立即反选 A；不变量：最新选择是唯一 pending owner，
+    // 且不能重放已提交 A 的 canonical navigation side effect；公开 owner：WorkspaceLayout。
     const nav = navigation();
     renderWorkspace(nav);
     fireEvent.click(screen.getByText('c1'));
     fireEvent.click(within(screen.getByRole('navigation', { name: '频道' })).getByRole('button', { name: /c0/ }));
-    expect(nav.select.mock.calls.map(([id]) => id)).toEqual(['c1', 'c0']);
+    // c0 is already committed. The shell presentation owner cancels the stale
+    // pending gate locally; the canonical navigation owner must not receive a
+    // second c0 command. The enabled terminal entry is the public cancellation
+    // observable, not an implementation detail.
+    expect(nav.select.mock.calls.map(([id]) => id)).toEqual(['c1']);
+    expect(document.getElementById('workspace-terminal-toggle')?.disabled).toBe(false);
   });
 
   it('[AD-099] returns from an invalid target to the original channel and ends old pending handoff', () => {
