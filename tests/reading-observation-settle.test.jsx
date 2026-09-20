@@ -199,7 +199,7 @@ describe('reading observation settlement authority (VendorListExecutor)', () => 
       source: 'user',
       settled: true,
       atTail: true,
-      bookmark: { messageID: 'tail', blockID: 'block:tail' },
+      bookmark: { messageID: 'tail' },
     });
     expect(owner.getSession().mode).toBe(READING_MODE.following);
   });
@@ -226,7 +226,9 @@ describe('reading observation settlement authority (VendorListExecutor)', () => 
     });
 
     expect(owner.observations).toHaveLength(1);
-    expect(owner.observations[0]).toMatchObject({ source: 'user', settled: true, atTail: true });
+    // Selection/autoscroll has no Reading navigation transaction. Its native
+    // scrollend is therefore a settled paint fence, not user authority.
+    expect(owner.observations[0]).toMatchObject({ source: 'settled', settled: true, atTail: true });
     expect(owner.getSession().mode).toBe(READING_MODE.browsing);
   });
 
