@@ -19,8 +19,10 @@ Status at the latest runs:
   The Waiting replacement is 13 green / 1 red after the Composer handoff guard
   and clamped-wheel fix; the remaining red is the browsing send takeover. The
   visual group is intentionally red against the preserved screenshot/geometry
-  contract: the latest production run recorded all 14 red, including the
-  missing global activity entry. UI-VIS-01 (and the shared geometry assertion
+  contract: the latest targeted governance run recorded UI-VIS-02's three tabs
+  and UI-VIS-04 red, while UI-VIS-03 is now **5/5 PASS** after `6b51c7d` routes
+  the rail entry to the canonical overview tab. The remaining visual history
+  still includes the missing global activity entry. UI-VIS-01 (and the shared geometry assertion
   in UI-VIS-13) is separately adjudicated below: `fae8b70` itself measures
   30px, so its `32px` result is an old-baseline/oracle conflict, not a current
   product regression.
@@ -75,9 +77,13 @@ setup → action → result; current evidence and disposition.
    not an invented task/dialog. Owner: `WorkspaceLayout` →
    `ChannelAdministrationPanel`/`ChannelOverview`. Original:
    `channel-governance` seed 907 → `新建频道` → old dialog/template screenshot.
-   Current: migrated to the real `频道治理` `创建子频道` form and public
-   `频道模板` control; the preserved screenshot remains red. **RED: visual
-   contract packet; old dialog selector was not retained.**
+   Current: after `6b51c7d` the public rail entry opens the real `频道治理`
+   `概览` tab, where the `创建子频道` form and public `频道模板` control are
+   visible. The preserved `channel-create-linux.png` screenshot passes in a
+   real Chromium repeat5 run. The form starts with its create button disabled,
+   then enables it after a valid name; no old dialog selector was retained.
+   **PASS 5/5 for the current route and layout; template-data wiring remains an
+   explicit capability gap recorded in round32 below.**
 
 6. **UI-VIS-04 空间管理视觉基线** — Capability: open space administration and
    inspect template/device tabs. Invariant: context panel owns focus and its
@@ -1947,3 +1953,93 @@ new-activity notice、`mode=browsing` 和无 writer；不要求 overscan 外尾 
 用户点击 jump 后仍以 exact request row 的 `painted=true` 与
 `intersectsViewport=true` 验收。d965 当前 HEAD 的 repeat5 证据仍为 **5 passed**，
 见上一轮 `test-results-tz-r30-passive-jump-repeat5`；本轮未改 spec/product。
+
+## 第三十二轮：Governance owner 后的真实控件、能力与布局验收
+
+本轮基于当前 HEAD `c1cc476`（含 `6b51c7d fix(governance): route channel
+creation to overview`）只读验收；没有修改产品、spec、截图或阈值。此前工作树已有的
+`tests/browser/reading-position-session.spec.js` 与
+`tests/i-m-exact-path-contracts.test.jsx` 脏改属于其他 owner，本轮未触碰。
+
+### UI-VIS-03：真实 Chromium repeat5 已闭合
+
+```text
+ATOLL_TEST_WEB_PORT=15630 ATOLL_TEST_MOCK_PORT=19930 \
+  npx playwright test tests/browser/ui-visual.spec.js \
+  --grep 'UI-VIS-03 新建频道独立任务视觉基线' \
+  --workers=1 --repeat-each=5 --reporter=line \
+  --output=test-results-tz-r32-uivis03-repeat5
+5 passed (25.2s)
+```
+
+五次均完成真实用户路径：登录 → 点击 rail 的 `新建频道` → 进入 `频道治理`，且
+`概览` tab 被选中；`创建子频道` heading、`频道模板` combobox 和保存/创建布局均
+真实存在，`channel-create-linux.png` 保留基线不变并通过。独立 fresh-browser DOM
+探针进一步记录 panel 为 **360×715**（1280×720 viewport 下 x=920,y=5）；名称为空
+时 `创建子频道` disabled，填入合法名称后 enabled。故 `6b51c7d` 的入口 owner
+已解决 round31 的首断点，不再把 UI-VIS-03 判为入口产品红。
+
+当前仍有一个能力边界，不能被这个视觉 PASS 掩盖：`WorkspaceApp` 的
+`submitGovernance` 会把资料保存映射到 `system.channel.set`，把子频道创建映射到
+`system.channel.create`，这些后端 command owner 已存在；但当前 `channel` port
+没有提供 `space.channelTemplates`，fresh probe 的模板菜单只有“请选择”，且
+`create_child` payload 只发送空 `recipe` + `purpose`，没有使用 `templateId`。旧
+`fae8b70` 的 `ChannelTemplatesPanel`/`createChannelCommand` 支持先读模板 body 再
+带 recipe 创建；这是真实 Governance capability gap（模板选择不能声称已生效），
+不是截图差异，也没有在本轮改产品。
+
+### UI-VIS-02 三 tab：公开控件到达，但保留的 fae 视觉 oracle 仍红
+
+```text
+ATOLL_TEST_WEB_PORT=15631 ATOLL_TEST_MOCK_PORT=19931 \
+  npx playwright test tests/browser/ui-visual.spec.js \
+  --grep 'UI-VIS-02|UI-VIS-04' --workers=1 --reporter=line \
+  --output=test-results-tz-r32-governance-visual
+4 failed (UI-VIS-02 三 tab + UI-VIS-04；均在 screenshot assertion)
+```
+
+真实 Chromium 中四条均先到达正确公开 panel；没有 selector skip、登录阻塞或
+unsupported 误判。当前三 tab 的控件与能力证据如下：
+
+| case | 当前真实控件/能力 | 布局与像素证据 | 归类 |
+|---|---|---|---|
+| UI-VIS-02 概览 | 可见 `频道 ID`（read-only）、可编辑 `说明`、`保存频道资料`、`名称`/`用途`/`频道模板`/`创建子频道`、子频道 `刷新`；root 成员可写时保存按钮 enabled。资料提交后真实 surface 显示“已进入提交队列…最终以账本与目录投影为准”，不是本地文本成功。 | panel 360×715；当前为 `频道资料`→`创建子频道`→`子频道` 三张卡。与 `channel-overview.png` 的 23,436 px / 0.10 差异来自旧 `频道详情` read-only 卡、旧 `成员/信息/危险操作` tabs 与当前 canonical `概览/成员/危险操作` 及新增表单的结构/语义变化。 | **RED：保留 fae 视觉合同的 successor mismatch**；资料保存和无模板的 create command 是真实后端支持/缺口，不能靠调截图阈值解决。 |
+| UI-VIS-02 成员 | `选择参与者` combobox 打开真实 listbox，fresh probe 看到 2 个 principal（Alice/Bob）和 4 个可管理 declaration（Steward/Claude/Analyst Agent/Search Tool）；当前 roster 三行均有 `详情`，非 self 的 Steward/Claude `移除` enabled，root 的 `移除` disabled。`system.member.admit/create/delete` 是当前公开 command 路由。 | 当前先 `添加参与者` 后 `频道成员`，每个 row 纵向分隔；与旧先“当前成员与 Actor”、状态/`查看`/`重启`/`移除` 行的 27,183 px / 0.11 差异一致。 | **RED：视觉/能力集合迁移包**。旧 `重启` 不是当前 `详情` 的别名；协议中的 `system.member.restart` 仍存在，但 canonical panel 未公开该控件，若需恢复应由 Governance owner 明确补能力。 |
+| UI-VIS-02 危险操作 | c0 root 真实显示 `退役频道` 与“空间根频道受保护，不能退役”，没有可点击退役按钮；非 root 分支仍有确认输入和 `system.channel.delete` 路由。 | 卡片位置/高度基本保持；仅 1,024 px / 0.01，主要是 `CHANNEL CONTEXT/频道详情`→`CHANNEL CONTROL/频道治理`、tab 文案和保护提示文字像素。 | **RED：小范围视觉 oracle mismatch**；root 保护能力实际保持，不应为追旧截图暴露危险按钮。 |
+
+旧 fae 能力与当前公开 successor 的边界因此明确：资料 set、子频道 create
+(不含模板 body)、principal/declaration admit/create、member remove、非 root retire
+有现有 command owner；旧只读详情卡、成员状态/重启行不是当前 UI 的隐含能力，不能由
+截图差异推断其仍可用。
+
+### UI-VIS-04：后端协议存在，但当前 wire/session 应明确 unsupported
+
+当前真实 panel 仍为 **360×715**，四个 tab 均可点击，且首屏显示明确 status：
+`当前 wire/session 没有空间治理结果投影；此版本仅展示 OBS 目录，不会伪造成功。`
+逐 tab 的实际禁用态为：
+
+| tab | 当前控件与状态 | fae 对照及裁决 |
+|---|---|---|
+| Actor 模板 | `已登记项目` 空态；JSON 编辑框可编辑草稿，但 `保存`/`退役`/`重新读取` 全 disabled。 | fae 有 Registrar 读取按钮、声明 ID/名称/class/说明/可见性/Config JSON 及 register/edit/revoke。协议/Mock 仍证明 `system.actor.template.*` 可支持（见 `docs/PHASE-E.md`、`tests/mock-phase-e.test.js`），但当前 session 没有结果投影，故 UI 应保持这一明确 unsupported，而不是伪造空列表或成功回执。 |
+| 频道模板 | 同样只有 JSON 草稿，`保存`/`退役`/`重新读取` 全 disabled。 | fae 的 list/get/register/edit/revoke 与 `system.channel.template.*` 后端闭集仍在，但当前 UI 未接 registrar owner；这也解释了 UI-VIS-03 的模板 combobox 没有可选项。 |
+| 频道配置 | `频道资料与声明覆盖` JSON 草稿；`保存配置`/`刷新` disabled。 | fae 的 profile/overlay 能力有协议定义，但当前 `space` port 明确 disabled；不能把可编辑 textarea 当成已支持写入。 |
+| 设备 | `创建设备`、已有行的绑定/解绑/退役均 disabled；安全 OBS 行若存在只可读。 | fae 有 terminal/确认/一次性密钥和绑定投影流程；当前 app 只把 `directory.devices` 安全 OBS 事实接入，不提供治理命令，符合 unsupported 文案与安全边界。 |
+
+因此 UI-VIS-04 的 12,139 px / 0.05 红是旧完整 Registrar 表单与当前诚实不可用态的
+产品能力差异，不是环境阻塞或截图阈值问题。后端“可支持”与用户当前“不可用”必须
+同时保留：协议/Mock 能证明未来 owner 可以接入，但在 wire/session 没有结果投影前，
+禁用按钮和明确 status 才是用户可理解的 unsupported。没有恢复旧按钮，也没有把
+`space` command 错投到 Search/Channel owner。
+
+### Round32 结论
+
+- **PASS：** UI-VIS-03 真实 Chromium repeat5；入口、overview tab、创建表单、模板
+  控件和保留基线均通过。6b51 的 product gap 已闭合。
+- **RED（保留 oracle）：** UI-VIS-02 概览 23,436 px、成员 27,183 px、危险 1,024
+  px；均是已到达 canonical Governance panel 后的结构/文案/能力集合差异，未弱化。
+- **RED（诚实 unsupported）：** UI-VIS-04 12,139 px；当前四 tab reachable，写入
+  控件 disabled 且 status 明示无 projection；旧 Registrar 完整表单能力不能冒充已
+  恢复。
+- **后续可执行 owner gap：** Governance 需要决定并实现模板 list/get → recipe
+  create 的闭环（或把模板入口明确标为 unavailable），以及若产品仍要求旧
+  `member.restart` 则公开对应控件；本轮不改产品、不改 spec、不更新 snapshot。
