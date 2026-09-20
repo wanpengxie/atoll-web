@@ -2107,3 +2107,54 @@ Workspace/Registrar projection，再继续 get/body 与 recipe create；不得�
 - **未判断：** get receipt body、recipe create 不能在 list 首断后伪报 PASS；修复后必须
   重新跑完整 Chromium 链并保留 declarations/profile/purpose/device wire 证据。
 - 本轮未删 skip、未调截图阈值、未修改 vendor/package/src 产品文件。
+
+## 第三十六轮：Governance candidate 回归复验
+
+本轮复验基线为 HEAD `601b285`（包含 typed creation convergence / Shell navigation
+candidate，以及 A-D 独立提交已进入历史）。工作树干净；本轮没有修改产品或测试。
+
+### 三条合同结果
+
+```text
+npx vitest run tests/blocked-round35-governance-public-owner.test.jsx --reporter=verbose
+1 file passed, 2 tests passed
+```
+
+这次仍严格通过：request 前已存在的同名 `c0.research` 不会被当作本次 request 的
+ready child；具备匹配 projection 时，唯一导航调用仍是
+`enterChannel({ channelId: 'c0.research', view: 'conversation' })`，原 hash 不变。
+Canvas `getContext` warning 是既有 jsdom setup 噪音，不影响断言。
+
+```text
+npx playwright test tests/browser/governance-template-wire-contract.spec.js --reporter=line
+1 failed
+首断点：system.channel.template.list expected 1, received 0
+```
+
+真实 Chromium 仍能登录并进入 canonical Governance/概览，点击“刷新目录事实”后没有
+Registrar list submit；因此 get receipt、canonical template option 和 recipe create
+没有被错误地报告为 PASS。Mock 中 `mock:team` 仍存在，故这不是 fixture 缺失或浏览器
+环境阻塞。
+
+### Shell/Workspace owner 仍未接通
+
+`GovernanceFeature` candidate 已 fail-closed 地要求 `commands.enterChannel`，但当前
+真实 `WorkspaceApp` 的 channel governance port 仍只发布 `refresh`、`selectActor`、
+`listTemplates`、`getTemplate`、`submit`；没有 `enterChannel`，也没有匹配 request 的
+`creation` projection。故 unit harness 证明了 feature contract，本轮不能把它升级成
+真实 app Shell PASS：live UI 仍会在 ready 时显示 Shell port 未连接/禁用进入。
+
+同理，port 上已有 `listTemplates`/`getTemplate` 方法不等价于 list/get 闭环：概览刷新
+仍只走 directory refresh，`useWireSession` 的 `channelTemplates` 仍为 `null`。这两项
+均是公开 owner 的真实产品缺口，不能由 T–Z 测试侧补造 store、直接写 hash、预置模板行
+或放宽因果合同。
+
+### Round36 裁决
+
+- **PASS（feature-level candidate）：** request correlation 反例与 typed Shell
+  navigation unit contract，2/2。
+- **RED（live product owner）：** Workspace channel port 没有 creation/enterChannel
+  接线；当前真实 UI 尚无可验证的 Shell 导航闭环。
+- **RED（Registrar owner）：** template list receipt 仍为 0，list → projection →
+  get → recipe create 未接通。
+- 未删 skip、未放宽断言、未碰 vendor/package；本轮只追加本审计。
