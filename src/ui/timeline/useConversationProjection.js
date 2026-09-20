@@ -680,7 +680,18 @@ function useProjectionReadingOwner({
         && Number(observation.presentationRevision) === Number(snapshotRef.current.revision || 0);
     },
     onSurfaceVisibilityChange(visible) {
-      if (visible) return;
+      if (visible) {
+        const current = controller.getSnapshot().session;
+        // The hidden callback has already published a typed revoke at the
+        // successor epoch.  Re-entry is a second semantic boundary: mint one
+        // more session epoch before the first visible DOM observation so its
+        // positive receipt is strictly newer than that revoke.  Do not mint
+        // on the initial visible mount (the initial session is still epoch 0).
+        if (current.mode === READING_MODE.following && current.inputEpoch > 0) {
+          controller.update((active) => advanceReadingInputEpoch(active));
+        }
+        return;
+      }
       if (observationRef.current.atTail === false
         && observationRef.current.surfaceVisible === false) return;
       // Hidden is a lease boundary even without native input. Keep the

@@ -160,8 +160,11 @@ describe('S-Z canonical Presentation authority receipt', () => {
     });
     expect(receiptSink).toHaveBeenLastCalledWith(expect.objectContaining({
       caughtUp: true,
-      inputEpoch: 1,
+      inputEpoch: 2,
     }));
+    expect(receiptSink.mock.calls.at(-1)[0].inputEpoch).toBeGreaterThan(
+      receiptSink.mock.calls.at(-2)[0].inputEpoch,
+    );
   });
 
   it('emits a typed activation-cleanup revoke at a newer input epoch', () => {
