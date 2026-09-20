@@ -58,6 +58,13 @@ Workspace terminal, create-channel, and governance rows. No row moves category
 or status: the ledger remains **51 BLOCKED** (**314 PASS / 0 REGRESSION /
 51 BLOCKED**), and red results are not expected-fail completion signals.
 
+Round 24 adds twenty independent public-owner cases: AD-167 is re-verified
+green after owner fix `5c46b7c`, while AD-027/037, AD-156/159–161, AD-165/166,
+AD-178, AD-197, AD-202/203, AD-256/257, AD-316, AD-331/334, and AD-363/364
+remain ordinary red BLOCKED evidence. The ledger is now **50 BLOCKED**
+(**315 PASS / 0 REGRESSION / 50 BLOCKED**); no red assertion is expected-fail
+completion and no product source was changed in this packet.
+
 ## Minimal regression packets
 
 ### AD-011 — Activity retained-work settlement after reconnect
@@ -132,7 +139,7 @@ verification is **2 files passed; 13 tests passed; 0 assertions red**, with
 focused `[AD-011]` and `[AD-143]` runs both green. No test-only branch, skip,
 weakened expectation, or product change was introduced by this packet.
 
-## Quantification of the original 116 BLOCKED rows and current 51 remainder
+## Quantification of the original 116 BLOCKED rows and current 50 remainder
 
 The classification is an evidence triage, not a verdict on product scope:
 
@@ -140,8 +147,8 @@ The classification is an evidence triage, not a verdict on product scope:
 |---|---:|---|
 | 缺 owner (`OWNER_MISSING`) | 12 | The exact baseline capability has no single current public entry/owner, even where an adjacent feature exists. Round 20 adds AD-165/166 for channel-entry/reconnect freshness interests. |
 | 缺 fixture / 等价证明 (`FIXTURE_MISSING`) | 24 | A current public owner is named, but no one-to-one setup/action/result fixture has been established; this does not claim the capability is absent. Round 22 promotes AD-295–AD-304; two cursor rows remain fixture-only. |
-| 真实能力缺口 (`CAPABILITY_GAP`) | 15 | The ledger records the required user-facing capability/index as absent or explicitly non-equivalent at the current public surface. Round 20 adds AD-157/158/167/170/182; Round 21 adds AD-284/288/289/291/292. |
-| **Total** | **51** | The remaining rows retain explicit blocked evidence; no row is obsolete, deleted, or skipped. |
+| 真实能力缺口 (`CAPABILITY_GAP`) | 14 | The ledger records the required user-facing capability/index as absent or explicitly non-equivalent at the current public surface. Round 24 verifies AD-167 through the fixed public Feed owner, removing it from this category; AD-157/158/170/182 and AD-284/288/289/291/292 remain. |
+| **Total** | **50** | The remaining rows retain explicit blocked evidence; no row is obsolete, deleted, or skipped. |
 
 ### `OWNER_MISSING` — 12 rows
 
@@ -152,13 +159,13 @@ The classification is an evidence triage, not a verdict on product scope:
 | `dynamic-form.test.js` | 2 | `AD-363`–`AD-364`; no public JSON-Schema/control-form owner for typed control payloads. |
 | `channel-feed-startup.test.jsx` | 2 | `AD-165`–`AD-166`; no public channel-entry/reconnect/foreground freshness-interest owner. |
 
-### `CAPABILITY_GAP` — 15 rows
+### `CAPABILITY_GAP` — 14 rows
 
 | Baseline source | Rows | Evidence boundary |
 |---|---:|---|
 | `activity.test.js` | 3 | `AD-002`–`AD-004`; cross-channel Operation index/Center is absent. Search, task, and artifact owners are not an equivalent operation index. |
 | `channel-list.test.jsx` | 2 | `AD-202`–`AD-203`; current `VersionIncompatible` is a protocol terminal, not a node-version/update capability, and no node-update port/UI is mounted. |
-| `channel-feed-startup.test.jsx` | 5 | `AD-157`, `AD-158`, `AD-167`, `AD-170`, `AD-182`; the current public Feed/Replica boundary shows the stale/revoked cache or trim behavior directly diverges from the baseline capability. |
+| `channel-feed-startup.test.jsx` | 4 | `AD-157`, `AD-158`, `AD-170`, `AD-182`; AD-167 now passes the fixed public refresh admission contract in Round 24. |
 | `cursors.test.js` | 5 | `AD-284`, `AD-288`, `AD-289`, `AD-291`, `AD-292`; ordinary public Feed regressions show sparse identity acknowledgement, authority/head clamping, weak all-message count, and agent self-audience terminal content are not equivalent. |
 
 ### `FIXTURE_MISSING` — 24 rows
@@ -182,7 +189,7 @@ auditable:
 | `cursors.test.js` | 2 | `AD-306`–`AD-307`; Round 22 promotes AD-295–AD-304; Round 21 promoted AD-277/278/282/283/285/286/287/290/293/294 and reclassified AD-284/288/289/291/292 as capability gaps |
 | `devices-panel.test.jsx` | 1 | `AD-316` |
 | `dynamic-f3.test.jsx` | 2 | `AD-331`, `AD-334`; AD-327–329/333/335–338/340–343/350–351 now have green public presentation/Composer fixtures in `tests/blocked-round16-public-owner.test.jsx` |
-| **Total** | **24** | Round 22 moves ten cursor rows to PASS; the remaining rows retain explicit blocked evidence. |
+| **Total** | **24** | Round 24 moves AD-167 to PASS; the remaining fixture rows retain explicit blocked evidence. |
 
 The remaining categories above retain their ledger `BLOCKED` status. AD-014 and
 AD-017 no longer count as fixture-missing: their public-owner fixtures are
@@ -336,6 +343,17 @@ All twenty remain ordinary red BLOCKED evidence at their first public owner.
 They are not converted to `it.fails`, deleted, skipped, or judged obsolete;
 the category counts and ledger status remain unchanged.
 
+## Round 24 evidence packet
+
+Round 24 adds twenty independent public-owner cases: AD-167 is re-verified
+green through the fixed Feed refresh admission owner; AD-027/037, AD-156/159–161,
+AD-165/166, AD-178, AD-197, AD-202/203, AD-256/257, AD-316, AD-331/334, and
+AD-363/364 remain ordinary red reproductions. The focused result is **1 passed /
+19 ordinary red (20 total)**. The current ledger is **315 PASS / 0 REGRESSION /
+50 BLOCKED**. `CAPABILITY_GAP` decreases from 15 to 14 solely because AD-167
+now has green public evidence; `OWNER_MISSING` remains 12 and
+`FIXTURE_MISSING` remains 24. No red assertion is counted as completion.
+
 ## Boundary audit
 
 This packet changes A–D unit tests and audit-output reports only. It does not
@@ -361,3 +379,7 @@ lockfile changed. Round 23 adds
 `tests/blocked-round23-public-owner.test.jsx` and corresponding A–D audit
 evidence only; its twenty ordinary red cases remain BLOCKED. No product source,
 private export, package, or lockfile changed.
+Round 24 adds `tests/blocked-round24-public-owner.test.jsx` and its case-level
+report only; AD-167 is promoted after verifying the existing owner fix, while
+the other nineteen rows remain BLOCKED. No product source, vendor, package,
+lockfile, or private export changed.
