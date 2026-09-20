@@ -106,7 +106,7 @@ function ActivityRows({ rows = [], empty, unavailable = '', onOpen }) {
       type="button"
       className={`activity-row state-${item.state || 'info'}`}
       key={item.key}
-      onClick={() => onOpen?.(item.source)}
+      onClick={() => onOpen?.(item)}
     >
       <span className="activity-kind">{item.kindLabel || item.kind || '动态'}</span>
       <span className="activity-copy"><strong>{item.title}</strong><small>{item.channelName || item.channelId}{item.detail ? ` · ${item.detail}` : ''}</small></span>
@@ -116,11 +116,41 @@ function ActivityRows({ rows = [], empty, unavailable = '', onOpen }) {
   </div>;
 }
 
+function activityRoute(item) {
+  const channelId = String(item?.channelId || item?.source?.channelId || '');
+  if (!channelId || !globalThis.location) return '';
+  const kind = String(item?.kind || '');
+  if (['approval', 'agent_run', 'task'].includes(kind)) {
+    const key = String(item?.workItemKey || item?.key || '').replace(/^activity:/, '');
+    if (!key) return '';
+    return `#/channels/${encodeURIComponent(channelId)}/tasks?focus=${encodeURIComponent(`work_item:${key}`)}`;
+  }
+  if (kind === 'operation') {
+    const requestId = String(item?.requestId || item?.source?.requestId || item?.source?.objectId || '');
+    if (!requestId) return '';
+    return `#/channels/${encodeURIComponent(channelId)}/conversation?focus=${encodeURIComponent(`turn:${requestId}`)}`;
+  }
+  return '';
+}
+
 function ActivityFeature({ port = {}, onClose }) {
   const [tab, setTab] = useState('activity');
   const operationsUnavailable = tab === 'operations' && port.operationsUnavailable;
   const rows = tab === 'activity' ? port.activities || [] : port.operations || [];
   const empty = tab === 'activity' ? '没有需要关注的活动' : '没有进行中的操作';
+  const open = (item) => {
+    const route = activityRoute(item);
+    if (route) {
+      onClose?.();
+      globalThis.location.hash = route;
+      return;
+    }
+    // Rows without a feature-owned canonical target retain the existing
+    // public source command. In particular this keeps generic activity facts
+    // from manufacturing a task or turn that the current projection cannot
+    // prove.
+    port.commands?.open?.(item?.source || item);
+  };
   return <SidePanel
     className="activity-center"
     ariaLabel="全局活动"
@@ -131,7 +161,7 @@ function ActivityFeature({ port = {}, onClose }) {
     onTabChange={setTab}
     onClose={onClose}
   >
-    <ActivityRows rows={rows} empty={empty} unavailable={operationsUnavailable ? '当前没有可用的进行中操作快照' : ''} onOpen={port.commands?.open} />
+    <ActivityRows rows={rows} empty={empty} unavailable={operationsUnavailable ? '当前没有可用的进行中操作快照' : ''} onOpen={open} />
   </SidePanel>;
 }
 
