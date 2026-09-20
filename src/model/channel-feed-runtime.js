@@ -68,7 +68,7 @@ function historyRangeNumber(value, fallback = 0) {
   return Number.isSafeInteger(result) && result >= 0 ? result : fallback;
 }
 
-function historyBatchCompletionDetail(batch, result, rows, status, acceptedRows, focus = '') {
+function historyBatchCompletionDetail(batch, result, rows, status, acceptedRows) {
   const requestedBeforeSeq = historyRangeNumber(batch?.beforeSeq);
   const nextBeforeSeq = historyRangeNumber(
     result?.next_before_seq ?? result?.nextBeforeSeq,
@@ -85,21 +85,19 @@ function historyBatchCompletionDetail(batch, result, rows, status, acceptedRows,
       : nextBeforeSeq,
   );
   return {
+    authority: batch?.authority || null,
     channelId: batch?.channelId || '',
-    focus: String(focus || ''),
-    visibleIntent: batch?.priority === 'foreground',
     source: batch?.source || '',
-    purpose: batch?.purpose || '',
-    priority: batch?.priority || '',
-    generation: historyNumeric(batch?.generation),
-    attachEpoch: historyNumeric(batch?.attachEpoch),
-    ref: String(batch?.ref || batch?.id || ''),
+    generation: historyNumeric(batch?.authority?.generation),
+    attachEpoch: historyNumeric(batch?.authority?.attachEpoch),
+    ref: String(batch?.ref || ''),
     rows: Array.isArray(rows) ? rows.length : 0,
     acceptedRows: historyNumeric(acceptedRows),
     hasOlder: Boolean(result?.has_older ?? result?.hasOlder ?? !result?.exhausted),
     beforeSeq: historyNumeric(status?.beforeSeq),
     requestedBeforeSeq,
-    rangeKind: batch?.rangeKind || 'backfill',
+    limit: historyNumeric(batch?.limit),
+    byteLimit: historyNumeric(batch?.byteLimit),
     nextBeforeSeq,
     scanLowSeq,
     scanHighSeq,
@@ -341,6 +339,7 @@ function replayableHistoryRequest(request = {}) {
   const replay = { ...request };
   delete replay.signal;
   delete replay.onOperation;
+  delete replay.semanticDemand;
   return replay;
 }
 
@@ -466,10 +465,13 @@ export function createChannelFeedRuntime(options = {}) {
   const backgroundInterests = new Map();
   const executor = createHistoryBoundedExecutor({ concurrency: 2, timeoutMs: HISTORY_BATCH_TIMEOUT_MS });
   const networkBatches = new Map();
+  const networkBatchAccessFailures = new Map();
   // One physical owner per admitted range.  The operation contains only raw
   // source work and its authority fence; every caller is represented by a
   // separate waiter below and performs its own projection/admission settle.
   const physicalOperations = new Map();
+  const activePhysicalByChannel = new Map();
+  const semanticDemands = new Map();
   const activityEntries = new Map();
   const timerEvents = [];
   // A committed following observation suppresses only the short interval
@@ -919,21 +921,13 @@ export function createChannelFeedRuntime(options = {}) {
       || status.headSeq + 1;
     const localMeta = cache.metaSnapshot().get(channelId);
     return {
-      id: `${generation}:${channelId}:${status.completedPages + 1}`,
-      source: historySourceFor(localMeta, beforeSeq),
+      authority: Object.freeze({ principalEpoch, worldEpoch, generation, attachEpoch }),
       channelId,
       beforeSeq,
       limit: Math.max(1, historyNumeric(request.limit || request.revealRows) || HISTORY_PAGE_SIZE),
       byteLimit: Math.max(1, historyNumeric(request.byteLimit || request.revealBytes) || HISTORY_BATCH_BYTES),
-      generation,
-      attachEpoch,
-      principalEpoch,
-      worldEpoch,
-      purpose: request.intent === 'scroll-history' ? 'user-demand' : 'initial-tail',
-      priority: request.urgency === 'anticipatory' ? 'background' : 'foreground',
-      intent: request.intent || 'scroll-history',
-      urgency: request.urgency || 'interactive',
-      rangeKind: 'backfill',
+      source: historySourceFor(localMeta, beforeSeq),
+      ref: '',
     };
   }
 
@@ -943,9 +937,11 @@ export function createChannelFeedRuntime(options = {}) {
     const abort = () => { void cancelOwnedBatch(batch, 'history operation aborted'); };
     signal?.addEventListener('abort', abort, { once: true });
     try {
-      const resultPromise = executor.run(() => adapters.execute(batch), {
-        id: batch.id,
-        priority: operation?.priority ?? historySchedulerPriority(batch.urgency),
+      const resultPromise = executor.run(() => adapters.execute(batch, {
+        priority: operation?.physicalPriority || 'background',
+      }), {
+        id: operation?.executorID,
+        priority: operation?.effectivePriority ?? 0,
         signal,
       });
       if (operation) {
@@ -975,7 +971,13 @@ export function createChannelFeedRuntime(options = {}) {
       return { kind: 'failed', error };
     } finally {
       signal?.removeEventListener('abort', abort);
-      if (batch.ref) networkBatches.delete(batch.ref);
+      if (batch.ref) {
+        if (operation && networkBatchAccessFailures.has(batch.ref)) {
+          operation.accessFailureCode = networkBatchAccessFailures.get(batch.ref);
+          networkBatchAccessFailures.delete(batch.ref);
+        }
+        networkBatches.delete(batch.ref);
+      }
     }
   }
 
@@ -991,15 +993,19 @@ export function createChannelFeedRuntime(options = {}) {
     removeDeferredHistoryRequest(channelId);
     const record = {
       request: replayableHistoryRequest(request),
+      semanticDemand: request.semanticDemand || null,
       signal: request.signal,
       onAbort: null,
     };
     record.onAbort = () => {
       if (!removeDeferredHistoryRequest(channelId, record)) return;
+      if (record.semanticDemand) retireSemanticDemand(record.semanticDemand, 'aborted');
       const status = histories.get(channelId);
-      if (status?.historyDemand?.revision !== demandRevision) return;
-      status.historyDemand = Object.freeze({ revision: demandRevision, phase: 'idle', error: '' });
-      Object.assign(status, { loading: false, foregroundLoading: false, backgroundLoading: false });
+      if (status?.historyDemand?.revision === demandRevision
+        && !record.semanticDemand) {
+        status.historyDemand = Object.freeze({ revision: demandRevision, phase: 'idle', error: '' });
+      }
+      recomputePhysicalStatus(channelId);
       publish();
     };
     if (request.signal?.aborted) return false;
@@ -1012,7 +1018,7 @@ export function createChannelFeedRuntime(options = {}) {
     const record = deferredHistoryRequests.get(channelId);
     if (!record) return null;
     removeDeferredHistoryRequest(channelId, record);
-    return record.request;
+    return record;
   }
 
   function clearDeferredHistoryRequests() {
@@ -1049,10 +1055,10 @@ export function createChannelFeedRuntime(options = {}) {
     if (!admitted) return '';
     const batch = batchFor(channelId, request);
     return [
-      principalEpoch,
-      worldEpoch,
-      batch.generation,
-      batch.attachEpoch,
+      batch.authority.principalEpoch,
+      batch.authority.worldEpoch,
+      batch.authority.generation,
+      batch.authority.attachEpoch,
       batch.channelId,
       batch.beforeSeq,
       batch.limit,
@@ -1060,28 +1066,175 @@ export function createChannelFeedRuntime(options = {}) {
     ].join('\u0000');
   }
 
-  function beginPhysicalDemand(operation, request) {
-    const status = histories.get(operation.channelId);
-    if (!status) return;
-    const demandRevision = status.historyDemand.revision + 1;
-    operation.demandRevision = demandRevision;
-    Object.assign(status, {
-      loading: true,
-      foregroundLoading: request.urgency !== HISTORY_URGENCY.anticipatory,
-      backgroundLoading: request.urgency === HISTORY_URGENCY.anticipatory,
-      error: '', errorCode: '',
-      historyDemand: Object.freeze({ revision: demandRevision, phase: 'pending', error: '' }),
-    });
+  function semanticIdentity(channelId, request = {}) {
+    const token = request.historyRevealIntent;
+    if (token) return [
+      'reveal', channelId, String(token.viewID || ''), String(token.epoch || ''),
+      String(token.activationID || ''),
+    ].join('\u0000');
+    return [
+      'demand', channelId, generation, String(request.intent || HISTORY_INTENT.initialView),
+    ].join('\u0000');
   }
 
-  function clearPhysicalDemand(operation, phase = 'idle', error = '') {
-    const status = histories.get(operation.channelId);
-    if (!status || status.historyDemand.revision !== operation.demandRevision) return false;
-    status.historyDemand = Object.freeze({
-      revision: operation.demandRevision, phase, error,
-    });
-    Object.assign(status, { loading: false, foregroundLoading: false, backgroundLoading: false });
+  function isSemanticRequest(request = {}) {
+    return request.urgency !== HISTORY_URGENCY.anticipatory;
+  }
+
+  function ensureSemanticReveal(demand) {
+    if (!demand?.revealIntent || demand.revealToken || demand.retired) return demand?.revealToken || null;
+    const status = histories.get(demand.channelId);
+    if (!status?.attached || !status.messageCurrent || status.generation !== generation) return null;
+    demand.revealToken = admission.begin(demand.channelId, demand.revealIntent);
+    return demand.revealToken;
+  }
+
+  function recomputePhysicalStatus(channelId) {
+    const status = histories.get(channelId);
+    if (!status) return false;
+    const active = [...(activePhysicalByChannel.get(channelId) || [])]
+      .filter((operation) => !operation.retired && !operation.settled);
+    const hasForeground = active.some((operation) => operation.effectivePriority > 0);
+    const hasBackground = active.some((operation) => operation.effectivePriority === 0);
+    const demand = semanticDemands.get(channelId);
+    const deferredDemand = demand?.phase === 'pending' && !status.attached;
+    const next = {
+      loading: active.length > 0 || deferredDemand,
+      foregroundLoading: hasForeground || (deferredDemand && demand.foreground),
+      backgroundLoading: !hasForeground && hasBackground,
+    };
+    const changed = status.loading !== next.loading
+      || status.foregroundLoading !== next.foregroundLoading
+      || status.backgroundLoading !== next.backgroundLoading;
+    Object.assign(status, next);
+    return changed;
+  }
+
+  function addActivePhysical(operation) {
+    let active = activePhysicalByChannel.get(operation.channelId);
+    if (!active) {
+      active = new Set();
+      activePhysicalByChannel.set(operation.channelId, active);
+    }
+    active.add(operation);
+    recomputePhysicalStatus(operation.channelId);
+  }
+
+  function removeActivePhysical(operation) {
+    const active = activePhysicalByChannel.get(operation.channelId);
+    if (!active) return;
+    active.delete(operation);
+    if (!active.size) activePhysicalByChannel.delete(operation.channelId);
+    recomputePhysicalStatus(operation.channelId);
+  }
+
+  function finishSemanticDemand(demand, phase = 'idle', error = '') {
+    if (!demand || demand.retired || demand.operations.size || demand.waiters.size) return false;
+    demand.phase = phase;
+    demand.error = error;
+    const status = histories.get(demand.channelId);
+    if (semanticDemands.get(demand.channelId) !== demand
+      || status?.historyDemand?.revision !== demand.revision) return false;
+    status.historyDemand = Object.freeze({ revision: demand.revision, phase, error });
+    if (phase === 'error') {
+      status.error = error;
+      status.errorCode = 'history_failed';
+    }
+    semanticDemands.delete(demand.channelId);
+    recomputePhysicalStatus(demand.channelId);
     return true;
+  }
+
+  function retireSemanticDemand(demand, reason = 'stale-authority') {
+    if (!demand || demand.retired) return false;
+    demand.retired = true;
+    demand.phase = 'stale';
+    if (demand.revealToken && !demand.revealSettled) {
+      admission.cancel(demand.channelId, demand.revealToken.operationID);
+      demand.revealSettled = true;
+    }
+    for (const waiter of [...demand.waiters]) {
+      waiter.semanticStale = true;
+      settleWaiter(waiter, { kind: 'cancelled', reason });
+    }
+    for (const operation of [...demand.operations]) {
+      if (!operation.waiters.size) retireOrphanedOperation(operation, reason);
+    }
+    const status = histories.get(demand.channelId);
+    if (semanticDemands.get(demand.channelId) === demand) {
+      semanticDemands.delete(demand.channelId);
+      if (status?.historyDemand?.revision === demand.revision) {
+        status.historyDemand = Object.freeze({ revision: demand.revision, phase: 'idle', error: '' });
+      }
+    }
+    recomputePhysicalStatus(demand.channelId);
+    return true;
+  }
+
+  function semanticDemandFor(channelId, request = {}) {
+    if (!isSemanticRequest(request)) return null;
+    const supplied = request.semanticDemand;
+    if (supplied && semanticDemands.get(channelId) === supplied && !supplied.retired) return supplied;
+    const key = semanticIdentity(channelId, request);
+    const current = semanticDemands.get(channelId);
+    if (current && !current.retired && current.key === key) {
+      ensureSemanticReveal(current);
+      return current;
+    }
+    if (current && !current.retired) retireSemanticDemand(current, 'stale-authority');
+    const status = historyState(channelId);
+    const revision = status.historyDemand.revision + 1;
+    const demand = {
+      channelId,
+      key,
+      revision,
+      phase: 'pending',
+      error: '',
+      foreground: historySchedulerPriority(request.urgency || HISTORY_URGENCY.interactive) > 0,
+      revealIntent: request.historyRevealIntent || null,
+      revealToken: null,
+      revealSettled: false,
+      waiters: new Set(),
+      operations: new Set(),
+      retired: false,
+    };
+    semanticDemands.set(channelId, demand);
+    Object.assign(status, {
+      error: '', errorCode: '',
+      historyDemand: Object.freeze({ revision, phase: 'pending', error: '' }),
+    });
+    ensureSemanticReveal(demand);
+    recomputePhysicalStatus(channelId);
+    return demand;
+  }
+
+  function attachSemanticDemand(operation, demand) {
+    if (!demand || demand.retired) return;
+    operation.semanticDemands.add(demand);
+    demand.operations.add(operation);
+    ensureSemanticReveal(demand);
+  }
+
+  function settleSemanticOperations(operation, outcome) {
+    let changed = false;
+    for (const demand of operation.semanticDemands) {
+      demand.operations.delete(operation);
+      if (demand.retired) continue;
+      if (outcome.kind === 'failed' && !demand.error) {
+        demand.error = outcome.error?.message || '历史加载失败';
+        if (demand.revealToken && !demand.revealSettled) {
+          admission.cancel(demand.channelId, demand.revealToken.operationID);
+          demand.revealSettled = true;
+        }
+      }
+      changed = finishSemanticDemand(
+        demand,
+        outcome.kind === 'failed' ? 'error' : 'idle',
+        demand.error || '',
+      ) || changed;
+    }
+    operation.semanticDemands.clear();
+    return changed;
   }
 
   function settleWaiter(waiter, value) {
@@ -1089,34 +1242,46 @@ export function createChannelFeedRuntime(options = {}) {
     waiter.settled = true;
     waiter.signal?.removeEventListener?.('abort', waiter.onAbort);
     waiter.operation.waiters.delete(waiter);
+    waiter.semanticDemand?.waiters.delete(waiter);
     waiter.resolve(value);
+    return true;
+  }
+
+  function retireOrphanedOperation(operation, reason = 'aborted') {
+    if (!operation || operation.waiters.size || operation.settled || operation.retired) return false;
+    operation.retired = true;
+    operation.abortController.abort(reason);
+    if (physicalOperations.get(operation.key) === operation) physicalOperations.delete(operation.key);
+    removeActivePhysical(operation);
     return true;
   }
 
   function releaseWaiter(waiter, reason = 'aborted') {
     if (!waiter || waiter.settled) return false;
     const operation = waiter.operation;
-    if (waiter.revealToken) admission.cancel(operation.channelId, waiter.revealToken.operationID);
     settleWaiter(waiter, { kind: 'cancelled', reason });
-    if (!operation.waiters.size && !operation.settled && !operation.retired) {
-      operation.retired = true;
-      operation.abortController.abort(reason);
-      if (physicalOperations.get(operation.key) === operation) physicalOperations.delete(operation.key);
+    const demand = waiter.semanticDemand;
+    if (demand && !demand.waiters.size && !demand.retired) {
+      retireSemanticDemand(demand, reason);
     }
+    retireOrphanedOperation(operation, reason);
     return true;
   }
 
   function cancelPhysicalOperations(reason, waiterReason = 'stale-generation') {
-    for (const operation of physicalOperations.values()) {
+    const operations = [...physicalOperations.values()];
+    for (const operation of operations) {
       operation.retired = true;
       for (const waiter of [...operation.waiters]) {
-        if (waiter.revealToken) admission.cancel(operation.channelId, waiter.revealToken.operationID);
         settleWaiter(waiter, { kind: 'cancelled', reason: waiterReason });
       }
       operation.abortController.abort(reason);
       if (physicalOperations.get(operation.key) === operation) physicalOperations.delete(operation.key);
+      removeActivePhysical(operation);
     }
     physicalOperations.clear();
+    for (const demand of [...semanticDemands.values()]) retireSemanticDemand(demand, waiterReason);
+    activePhysicalByChannel.clear();
   }
 
   function promotePhysicalOperation(operation, request = {}) {
@@ -1124,15 +1289,13 @@ export function createChannelFeedRuntime(options = {}) {
     const nextUrgency = request.urgency
       || (request.intent === HISTORY_INTENT.initialView ? HISTORY_URGENCY.interactive : '');
     const nextPriority = historySchedulerPriority(nextUrgency);
-    if (nextPriority <= operation.priority) return false;
-    operation.priority = nextPriority;
-    operation.urgency = nextUrgency || operation.urgency;
-    operation.batch = {
-      ...operation.batch,
-      urgency: operation.urgency,
-      priority: operation.urgency === HISTORY_URGENCY.anticipatory ? 'background' : 'foreground',
-    };
-    return operation.executorHandle?.promote?.(nextPriority) === true;
+    if (nextPriority <= operation.effectivePriority) return false;
+    operation.effectivePriority = nextPriority;
+    operation.physicalPriority = nextPriority > 0 ? 'foreground' : 'background';
+    operation.executorHandle?.promote?.(nextPriority);
+    recomputePhysicalStatus(operation.channelId);
+    publish();
+    return true;
   }
 
   function waiterLease(waiter) {
@@ -1140,7 +1303,7 @@ export function createChannelFeedRuntime(options = {}) {
     return Object.freeze({
       signal: waiter.signal,
       viewSpec: waiter.viewSpec,
-      reveal: waiter.revealToken,
+      reveal: waiter.semanticDemand?.revealToken || null,
       priority: waiter.priority,
       onOperation: waiter.onOperation,
       release: (reason = 'released') => releaseWaiter(waiter, reason),
@@ -1157,9 +1320,24 @@ export function createChannelFeedRuntime(options = {}) {
       rows,
       histories.get(operation.channelId),
       acceptedRows,
-      activeChannelRef.current,
     ));
     return true;
+  }
+
+  function physicalReceipt(batch, result, rows, acceptedRows) {
+    return Object.freeze({
+      authority: batch.authority,
+      channelId: batch.channelId,
+      beforeSeq: batch.beforeSeq,
+      limit: batch.limit,
+      byteLimit: batch.byteLimit,
+      source: batch.source,
+      ref: String(batch.ref || ''),
+      rows: Array.isArray(rows) ? rows.length : 0,
+      acceptedRows: historyNumeric(acceptedRows),
+      nextBeforeSeq: historyRangeNumber(result?.next_before_seq ?? result?.nextBeforeSeq, batch.beforeSeq),
+      hasOlder: Boolean(result?.has_older ?? result?.hasOlder ?? !result?.exhausted),
+    });
   }
 
   async function runPhysicalOperation(operation) {
@@ -1187,20 +1365,17 @@ export function createChannelFeedRuntime(options = {}) {
       cacheContinuation += 1;
       batch = {
         ...batch,
-        id: `${operation.batch.id}:continue:${cacheContinuation}`,
         beforeSeq: nextBefore,
         source: historySourceFor(cache.metaSnapshot().get(operation.channelId), nextBefore),
-        urgency: operation.urgency,
-        priority: operation.urgency === HISTORY_URGENCY.anticipatory ? 'background' : 'foreground',
+        ref: '',
       };
       outcome = await executeBatch(batch, operation.abortController.signal, operation);
     }
     if (outcome.kind === 'cache-miss') {
       batch = {
         ...batch,
-        id: `${operation.batch.id}:network`,
         source: 'network',
-        priority: operation.urgency === HISTORY_URGENCY.anticipatory ? 'background' : 'foreground',
+        ref: '',
       };
       outcome = await executeBatch(batch, operation.abortController.signal, operation);
       if (outcome.kind === 'page') {
@@ -1224,7 +1399,11 @@ export function createChannelFeedRuntime(options = {}) {
         status.lastSource = 'indexeddb';
         status.coverage = replica.record(operation.channelId)?.materializedCoverage || [];
         publishPhysicalCompletion(operation, lastSuccessfulBatch, result, rows, accepted.length);
-        return { ...outcome, released: accepted.length };
+        return {
+          ...outcome,
+          acceptedRows: accepted.length,
+          receipt: physicalReceipt(lastSuccessfulBatch, result, rows, accepted.length),
+        };
       }
       return outcome;
     }
@@ -1261,7 +1440,8 @@ export function createChannelFeedRuntime(options = {}) {
     publishPhysicalCompletion(operation, batch, result, rows, accepted.length);
     operation.rawResult = Object.freeze({
       kind: 'page', result, rows: Object.freeze([...rows]),
-      released: accepted.length, batch,
+      acceptedRows: accepted.length,
+      receipt: physicalReceipt(batch, result, rows, accepted.length),
     });
     operation.committed = true;
     return operation.rawResult;
@@ -1271,27 +1451,31 @@ export function createChannelFeedRuntime(options = {}) {
     if (waiter.settled) return;
     const operation = waiter.operation;
     if (outcome.kind !== 'page') {
-      if (waiter.revealToken) admission.cancel(operation.channelId, waiter.revealToken.operationID);
       settleWaiter(waiter, outcome);
       return;
     }
     const projection = selectTimelineItems(
       replica.state(operation.channelId), waiter.viewSpec || {},
     );
-    const observed = waiter.revealToken ? admission.observe(operation.channelId, projection.items, {
-      operationID: waiter.revealToken.operationID,
-      viewID: waiter.revealToken.viewID,
-      epoch: waiter.revealToken.epoch,
-      sourceRevision: replica.state(operation.channelId)?._timelineRevision || 0,
-    }) : null;
-    if (waiter.revealToken) {
+    const demand = waiter.semanticDemand;
+    let observed = demand?.lastObservation || null;
+    const revealToken = demand?.revealToken || null;
+    if (revealToken && !demand.revealSettled && !demand.retired) {
+      observed = admission.observe(operation.channelId, projection.items, {
+        operationID: revealToken.operationID,
+        viewID: revealToken.viewID,
+        epoch: revealToken.epoch,
+        sourceRevision: replica.state(operation.channelId)?._timelineRevision || 0,
+      });
+      demand.lastObservation = observed;
       admission.settle(operation.channelId, observed?.fulfilled ? 'fulfilled' : 'exhausted');
+      demand.revealSettled = true;
     }
     const status = histories.get(operation.channelId);
     settleWaiter(waiter, {
-      kind: outcome.released || observed?.fulfilled
+      kind: outcome.acceptedRows || observed?.fulfilled
         ? 'satisfied' : status?.hasOlder ? 'segment' : 'exhausted',
-      released: outcome.released,
+      released: outcome.acceptedRows,
       firstVisibleSeq: projection.firstVisibleSeq,
       projection,
     });
@@ -1300,33 +1484,29 @@ export function createChannelFeedRuntime(options = {}) {
   function settlePhysicalOperation(operation, outcome) {
     if (operation.settled) return;
     operation.settled = true;
-    const status = histories.get(operation.channelId);
     let publishNeeded = false;
     if (outcome.kind === 'failed') {
-      if (status && status.historyDemand.revision === operation.demandRevision) {
-        status.error = outcome.error?.message || '历史加载失败';
-        status.errorCode = String(outcome.error?.code || 'history_failed');
-        publishNeeded = clearPhysicalDemand(operation, 'error', status.error);
-      }
-      const accessProjected = Boolean(operation.lastBatch?.accessFailureCode)
+      const accessProjected = Boolean(operation.accessFailureCode)
         || projectAccessFailure(operation.channelId, outcome.error, operation.authority.generation);
       if (!accessProjected) callback('onError', outcome.error);
-    } else if (outcome.kind === 'page') {
-      publishNeeded = clearPhysicalDemand(operation);
-    } else {
-      publishNeeded = clearPhysicalDemand(operation);
     }
     for (const waiter of [...operation.waiters]) settleWaiterFromPhysical(waiter, outcome);
-    if (publishNeeded || outcome.kind === 'page') publish({ index: outcome.kind === 'page' && outcome.released > 0 });
+    const semanticChanged = settleSemanticOperations(operation, outcome);
     if (physicalOperations.get(operation.key) === operation) physicalOperations.delete(operation.key);
+    removeActivePhysical(operation);
+    recomputePhysicalStatus(operation.channelId);
+    publishNeeded = semanticChanged;
+    if (publishNeeded || outcome.kind === 'page') {
+      publish({ index: outcome.kind === 'page' && outcome.acceptedRows > 0 });
+    }
   }
 
-  function createPhysicalOperation(channelId, request, key) {
+  function createPhysicalOperation(channelId, request, key, semanticDemand = null) {
     const batch = batchFor(channelId, request);
     const operation = {
       key, channelId, batch,
       authority: Object.freeze({
-        principalEpoch, worldEpoch, generation, attachEpoch,
+        ...batch.authority,
         channelId,
         beforeSeq: batch.beforeSeq,
         limit: batch.limit,
@@ -1334,9 +1514,11 @@ export function createChannelFeedRuntime(options = {}) {
       }),
       abortController: new AbortController(),
       waiters: new Set(),
-      priority: historySchedulerPriority(batch.urgency),
-      urgency: batch.urgency,
-      demandRevision: 0,
+      semanticDemands: new Set(),
+      effectivePriority: historySchedulerPriority(request.urgency || HISTORY_URGENCY.interactive),
+      physicalPriority: historySchedulerPriority(request.urgency || HISTORY_URGENCY.interactive) > 0
+        ? 'foreground' : 'background',
+      executorID: `history:${key}`,
       executorHandle: null,
       rawResult: null,
       committed: false,
@@ -1345,8 +1527,9 @@ export function createChannelFeedRuntime(options = {}) {
       retired: false,
       lastBatch: batch,
     };
-    beginPhysicalDemand(operation, request);
+    attachSemanticDemand(operation, semanticDemand);
     physicalOperations.set(key, operation);
+    addActivePhysical(operation);
     operation.promise = Promise.resolve().then(() => runPhysicalOperation(operation)).then(
       (outcome) => { settlePhysicalOperation(operation, outcome); return outcome; },
       (error) => {
@@ -1359,19 +1542,17 @@ export function createChannelFeedRuntime(options = {}) {
     return operation;
   }
 
-  function attachHistoryWaiter(operation, request) {
+  function attachHistoryWaiter(operation, request, semanticDemand = null) {
     let resolve;
     const promise = new Promise((settle) => { resolve = settle; });
-    const revealToken = request.intent === 'scroll-history' && request.historyRevealIntent
-      ? admission.begin(operation.channelId, request.historyRevealIntent)
-      : null;
+    attachSemanticDemand(operation, semanticDemand);
     const waiter = {
       operation,
       request,
       viewSpec: historyViewSpecSnapshot(request.viewSpec || {}),
-      revealToken,
+      semanticDemand,
       signal: request.signal,
-      priority: historySchedulerPriority(request.urgency || operation.urgency),
+      priority: historySchedulerPriority(request.urgency || HISTORY_URGENCY.interactive),
       onOperation: request.onOperation,
       onAbort: null,
       resolve,
@@ -1389,8 +1570,6 @@ export function createChannelFeedRuntime(options = {}) {
     if (request.signal?.aborted) releaseWaiter(waiter, 'aborted');
     if (!waiter.settled && request.urgency !== HISTORY_URGENCY.anticipatory) {
       promotePhysicalOperation(operation, request);
-      const status = histories.get(operation.channelId);
-      if (status) status.foregroundLoading = true;
     }
     if (operation.rawResult) queueMicrotask(() => settleWaiterFromPhysical(waiter, operation.rawResult));
     return promise;
@@ -1401,20 +1580,14 @@ export function createChannelFeedRuntime(options = {}) {
     if (incompatible) return Promise.resolve({ kind: 'cancelled', reason: 'version-incompatible' });
     if (request.signal?.aborted) return Promise.resolve({ kind: 'cancelled', reason: 'aborted' });
     const status = historyState(channelId);
+    const semanticDemand = semanticDemandFor(channelId, request);
     const admitted = generation > 0
       && grants.has(channelId)
       && status.attached === true
       && status.generation === generation;
     if (!admitted) {
-      const demandRevision = status.historyDemand.revision + 1;
-      Object.assign(status, {
-        loading: true,
-        foregroundLoading: request.urgency !== HISTORY_URGENCY.anticipatory,
-        backgroundLoading: request.urgency === HISTORY_URGENCY.anticipatory,
-        error: '', errorCode: '',
-        historyDemand: Object.freeze({ revision: demandRevision, phase: 'pending', error: '' }),
-      });
-      deferHistoryRequest(channelId, request, demandRevision);
+      deferHistoryRequest(channelId, { ...request, semanticDemand }, semanticDemand?.revision || status.historyDemand.revision);
+      recomputePhysicalStatus(channelId);
       publish();
       return Promise.resolve({ kind: 'waiting', reason: 'history-grant-pending' });
     }
@@ -1422,8 +1595,8 @@ export function createChannelFeedRuntime(options = {}) {
     const key = physicalOperationKey(channelId, request);
     if (!key) return Promise.resolve({ kind: 'cancelled', reason: 'history-not-admitted' });
     let operation = physicalOperations.get(key);
-    if (!operation || operation.retired) operation = createPhysicalOperation(channelId, request, key);
-    const promise = attachHistoryWaiter(operation, request);
+    if (!operation || operation.retired) operation = createPhysicalOperation(channelId, request, key, semanticDemand);
+    const promise = attachHistoryWaiter(operation, request, semanticDemand);
     publish();
     return promise;
   }
@@ -1511,11 +1684,13 @@ export function createChannelFeedRuntime(options = {}) {
   function pageEnd(payload = {}) {
     if (destroyed) return false;
     const batch = networkBatches.get(payload.ref);
-    if (!batch || batch.attachEpoch !== attachEpoch) return false;
+    if (!batch || batch.authority?.attachEpoch !== attachEpoch) return false;
     if (payload.error_code && projectAccessFailure(batch.channelId, {
       code: payload.error_code,
       message: payload.error_detail || payload.error_code,
-    }, batch.generation)) batch.accessFailureCode = String(payload.error_code);
+    }, batch.authority?.generation)) {
+      networkBatchAccessFailures.set(String(payload.ref), String(payload.error_code));
+    }
     return adapters.finish(batch, payload);
   }
 
@@ -1555,6 +1730,7 @@ export function createChannelFeedRuntime(options = {}) {
     cancelPhysicalOperations('principal authority changed', 'stale-generation');
     for (const batch of networkBatches.values()) void cancelOwnedBatch(batch, 'principal authority changed');
     networkBatches.clear();
+    networkBatchAccessFailures.clear();
     const selectedPrincipal = String(nextPrincipal || '');
     if (principal && principal !== selectedPrincipal) {
       for (const channelId of histories.keys()) admission.reset(channelId);
@@ -1616,6 +1792,7 @@ export function createChannelFeedRuntime(options = {}) {
     cancelPhysicalOperations('history attach recalibrated', 'stale-generation');
     for (const batch of networkBatches.values()) void cancelOwnedBatch(batch, 'history attach recalibrated');
     networkBatches.clear();
+    networkBatchAccessFailures.clear();
     world = nextWorld;
     if (worldChanged) {
       lifecycleEpoch += 1;
@@ -1747,8 +1924,11 @@ export function createChannelFeedRuntime(options = {}) {
     localReplicaReady = true;
     for (const [channelId, status] of histories) refreshControlCurrent(channelId, status);
     publish({ index: true });
-    for (const [channelId, request] of replayAfterAttach) {
-      void loadHistory(channelId, request).catch((error) => callback('onError', error));
+    for (const [channelId, deferred] of replayAfterAttach) {
+      const request = deferred?.request || deferred;
+      const semanticDemand = deferred?.semanticDemand || null;
+      void loadHistory(channelId, semanticDemand ? { ...request, semanticDemand } : request)
+        .catch((error) => callback('onError', error));
     }
     return { changed: true, meta: selectedMeta };
   }
@@ -1823,6 +2003,7 @@ export function createChannelFeedRuntime(options = {}) {
     executor.clear('replica cleared');
     for (const batch of networkBatches.values()) void cancelOwnedBatch(batch, 'replica cleared');
     networkBatches.clear();
+    networkBatchAccessFailures.clear();
     for (const channelId of histories.keys()) admission.reset(channelId);
     clearDeferredHistoryRequests();
     histories.clear(); grants.clear();
@@ -1887,6 +2068,7 @@ export function createChannelFeedRuntime(options = {}) {
     generation = 0;
     for (const batch of networkBatches.values()) void cancelOwnedBatch(batch, 'history disconnected');
     networkBatches.clear();
+    networkBatchAccessFailures.clear();
     publish(); return true;
   }
   function stopIncompatible(requestGeneration = generation) {
@@ -2211,6 +2393,7 @@ export function createChannelFeedRuntime(options = {}) {
     releaseRailDiagnostic = null;
     for (const batch of networkBatches.values()) void cancelOwnedBatch(batch, 'feed runtime destroyed');
     networkBatches.clear();
+    networkBatchAccessFailures.clear();
     executor.clear('feed runtime destroyed');
     clearDeferredHistoryRequests();
     for (const channelId of histories.keys()) admission.reset(channelId);

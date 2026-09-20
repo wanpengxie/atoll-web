@@ -75,6 +75,11 @@ describe('Feed PhysicalOperation / WaiterLease boundary', () => {
     });
 
     await vi.waitFor(() => expect(requests).toHaveLength(1));
+    expect(requests[0]).not.toHaveProperty('purpose');
+    expect(requests[0]).not.toHaveProperty('intent');
+    expect(requests[0]).not.toHaveProperty('urgency');
+    expect(requests[0]).not.toHaveProperty('rangeKind');
+    expect(requests[0]).toMatchObject({ priority: 'foreground', generation: 1, byteLimit: 1024 * 1024 });
     expect(second).not.toBe(first);
     expect(firstLease).toHaveBeenCalledOnce();
     expect(secondLease).toHaveBeenCalledOnce();
@@ -104,6 +109,91 @@ describe('Feed PhysicalOperation / WaiterLease boundary', () => {
     expect(mineResult.projection.items[0].envelope.sender.id).toBe('human:root:1');
     expect(diagnosticsSnapshot().filter((entry) => entry.event === 'history.batch_complete'))
       .toHaveLength(1);
+    expect(diagnosticsSnapshot().find((entry) => entry.event === 'history.batch_complete')?.detail)
+      .not.toHaveProperty('purpose');
+    runtime.destroy();
+  });
+
+  it('aggregates two physical ranges without clearing the other range loading state', async () => {
+    const { requests, runtime, snapshot } = await attachedRuntime();
+    const first = snapshot.loadHistory('c0', { beforeSeq: 3, limit: 1, urgency: 'blocking' });
+    const second = snapshot.loadHistory('c0', { beforeSeq: 6, limit: 1, urgency: 'blocking' });
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+    expect(snapshot.historyFor('c0')).toMatchObject({ loading: true, foregroundLoading: true, backgroundLoading: false });
+
+    expect(snapshot.enqueue({ ...row(2), ref: requests[0].ref, generation: 1 })).toBe(true);
+    expect(snapshot.pageEnd({
+      ref: requests[0].ref, channel_id: 'c0', generation: 1,
+      rows: 1, scan_low_seq: 1, scan_high_seq: 2, next_before_seq: 1, has_older: true,
+    })).toBe(true);
+    await expect(first).resolves.toMatchObject({ kind: 'satisfied', released: 1 });
+    expect(snapshot.historyFor('c0')).toMatchObject({ loading: true, foregroundLoading: true, backgroundLoading: false });
+
+    expect(snapshot.enqueue({ ...row(5), ref: requests[1].ref, generation: 1 })).toBe(true);
+    expect(snapshot.pageEnd({
+      ref: requests[1].ref, channel_id: 'c0', generation: 1,
+      rows: 1, scan_low_seq: 4, scan_high_seq: 5, next_before_seq: 4, has_older: true,
+    })).toBe(true);
+    await expect(second).resolves.toMatchObject({ kind: 'satisfied', released: 1 });
+    expect(snapshot.historyFor('c0')).toMatchObject({ loading: false, foregroundLoading: false, backgroundLoading: false });
+    runtime.destroy();
+  });
+
+  it('promotes one physical operation and recomputes foreground/background flags', async () => {
+    const { requests, runtime, snapshot } = await attachedRuntime();
+    const warm = snapshot.loadHistory('c0', { beforeSeq: 3, limit: 2, urgency: 'anticipatory' });
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    expect(snapshot.historyFor('c0')).toMatchObject({ loading: true, foregroundLoading: false, backgroundLoading: true });
+    const foreground = snapshot.loadHistory('c0', { beforeSeq: 3, limit: 2, urgency: 'blocking' });
+    expect(snapshot.historyFor('c0')).toMatchObject({ loading: true, foregroundLoading: true, backgroundLoading: false });
+    expect(snapshot.enqueue({ ...row(1), ref: requests[0].ref, generation: 1 })).toBe(true);
+    expect(snapshot.enqueue({ ...row(2), ref: requests[0].ref, generation: 1 })).toBe(true);
+    expect(snapshot.pageEnd({
+      ref: requests[0].ref, channel_id: 'c0', generation: 1,
+      rows: 2, scan_low_seq: 1, scan_high_seq: 2, next_before_seq: 1, has_older: false,
+    })).toBe(true);
+    await expect(warm).resolves.toMatchObject({ kind: 'satisfied', released: 2 });
+    await expect(foreground).resolves.toMatchObject({ kind: 'satisfied', released: 2 });
+    expect(snapshot.historyFor('c0')).toMatchObject({ loading: false, foregroundLoading: false, backgroundLoading: false });
+    runtime.destroy();
+  });
+
+  it('joins same reveal authority and supersedes an older reveal authority', async () => {
+    const { requests, runtime, snapshot } = await attachedRuntime();
+    const token = (operationID, activationID = 'activation-a', epoch = 'c0:1') => ({
+      operationID, activationID, viewID: 'c0:timeline', epoch,
+      inputEpoch: 2, intentRevision: 1, durableBaselineIDs: [], uiBaselineIDs: [], demandUnits: 1,
+    });
+    const first = snapshot.loadHistory('c0', {
+      beforeSeq: 3, limit: 2, urgency: 'blocking', intent: 'scroll-history',
+      historyRevealIntent: token('history:a:1'),
+    });
+    const same = snapshot.loadHistory('c0', {
+      beforeSeq: 3, limit: 2, urgency: 'blocking', intent: 'scroll-history',
+      historyRevealIntent: token('history:a:2'),
+    });
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    expect(snapshot.historyFor('c0').presentationAdmissionState.token.operationID).toBe('history:a:1');
+    expect(snapshot.enqueue({ ...row(1), ref: requests[0].ref, generation: 1 })).toBe(true);
+    expect(snapshot.enqueue({ ...row(2), ref: requests[0].ref, generation: 1 })).toBe(true);
+    expect(snapshot.pageEnd({
+      ref: requests[0].ref, channel_id: 'c0', generation: 1,
+      rows: 2, scan_low_seq: 1, scan_high_seq: 2, next_before_seq: 1, has_older: false,
+    })).toBe(true);
+    await expect(first).resolves.toMatchObject({ kind: 'satisfied' });
+    await expect(same).resolves.toMatchObject({ kind: 'satisfied' });
+
+    const replacement = snapshot.loadHistory('c0', {
+      beforeSeq: 4, limit: 2, urgency: 'blocking', intent: 'scroll-history',
+      historyRevealIntent: token('history:b:1', 'activation-b', 'c0:1'),
+    });
+    await vi.waitFor(() => expect(requests).toHaveLength(2));
+    expect(snapshot.historyFor('c0').presentationAdmissionState.token.operationID).toBe('history:b:1');
+    expect(snapshot.pageEnd({
+      ref: requests[1].ref, channel_id: 'c0', generation: 1,
+      rows: 0, scan_low_seq: 0, scan_high_seq: 3, next_before_seq: 0, has_older: false,
+    })).toBe(true);
+    await expect(replacement).resolves.toMatchObject({ kind: 'satisfied' });
     runtime.destroy();
   });
 

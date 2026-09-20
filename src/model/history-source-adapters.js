@@ -8,7 +8,7 @@ function numeric(value) {
   return Number.isSafeInteger(result) && result >= 0 ? result : 0;
 }
 function validateNetworkPage(batch, result, rows) {
-  if (numeric(result.generation) !== batch.generation) throw new Error('历史批次 generation 不匹配');
+  if (numeric(result.generation) !== numeric(batch.authority?.generation)) throw new Error('历史批次 generation 不匹配');
   if (result.channel_id !== batch.channelId) throw new Error('历史批次 channel 不匹配');
   const declaredRows = Number(result.declaredRows);
   if (!Number.isSafeInteger(declaredRows) || declaredRows !== rows.length) throw new Error('历史批次 rows 计数不匹配');
@@ -54,16 +54,16 @@ export function createHistorySourceAdapters({ requestPage, cancelPage, readCache
     const operation = operationFor(batch);
     if (!terminal.has(operation.status)) operation.status = status;
   }
-  async function executeNetwork(batch, operation) {
+  async function executeNetwork(batch, operation, { priority = 'background' } = {}) {
     operation.phase = 'network-receipt';
     const accepted = requestPage(batch.channelId, batch.beforeSeq, batch.limit, {
-      purpose: batch.purpose, priority: batch.priority, intent: batch.intent, urgency: batch.urgency,
-      generation: batch.generation, byteLimit: batch.byteLimit, rangeKind: batch.rangeKind,
+      priority,
+      generation: batch.authority?.generation, byteLimit: batch.byteLimit,
     });
     batch.ref = accepted?.ref || '';
     registerNetwork(batch);
     const receipt = await Promise.race([accepted, operation.cancellation.promise]);
-    if (!receipt?.accepted || receipt.generation !== batch.generation || receipt.channel_id !== batch.channelId)
+    if (!receipt?.accepted || receipt.generation !== batch.authority?.generation || receipt.channel_id !== batch.channelId)
       throw new Error('历史批次回执不匹配');
     operation.phase = 'network-page';
     const page = await Promise.race([operation.page.promise, operation.cancellation.promise]);
@@ -77,7 +77,7 @@ export function createHistorySourceAdapters({ requestPage, cancelPage, readCache
       void page.promise.catch(() => {});
       operations.set(batch, { status: 'pending', phase: 'queued', cancellation, page, rows: [] });
     },
-    async execute(batch) {
+    async execute(batch, { priority = 'background' } = {}) {
       if (batch.cancelled) throw new Error('history batch cancelled');
       const operation = operationFor(batch);
       if (operation.status !== 'pending') throw new Error('history source operation already started');
@@ -86,7 +86,7 @@ export function createHistorySourceAdapters({ requestPage, cancelPage, readCache
         const result = sourceKind(batch) === 'indexeddb'
           ? await Promise.race([(operation.phase = 'cache-read',
             readCache(batch.channelId, batch.beforeSeq, batch.limit, batch.byteLimit)), operation.cancellation.promise])
-          : await executeNetwork(batch, operation);
+          : await executeNetwork(batch, operation, { priority });
         if (operation.status === 'running') operation.status = 'delivered';
         return result;
       } catch (error) {
@@ -122,7 +122,7 @@ export function createHistorySourceAdapters({ requestPage, cancelPage, readCache
       operation.page.reject(error);
       operation.cancellation.reject(error);
       return notifyRemote && batch.source === 'network' && batch.ref
-        ? Promise.resolve().then(() => cancelPage(batch.channelId, batch.ref, batch.generation))
+        ? Promise.resolve().then(() => cancelPage(batch.channelId, batch.ref, batch.authority?.generation))
         : Promise.resolve();
     },
   });
