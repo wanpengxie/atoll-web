@@ -217,13 +217,25 @@ describe('A-D round 21 public-owner regression and cursor evidence', () => {
     const options = runtimeOptions('c0');
     const forbidden = Object.assign(new Error('forbidden'), { code: 'forbidden' });
     options.wireRef.current = { channelMeta: vi.fn().mockRejectedValue(forbidden) };
-    const { runtime, snapshot } = await readyRuntime({ options, boot: 'round21-cache-revoke-boot' });
+    const { runtime, snapshot } = await readyRuntime({
+      options,
+      entries: [
+        { channel_id: 'c0', head_seq: 0, has_rows: false },
+        { channel_id: 'c1', head_seq: 0, has_rows: false },
+      ],
+      boot: 'round21-cache-revoke-boot',
+    });
     snapshot().enqueue(liveRow('c0', 1, {
       id: 'cached-visible', kind: 'event', type: 'human.note', visibility: 'public',
       sender: OTHER, audience: [SELF], payload: { body: { text: 'cached' } },
     }));
+    snapshot().enqueue(liveRow('c1', 1, {
+      id: 'other-channel-visible', kind: 'event', type: 'human.note', visibility: 'public',
+      sender: OTHER, audience: [SELF], payload: { body: { text: 'other channel' } },
+    }));
     await snapshot().refreshChannel('c0');
     expect(snapshot().stateFor('c0')?.rows.size || 0).toBe(0);
+    expect(snapshot().stateFor('c1')?.rows.size || 0).toBe(1);
     runtime.destroy();
   });
 

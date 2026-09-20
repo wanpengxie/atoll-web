@@ -812,7 +812,15 @@ export function createChannelReplicaStore() {
     return removed;
   }
 
-  function reset() { states = new Map(); records.clear(); }
+  function reset(channelId = '') {
+    if (channelId) {
+      states.delete(channelId);
+      records.delete(channelId);
+      return;
+    }
+    states = new Map();
+    records.clear();
+  }
   const bounds = (channelId) => [...(records.get(channelId)?.state.rows.keys() || [])];
   return Object.freeze({
     destroy: reset, ensure, commit, installMeta, trim, afterTrim: (channelId) => records.get(channelId), reset,

@@ -672,6 +672,11 @@ export function createChannelFeedRuntime(options = {}) {
     let feedChanged = false;
     if (code === 'forbidden') {
       grants.delete(channelId);
+      // A current forbidden result revokes both access authority and the
+      // channel's in-memory projection.  Keep this channel-scoped: a late
+      // result from an older authority is rejected above, and other granted
+      // channels must remain visible.
+      replica.reset(channelId);
       const status = histories.get(channelId);
       if (status?.generation === authority.generation
         && (status.attached || status.messageCurrent || status.controlCurrent)) {
