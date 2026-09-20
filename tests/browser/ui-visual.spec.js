@@ -269,6 +269,37 @@ test('UI-VIS-08 600px 候选 popover fit 与排序分离', async ({ page, reques
   await expect(listbox).toHaveCount(0);
 });
 
+test('UI-VIS-08 600px 成员菜单保留键盘选择与点击选择路径', async ({ page, request }) => {
+  await page.setViewportSize({ width: 600, height: 720 });
+  await reset(request, 'actor-governance', 906);
+  await login(page);
+  const panel = await openChannelPanel(page, '成员');
+  const select = panel.getByRole('combobox', { name: '选择参与者' });
+
+  await select.focus();
+  await page.keyboard.press('ArrowDown');
+  const listbox = panel.getByRole('listbox', { name: '选择参与者选项' });
+  await expect(listbox).toBeVisible();
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('Enter');
+  await expect(select).toBeFocused();
+  await expect(panel.getByRole('status')).toContainText('Alice');
+  await expect(panel.locator('[data-participant-id="alice"]')).toBeVisible();
+
+  await select.click();
+  await expect(listbox).toBeVisible();
+  await panel.getByRole('option', { name: /Analyst Agent · Agent/ }).click();
+  await expect(select).toBeFocused();
+  await expect(panel.getByRole('status')).toContainText('Analyst Agent');
+  await expect(panel.locator('[data-participant-id="mock:analyst"]')).toBeVisible();
+
+  await select.click();
+  await panel.getByRole('option', { name: /Steward · Agent/ }).click();
+  await expect(select).toBeFocused();
+  await expect(panel.getByRole('status')).toContainText('Steward');
+  await expect(panel.locator('[data-participant-id="mock:steward"]')).toBeVisible();
+});
+
 test('UI-VIS-09 用户消息与 Agent 答案气泡视觉基线', async ({ page, request }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await reset(request, 'actor-capability', 908);
