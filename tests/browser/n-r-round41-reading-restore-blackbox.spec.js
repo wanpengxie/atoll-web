@@ -77,9 +77,8 @@ async function installPublicFrameSampler(page, anchorID) {
 }
 
 test('TC0224 minimal public black-box: channel return keeps one semantic anchor at one screen position', async ({ page, request }, testInfo) => {
-  // This is an intentional product-red baseline. It must fail if the public
-  // channel-return geometry regresses; it is not a skipped or private-owner test.
-  test.fail();
+  // This is the public regression contract for the channel-return geometry.
+  // Keep the observer DOM-only: no private owner or runtime binding is used.
   test.setTimeout(60_000);
 
   const reset = await request.post('/mock/control/reset', {
