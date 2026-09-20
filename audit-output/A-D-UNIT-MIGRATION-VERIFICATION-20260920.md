@@ -523,6 +523,31 @@ Only the existing A-D test contract annotation and audit files changed; no
 product source, private/compatibility API, duplicate red declaration, or
 expected-fail semantic changed.
 
+## Round 46 — AD-099 exact invalid-target rollback contract recovery
+
+Round 46 replays AD-099 through the baseline's actual provisional-target and
+fallback sequence. The prior Round 45 fixture expected the original `c0`
+heading while the directory had only published provisional `c1` with no
+readable channel row; that was an ordering error in the fixture, not evidence
+that the current owner had already completed rollback. The migrated ordinary
+case now asserts the public contract in three states: one `select('c1')`
+request and immediate terminal gating; provisional `c1` with no channel still
+gated; then the navigation owner's committed `c0` fallback restores the
+heading and terminal entry without a synthetic `select('c0')`.
+
+The public owner chain is `useChannelNavigation` for the authoritative
+`activeChannelId`/directory projection and `WorkspaceLayout` for the
+presentation pending gate. No rollback helper, second store, direct hash write,
+or product source was added. The focused combined run at shared HEAD
+`9cb258d` kept AD-093 as its existing red and AD-099 green: **AD-099 1 passed,
+AD-093 1 failed, 18 other tests skipped**.
+
+AD-099 is promoted to PASS. The ledger is now **330 PASS / 0 REGRESSION / 35
+BLOCKED**. The case-level contract and evidence are in
+[`A-D-ROUND46-AD099-ROLLBACK-OWNER-CONTRACT-20260920.md`](./A-D-ROUND46-AD099-ROLLBACK-OWNER-CONTRACT-20260920.md).
+The existing Round 18 expected-fail declaration remains historical evidence;
+it is not counted as completion and no duplicate red declaration was added.
+
 ## Public-boundary migration completed in this pass
 
 `tests/channel-access.test.js` and `tests/channel-name-cache.test.js` no longer

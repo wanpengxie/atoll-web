@@ -96,6 +96,7 @@ describe('S-Z SZ152 current history authority', () => {
       result.current.viewport.onReadingObservation({
         activationID,
         atTail: true,
+        settled: true,
         surfaceVisible: true,
         installedHighSeq: 2,
       });
@@ -135,6 +136,7 @@ describe('S-Z SZ152 current history authority', () => {
       result.current.viewport.onReadingObservation({
         activationID,
         atTail: true,
+        settled: true,
         surfaceVisible: true,
         installedHighSeq: 2,
       });
@@ -154,6 +156,7 @@ describe('S-Z SZ152 current history authority', () => {
       result.current.viewport.onReadingObservation({
         activationID,
         atTail: true,
+        settled: true,
         surfaceVisible: true,
         installedHighSeq: 2,
       });

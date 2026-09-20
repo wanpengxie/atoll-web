@@ -111,6 +111,7 @@ function currentEntryAuthority({ snapshot, historyStatus, bottomReady, availabil
 function sameTailEvidence(left, right) {
   return left.activationID === right.activationID
     && left.atTail === right.atTail
+    && left.settled === right.settled
     && left.surfaceVisible === right.surfaceVisible
     && left.installedHighSeq === right.installedHighSeq
     && left.generation === right.generation
@@ -192,6 +193,7 @@ function useProjectionReadingOwner({
   const observationRef = useRef(Object.freeze({
     activationID: controller.activationID,
     atTail: false,
+    settled: false,
     surfaceVisible: false,
     installedHighSeq: 0,
     generation: 0,
@@ -242,14 +244,28 @@ function useProjectionReadingOwner({
     if (typeof nextSurfaceVisible === 'boolean') boundary.surfaceVisible = nextSurfaceVisible;
     const nextEffective = boundary.documentVisible && boundary.surfaceVisible;
     if (previousEffective === nextEffective) return false;
-    const current = controller.getSnapshot().session;
-    if (current.mode !== READING_MODE.following) return false;
     // A hidden boundary invalidates the current positive receipt; a visible
     // boundary must mint a successor only after a real prior input epoch.
     if (!nextEffective) {
+      const cleared = Object.freeze({
+        ...observationRef.current,
+        activationID: controller.activationID,
+        atTail: false,
+        settled: false,
+        surfaceVisible: false,
+        installedHighSeq: 0,
+      });
+      if (!sameTailEvidence(cleared, observationRef.current)) {
+        observationRef.current = cleared;
+        setObservationRevision((value) => value + 1);
+      }
+      const current = controller.getSnapshot().session;
+      if (current.mode !== READING_MODE.following) return true;
       controller.update((active) => advanceReadingInputEpoch(active));
       return true;
     }
+    const current = controller.getSnapshot().session;
+    if (current.mode !== READING_MODE.following) return false;
     if (nextEffective && Number(current.inputEpoch || 0) > 0) {
       controller.update((active) => advanceReadingInputEpoch(active));
       return true;
@@ -537,6 +553,7 @@ function useProjectionReadingOwner({
     const caughtUp = following
       && evidence.activationID === controller.activationID
       && atTail
+      && evidence.settled === true
       && surfaceReady;
     const current = caughtUp
       && historyStatus.attached === true
@@ -674,11 +691,14 @@ function useProjectionReadingOwner({
           .map((id) => String(id || ''))
           .filter(Boolean))],
       });
-      if (observation.surfaceVisible !== true) {
+      if (observation.surfaceVisible !== true
+        || visibilityBoundaryRef.current.documentVisible !== true
+        || visibilityBoundaryRef.current.surfaceVisible !== true) {
         const cleared = Object.freeze({
           ...observationRef.current,
           activationID: controller.activationID,
           atTail: false,
+          settled: false,
           surfaceVisible: false,
           installedHighSeq: 0,
         });
@@ -694,6 +714,7 @@ function useProjectionReadingOwner({
       const nextEvidence = Object.freeze({
         activationID: controller.activationID,
         atTail: observation.atTail === true,
+        settled: observation.settled === true,
         surfaceVisible: true,
         installedHighSeq: Number(observation.installedHighSeq || 0),
         generation: Number(committedHistory.generation || 0),
@@ -724,6 +745,7 @@ function useProjectionReadingOwner({
           observationRef.current = Object.freeze({
             ...observationRef.current,
             atTail: false,
+            settled: false,
             surfaceVisible: true,
             installedHighSeq: 0,
           });
@@ -740,6 +762,7 @@ function useProjectionReadingOwner({
       observationRef.current = Object.freeze({
         ...observationRef.current,
         atTail: false,
+        settled: false,
         surfaceVisible: false,
         installedHighSeq: 0,
       });

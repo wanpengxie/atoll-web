@@ -94,6 +94,7 @@ describe('S-Z SZ151 filtered tail authority', () => {
       result.current.viewport.onReadingObservation({
         activationID,
         atTail: true,
+        settled: true,
         surfaceVisible: true,
         installedHighSeq: 2,
       });

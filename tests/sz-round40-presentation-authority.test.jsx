@@ -95,6 +95,7 @@ describe('S-Z canonical Presentation authority receipt', () => {
       result.current.viewport.onReadingObservation({
         activationID,
         atTail: true,
+        settled: true,
         surfaceVisible: true,
         installedHighSeq: 2,
       });
@@ -128,6 +129,7 @@ describe('S-Z canonical Presentation authority receipt', () => {
       result.current.viewport.onReadingObservation({
         activationID,
         atTail: true,
+        settled: true,
         surfaceVisible: true,
         installedHighSeq: 2,
       });
@@ -154,6 +156,7 @@ describe('S-Z canonical Presentation authority receipt', () => {
       result.current.viewport.onReadingObservation({
         activationID,
         atTail: true,
+        settled: true,
         surfaceVisible: true,
         installedHighSeq: 2,
       });
@@ -182,6 +185,7 @@ describe('S-Z canonical Presentation authority receipt', () => {
         result.current.viewport.onReadingObservation({
           activationID,
           atTail: true,
+          settled: true,
           surfaceVisible: true,
           installedHighSeq: 2,
         });
@@ -206,11 +210,26 @@ describe('S-Z canonical Presentation authority receipt', () => {
         result.current.viewport.onReadingObservation({
           activationID,
           atTail: true,
+          settled: false,
           surfaceVisible: true,
           installedHighSeq: 2,
         });
       });
       expect(result.current.viewport.getSession().inputEpoch).toBe(2);
+      expect(result.current.viewport.tailCaughtUp.caughtUp).toBe(false);
+      expect(receiptSink).toHaveBeenLastCalledWith(expect.objectContaining({
+        kind: 'notification-lease-revoke',
+        inputEpoch: 1,
+      }));
+      act(() => {
+        result.current.viewport.onReadingObservation({
+          activationID,
+          atTail: true,
+          settled: true,
+          surfaceVisible: true,
+          installedHighSeq: 2,
+        });
+      });
       expect(receiptSink).toHaveBeenLastCalledWith(expect.objectContaining({
         caughtUp: true,
         inputEpoch: 2,
@@ -232,6 +251,7 @@ describe('S-Z canonical Presentation authority receipt', () => {
       result.current.viewport.onReadingObservation({
         activationID,
         atTail: true,
+        settled: true,
         surfaceVisible: true,
         installedHighSeq: 2,
       });

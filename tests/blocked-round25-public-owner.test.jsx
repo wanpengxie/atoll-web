@@ -542,10 +542,17 @@ describe('A-D round 25 public-owner evidence', () => {
   });
 
   it('[AD-099] returns from an invalid target to the original channel and ends old pending handoff', () => {
-    // 用户能力：失效目标经目录拒绝后回原频道；不变量：rollback 与 committed identity 同一 owner；公开 owner：WorkspaceLayout。
+    // 用户能力：失效目标经目录拒绝后回原频道；不变量：rollback 与 committed identity 同一 owner；公开 owner：useChannelNavigation directory projection + WorkspaceLayout presentation gate。
     const nav = navigation();
     const view = renderWorkspace(nav);
     fireEvent.click(screen.getByText('c1'));
+    expect(nav.select).toHaveBeenCalledWith('c1');
+    expect(screen.getByRole('button', { name: /终端/ }).disabled).toBe(true);
+
+    // The directory may first publish the requested identity without a
+    // readable channel row. That intermediate fact is not the rollback: the
+    // shell must keep the old terminal command gated until the authority
+    // owner publishes the fallback commit.
     const invalid = navigation('c1');
     invalid.channel = null;
     view.rerender(<WorkspaceLayout
@@ -554,7 +561,21 @@ describe('A-D round 25 public-owner evidence', () => {
       conversation={{ element: <div data-testid="message-surface">消息</div> }}
       features={terminalFeatures(invalid)}
     />);
+    expect(screen.getByRole('button', { name: /终端/ }).disabled).toBe(true);
+
+    // The navigation owner completes rejection by publishing the last
+    // committed identity. WorkspaceLayout consumes that public projection;
+    // it must not synthesize a second select(c0) side effect.
+    const fallback = navigation('c0');
+    view.rerender(<WorkspaceLayout
+      session={session()}
+      navigation={fallback}
+      conversation={{ element: <div data-testid="message-surface">消息</div> }}
+      features={terminalFeatures(fallback)}
+    />);
     expect(screen.getByRole('heading', { name: 'c0' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /终端/ }).disabled).toBe(false);
+    expect(nav.select.mock.calls.map(([id]) => id)).toEqual(['c1']);
   });
 
   it('[AD-105] hands focus only to the latest target in a rapid A-to-B-to-A selection', () => {

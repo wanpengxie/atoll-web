@@ -98,6 +98,7 @@ describe('S-Z SZ150 production tail read authority', () => {
       result.current.viewport.onReadingObservation({
         activationID,
         atTail: true,
+        settled: true,
         surfaceVisible: true,
         installedHighSeq: 0,
       });
@@ -108,6 +109,7 @@ describe('S-Z SZ150 production tail read authority', () => {
       result.current.viewport.onReadingObservation({
         activationID,
         atTail: true,
+        settled: true,
         surfaceVisible: true,
         installedHighSeq: 2,
       });
@@ -133,6 +135,7 @@ describe('S-Z SZ150 production tail read authority', () => {
       result.current.viewport.onReadingObservation({
         activationID,
         atTail: true,
+        settled: true,
         surfaceVisible: true,
         installedHighSeq: 3,
       });
