@@ -136,6 +136,20 @@ composition, so the ledger remains **324 PASS / 0 REGRESSION / 41 BLOCKED**
 with OWNER_MISSING **10**, FIXTURE_MISSING **0**, and CAPABILITY_GAP **31**.
 No capability is declared obsolete and no product source is changed.
 
+## Round 32 evidence packet
+
+Round 32 rechecks ten non-Governance `CAPABILITY_GAP` rows that already have
+named public owners: AD-093/097/099/105/106/108 at WorkspaceLayout,
+AD-170/182 at ChannelFeedRuntime + ChannelReplica, and AD-256/257 at
+`useComposerSubmissionRuntime`. It deliberately adds no duplicate ordinary-red
+declaration; the existing Round 24/25 assertions remain the unique executable
+sources. The focused command reports **2 files failed; 10 selected tests
+failed; 30 tests skipped**. All ten remain ordinary-red capability evidence;
+none recovers to PASS. Governance rows remain deferred pending the new owner
+candidate. The ledger and categories are unchanged at **324 PASS / 0
+REGRESSION / 41 BLOCKED**, with OWNER_MISSING **10**, FIXTURE_MISSING **0**,
+and CAPABILITY_GAP **31**. No product source or baseline declaration changed.
+
 ## Minimal regression packets
 
 ### AD-011 — Activity retained-work settlement after reconnect
