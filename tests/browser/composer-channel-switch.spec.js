@@ -112,3 +112,39 @@ test('@ target leaves the Tiptap body, becomes a recipient chip, and submits to 
     contentType: 'application/json',
   });
 });
+
+test('Escape dismisses an @ suggestion and sends the restored literal address', async ({ page, request }, testInfo) => {
+  const submits = captureSubmitFrames(page);
+  const text = '@steward@example.com';
+  await reset(request);
+  await login(page);
+
+  const input = page.getByLabel('消息');
+  await input.click();
+  await input.pressSequentially('@st');
+  const option = page.getByRole('listbox').getByRole('option').filter({ hasText: 'steward' }).first();
+  await expect(option).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('listbox')).toHaveCount(0);
+
+  await input.pressSequentially('eward@example.com');
+  await expect(input).toHaveText(text);
+  await expect(page.locator('.composer-target-pill.is-picked')).toHaveCount(0);
+  await input.press('Enter');
+
+  const submitted = () => submits.find((frame) => frame?.msg_type === 'agent.ask' && frame?.payload?.text === text);
+  await expect.poll(submitted, { timeout: 10_000 }).toMatchObject({
+    channel_id: 'c0',
+    msg_type: 'agent.ask',
+    kind: 'request',
+    payload: { text },
+    audience: ['steward'],
+    visibility: 'public',
+  });
+  await expect(input).toHaveText('');
+  await expect(page.locator('article.request-message .request-text').filter({ hasText: text })).toBeVisible();
+  await testInfo.attach('composer-mention-escape-submit.json', {
+    body: JSON.stringify(submitted(), null, 2),
+    contentType: 'application/json',
+  });
+});
