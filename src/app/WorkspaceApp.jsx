@@ -1236,8 +1236,15 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     surfaceVisible: contentVisible && (navigation.activeView === 'conversation' || navigation.terminalVisible),
     composer: <Composer model={composer.model} commands={composer.commands} />,
     onTailCaughtUp: (receipt) => {
-      feed.markRead(navigation.activeChannelId, receipt);
-      feed.acknowledgeNotifications(navigation.activeChannelId, receipt);
+      // A surface cleanup can run after navigation has committed its next
+      // channel.  The receipt is the cross-owner identity for that callback;
+      // never borrow the mutable navigation selection for an old surface.
+      const receiptChannelId = String(receipt?.channelId || receipt?.authority?.channelId || '');
+      if (!receiptChannelId
+        || (receipt?.authority?.channelId
+          && String(receipt.authority.channelId) !== receiptChannelId)) return;
+      feed.markRead(receiptChannelId, receipt);
+      feed.acknowledgeNotifications(receiptChannelId, receipt);
     },
     onResolve: submission.resolve,
     onCancel: submission.cancel,

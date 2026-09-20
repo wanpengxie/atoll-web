@@ -548,6 +548,87 @@ describe('真实 Workspace owner composition', () => {
     expect(mocks.feedRuntime.getSnapshot().stateFor(mocks.channelId)?.rows.has(8)).toBe(true);
   });
 
+  it('routes an old conversation cleanup by its receipt channel after switching channels', async () => {
+    const previousChannels = mocks.navigation.channels;
+    const previousActiveChannelId = mocks.navigation.activeChannelId;
+    const previousActiveChannel = mocks.navigation.activeChannel;
+    const previousActiveRef = mocks.navigation.activeChannelRef.current;
+    const nextChannel = { id: 'c1', name: 'c1', access: 'member_active' };
+    const view = render(<WorkspaceApp />);
+    try {
+      await waitFor(() => expect(mocks.feedRuntime).toBeTruthy());
+      const feed = mocks.feedRuntime.getSnapshot();
+      await act(async () => {
+        await feed.prepareLocalReplica(mocks.principalId, { focus: mocks.channelId });
+        await feed.setHistoryGrants([
+          { channel_id: mocks.channelId, head_seq: 1, has_rows: true },
+        ], { generation: 1, boot: 'world-real', focus: mocks.channelId });
+      });
+      expect(feed.enqueue({
+        channel_id: mocks.channelId,
+        seq: 1,
+        generation: 1,
+        source: 'live',
+        envelope: {
+          id: 'old-surface-approval',
+          channel_id: mocks.channelId,
+          kind: 'request',
+          type: TYPES.humanApprove,
+          sender: { id: mocks.agentId, kind: 'agent' },
+          audience: [mocks.humanId],
+          visibility: 'public',
+          payload: { body: { text: 'confirm?' } },
+        },
+      })).toBe(true);
+      const status = feed.historyFor(mocks.channelId);
+      const receipt = {
+        channelId: mocks.channelId,
+        authority: status.authority,
+        owner: {
+          channelId: mocks.channelId,
+          viewKey: `${mocks.channelId}:conversation`,
+          activationID: 'old-surface',
+          generation: status.generation,
+        },
+        captured: {
+          presentationRevision: status.presentationRevision,
+          sourceRevision: status.presentationRevision,
+          installedHighSeq: 1,
+        },
+        generation: status.generation,
+        authorityRevision: status.notificationAuthorityRevision,
+        caughtUp: true,
+        atTail: true,
+        following: true,
+        surfaceVisible: true,
+        cause: 'presented-follow',
+        physicalSeq: 1,
+        boundary: 1,
+      };
+
+      mocks.navigation.channels = [
+        ...previousChannels,
+        nextChannel,
+      ];
+      mocks.navigation.activeChannelId = nextChannel.id;
+      mocks.navigation.activeChannel = nextChannel;
+      mocks.navigation.activeChannelRef.current = nextChannel.id;
+      act(() => view.rerender(<WorkspaceApp />));
+      await waitFor(() => expect(mocks.layoutProps?.navigation?.activeChannelId).toBe(nextChannel.id));
+
+      // This callback represents the old A surface unmounting after B has
+      // committed. Its receipt remains the only valid channel identity.
+      act(() => mocks.layoutProps.conversation.onTailCaughtUp(receipt));
+      expect(feed.historyFor(mocks.channelId).notificationHighWater).toBe(1);
+    } finally {
+      mocks.navigation.channels = previousChannels;
+      mocks.navigation.activeChannelId = previousActiveChannelId;
+      mocks.navigation.activeChannel = previousActiveChannel;
+      mocks.navigation.activeChannelRef.current = previousActiveRef;
+      view.unmount();
+    }
+  });
+
   it('clamps a restored future cursor before Workspace exposes channel history', async () => {
     const key = ['atoll.feed-cursors.v1.', mocks.principalId, '\u0000world-real'].join('');
     localStorage.setItem(key, JSON.stringify({
