@@ -1460,6 +1460,76 @@ state; no internal timer/order/callback-name oracle is involved. No product or
 test file was modified for this analysis, and concurrent dirty files were not
 staged.
 
+## Round 46 Batch-A send-join state machine and forbidden paths
+
+This is a read-only design handoff for the Reading owner. Batch A is one
+send-join lifecycle keyed by the existing public tuple
+`(activationID, inputEpoch, intentRevision, bottomIntent.id)`. Its geometry
+observation is attached to that active intent; it is not a second store or a
+second scrolling lifecycle. Batch B (TC-1018 ordinary follow) is deliberately
+outside this state machine and is specified after the transition table.
+
+### Batch A event sequence
+
+| state | accepted public event | next state / retained fact | permitted effect |
+|---|---|---|---|
+| `Idle` | Composer send-start calls `requestLatest` | `Armed`; retain `afterPresentationRevision` and `baselineTailID`, with no target IDs yet. | None. A send request alone never writes. |
+| `Armed` | `bindLatestIntentTargets` supplies the durable target IDs | `Bound`; retain the same intent identity and wait for every target row. | None. Target binding is not a paint/height receipt. |
+| `Bound` | A presentation contains all target IDs | `Baseline`; capture the first target-complete presentation/physical geometry as the non-writing baseline. | None. Row presence alone cannot call `scrollTo` or consume the intent. |
+| `Bound`/`Baseline` | First/equal/same-revision `totalListHeightChanged` or layout observation | Remain `Baseline`; update only the read-only geometry evidence for this intent. | None. The first target/equal height is a baseline, not authorization. |
+| `Baseline` | A later authorized destination height is committed while all targets remain present and the tuple/root fence still matches | `Ready` → `Consumed` after the write. | Exactly one public-root `scrollTo({top:scrollHeight, behavior:'auto'})`, then exactly one `consumeLatestIntent`; duplicate callbacks are no-ops. |
+| `Armed`/`Bound`/`Baseline` | Composer publicly rejects/revokes the send | `Revoked`/`Idle`; old intent identity is no longer live. | No replay of any earlier height token. Ordinary following may be evaluated separately at the public revoke boundary. |
+| `Bound`/`Baseline` | Target moves to Waiting or is absent from the current Presentation before destination-ready geometry | `WaitingBaseline`; retain the active intent and its baseline, without claiming completion. | No write and no consume. A later valid target/height event must still be the only way to reach `Ready`. |
+| Any live state | Activation/input epoch/physical-root/generation changes, or a stale callback arrives | `Invalidated` for that event; current owner remains authoritative. | No write into the successor root and no mutation of the newer intent. |
+
+The six Batch-A cases map to the sequence as follows:
+
+| case | event sequence | forbidden path exposed by the current owner |
+|---|---|---|
+| TC-1010 | `Armed → Bound → Baseline` at the target-row presentation, before the destination height commit. | Current owner writes `{top:1000}` at the presentation instead of remaining in `Baseline`. |
+| TC-1011 | `Bound → Baseline` on the first 1132 height, then `Baseline → Ready` only on the later 1200 height. | Current owner writes at both first and later same-revision heights, rather than retaining the first height as baseline. |
+| TC-1012 | Equal-height target acknowledgement is `Baseline`; the later 1100 resize is `Ready`. | Current owner writes `{top:1000}` at the equal-height baseline. |
+| TC-1014 | `Baseline` receives height callbacks, then public revoke transitions to `Revoked`; no pre-revoke write is legal. | Current owner writes `{top:1132}` before revoke, retroactively blessing the old callback. |
+| TC-1015 | `Baseline` remains send-owned until public revoke; only the post-revoke ordinary-follow boundary may write once. | Current owner writes `{top:1132}` before revoke instead of waiting for the public boundary. |
+| TC-1019 | Target appears, then moves to Waiting/absent before a destination-ready height; remain `WaitingBaseline`. | Current owner writes `{top:1000}` on target appearance and bypasses destination readiness. |
+
+### Batch-A forbidden paths
+
+The Reading owner must reject all of these paths, regardless of callback
+ordering:
+
+* `targetMessageIDs` becoming present is not itself a `Ready` receipt;
+  `scrollTo` and intent consumption are forbidden at that point.
+* The first height after the target, an equal-height receipt, a role-only
+  receipt, and a repeated same-revision receipt are baseline evidence only;
+  none may write or consume.
+* A callback captured before public revoke cannot write after or before revoke;
+  revoke must not replay the captured token. Only a fresh public boundary may
+  authorize ordinary following.
+* A target that is Waiting/absent cannot be treated as destination-ready, and
+  its active send intent cannot be silently consumed or replaced by a guessed
+  fallback target.
+* A duplicate `Ready` callback cannot produce a second root write or second
+  receipt. A stale activation, input epoch, root, or generation cannot touch
+  the successor.
+
+### Batch-B boundary (kept separate)
+
+While Batch A is `Armed`, `Bound`, `Baseline`, or `WaitingBaseline`, an
+unrelated committed tail may independently satisfy ordinary following. This is
+TC-1018's contract: one physical-root tail write is allowed for the unrelated
+arrival, while the newer send intent remains pending and unconsumed. The
+ordinary-follow path must not advance Batch A to `Ready`, clear its target IDs,
+or consume its receipt. If the same event commits the send target, it belongs
+to Batch A and must obey the baseline fence instead.
+
+This yields the minimum owner plan: one `VendorListExecutor` state-machine
+owner, with Batch-A acceptance first and Batch-B coexistence acceptance
+second. No Composer timing flag, notification owner, private callback, second
+store, or compatibility path is part of the repair contract. The design is
+based on the existing strict evidence (7/7 stable RED at latest45b); no
+product or test file was modified in this read-only round.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test
