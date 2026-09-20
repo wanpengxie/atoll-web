@@ -213,6 +213,67 @@ async function renderSavedBookmark(bookmark) {
 }
 
 describe('reading observation settlement authority (VendorListExecutor)', () => {
+  it('replays the latest physical coverage once when Reading readiness commits', () => {
+    const owner = readingOwner();
+    owner.status = {
+      attached: false,
+      generation: 7,
+      messageCurrent: false,
+      headSeq: 1,
+      hasOlder: true,
+      completedPages: 0,
+      revealVersion: 0,
+    };
+    owner.bottomReady = false;
+    owner.onUnderfill = vi.fn(() => Promise.resolve({ kind: 'satisfied' }));
+    const view = render(
+      <VendorListExecutor
+        snapshot={snapshot()}
+        reading={owner}
+        surfaceVisible
+        renderRow={(value) => <article>{value.id}</article>}
+      />,
+    );
+    const scroller = screen.getByRole('region', { name: '频道动态' });
+    setScrollerGeometry(scroller, { scrollTop: 0 });
+    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, value: 500 });
+
+    // The vendor has a real under-filled range, but the first callback arrives
+    // before the Reading admission/bottom proof. It must be retained, not
+    // converted into a second demand or dropped as an initial edge callback.
+    act(() => harness.props.rangeChanged({ startIndex: 99, endIndex: 99 }));
+    expect(owner.onUnderfill).not.toHaveBeenCalled();
+
+    owner.status = {
+      ...owner.status,
+      attached: true,
+      messageCurrent: true,
+      completedPages: 1,
+    };
+    owner.bottomReady = true;
+    view.rerender(
+      <VendorListExecutor
+        snapshot={snapshot()}
+        reading={owner}
+        surfaceVisible
+        renderRow={(value) => <article>{value.id}</article>}
+      />,
+    );
+    act(() => {});
+    expect(owner.onUnderfill).toHaveBeenCalledTimes(1);
+
+    owner.status = { ...owner.status, completedPages: 2, revealVersion: 1 };
+    view.rerender(
+      <VendorListExecutor
+        snapshot={snapshot()}
+        reading={owner}
+        surfaceVisible
+        renderRow={(value) => <article>{value.id}</article>}
+      />,
+    );
+    expect(owner.onUnderfill).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps current downward user authority when scrollend adds the settled sampling phase', async () => {
     const owner = readingOwner();
     const scroller = await mount(owner);

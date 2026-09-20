@@ -278,6 +278,14 @@ export function VendorListExecutor({
   // transaction.
   const settledPositionLeaseRef = useRef(null);
   const touchRef = useRef(null);
+  // Virtuoso can publish a committed range before Reading has attached the
+  // current history admission or bottom proof. Keep that physical coverage
+  // fact in the sole adapter and replay it once when the owner becomes ready;
+  // dropping it here would strand an under-filled viewport with no new range
+  // callback to wake the history consumer.
+  const coverageEvidenceRef = useRef(null);
+  const coverageSourceKeyRef = useRef('');
+  const coveragePublishedKeyRef = useRef('');
   const readingController = useBrowsingReadingController({ reading, snapshot });
   const { navigationPolicy, reportDomEvidence } = readingController;
   const readingRef = useRef(reading);
@@ -305,6 +313,49 @@ export function VendorListExecutor({
     readingRef.current = reading;
     snapshotRef.current = snapshot;
   }, [reading, snapshot]);
+
+  const publishCoverageEvidence = useCallback((evidence) => {
+    const owner = readingRef.current;
+    const data = snapshotRef.current;
+    if (!evidence || !owner || !data
+      || evidence.root !== rootRef.current
+      || evidence.activationID !== owner.activationID
+      || Number(evidence.presentationRevision) !== Number(data.revision || 0)) return false;
+    // Range callbacks can oscillate while Virtuoso measures the same
+    // presentation (for example full-range -> visible-window -> full-range).
+    // The physical admission is one per mounted root/presentation/viewport;
+    // using the transient range or scrollHeight here would re-demand the same
+    // under-filled viewport after a history completion.
+    const sourceKey = [
+      evidence.activationID,
+      evidence.presentationRevision,
+      evidence.clientHeight,
+    ].join(':');
+    if (coveragePublishedKeyRef.current === sourceKey) return false;
+    const accepted = reportDomEvidence(evidence) === true;
+    if (accepted) coveragePublishedKeyRef.current = sourceKey;
+    return accepted;
+  }, [reportDomEvidence]);
+
+  useLayoutEffect(() => {
+    // Re-run the latest typed range only after the physical root and Reading
+    // readiness facts have committed. publishCoverageEvidence has its own
+    // source/identity fence and therefore cannot replay a retired root.
+    publishCoverageEvidence(coverageEvidenceRef.current);
+  }, [
+    publishCoverageEvidence,
+    reading.activationID,
+    reading.bottomReady,
+    reading.status?.attached,
+    reading.status?.completedPages,
+    reading.status?.generation,
+    reading.status?.hasOlder,
+    reading.status?.messageCurrent,
+    reading.status?.revealVersion,
+    rootNode,
+    snapshot.revision,
+    snapshot.rows.length,
+  ]);
 
   const observe = useCallback((source = 'layout', request = null) => {
     const root = rootRef.current;
@@ -1278,17 +1329,33 @@ export function VendorListExecutor({
         endIndex: Number(range.endIndex),
       }));
       const root = rootRef.current;
-      if (root) reportDomEvidence(Object.freeze({
-        type: 'viewport-coverage',
-        activationID: reading.activationID,
-        presentationRevision: Number(snapshot.revision || 0),
-        hasBothBoundaries: range.startIndex === 0 && range.endIndex >= snapshot.rows.length - 1,
-        underfilled: root.scrollHeight <= root.clientHeight + 1,
-        scrollHeight: Number(root.scrollHeight || 0),
-        clientHeight: Number(root.clientHeight || 0),
-        demandUnits: completeViewportUnits(root),
-        onWake: () => scheduleObserve('layout'),
-      }));
+      if (root) {
+        const firstItemIndex = Number(snapshot.firstItemIndex || 1);
+        const lastItemIndex = firstItemIndex + snapshot.rows.length - 1;
+        const coverage = Object.freeze({
+          type: 'viewport-coverage',
+          activationID: reading.activationID,
+          presentationRevision: Number(snapshot.revision || 0),
+          hasBothBoundaries: range.startIndex <= firstItemIndex && range.endIndex >= lastItemIndex,
+          underfilled: root.scrollHeight <= root.clientHeight + 1,
+          scrollHeight: Number(root.scrollHeight || 0),
+          clientHeight: Number(root.clientHeight || 0),
+          demandUnits: completeViewportUnits(root),
+          startIndex: Number(range.startIndex),
+          endIndex: Number(range.endIndex),
+          root,
+          onWake: () => scheduleObserve('layout'),
+        });
+        const admissionKey = [coverage.activationID, coverage.presentationRevision,
+          coverage.clientHeight].join(':');
+        if (coverageEvidenceRef.current?.root !== root
+          || coverageSourceKeyRef.current !== admissionKey) {
+          coverageSourceKeyRef.current = admissionKey;
+          coveragePublishedKeyRef.current = '';
+        }
+        coverageEvidenceRef.current = coverage;
+        publishCoverageEvidence(coverage);
+      }
       scheduleObserve('layout');
     }}
     totalListHeightChanged={() => {

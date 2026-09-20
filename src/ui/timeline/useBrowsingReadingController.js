@@ -124,11 +124,11 @@ export function useBrowsingReadingController({ reading, snapshot, handoffPending
       || status.attached !== true || status.messageCurrent !== true || status.hasOlder !== true
       || (Number(status.headSeq || 0) > 0 && owner.bottomReady !== true)) {
       coverageDemandKeyRef.current = '';
-      return;
+      return false;
     }
     const key = [current.activationID, evidence.presentationRevision, evidence.clientHeight,
       evidence.scrollHeight, status.generation, status.completedPages, status.revealVersion].join(':');
-    if (coverageDemandKeyRef.current === key) return;
+    if (coverageDemandKeyRef.current === key) return false;
     coverageDemandKeyRef.current = key;
     diagnostic('debug', 'history.viewport_underfilled', {
       channelId: status.channelId || '',
@@ -145,6 +145,7 @@ export function useBrowsingReadingController({ reading, snapshot, handoffPending
       if (coverageDemandKeyRef.current === key) coverageDemandKeyRef.current = '';
       evidence.onWake?.();
     });
+    return true;
   }, [requestHistory]);
 
   const navigationPolicy = useMemo(() => Object.freeze({
