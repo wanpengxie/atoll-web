@@ -81,4 +81,25 @@ describe('durable attachment association', () => {
     expect(result).toMatchObject({ conflict: true, reason: 'draft_consumed' });
     store.close();
   });
+
+  it('marks a stale draft write as consumed while allowing a fresh write at the sentinel revision', async () => {
+    const store = createOutboxStore({ databaseName: `attachment-${crypto.randomUUID()}` });
+    const first = await store.writeDraft('p', 'c', { text: 'late picker', editorRevision: 1 }, 0);
+    const accepted = await store.acceptDraft({
+      principalId: 'p', channelId: 'c', expectedRevision: first.record.revision, editorRevision: 1,
+      submissions: [{
+        key: 'late', messageId: 'late', channelId: 'c', state: 'queued', createdAt: 1, updatedAt: 1,
+        frame: { id: 'late', channel_id: 'c', payload: { text: 'late picker' } },
+      }],
+      authorize: () => true,
+    });
+
+    const stale = await store.writeDraft('p', 'c', { text: 'late picker', editorRevision: 1 }, first.record.revision);
+    expect(stale).toMatchObject({ conflict: true, reason: 'draft_consumed', current: { draft: null } });
+    expect((await store.restoreDrafts('p'))[0]).toMatchObject({ revision: accepted.record.revision, draft: null });
+
+    const fresh = await store.writeDraft('p', 'c', { text: 'new draft', editorRevision: 2 }, accepted.record.revision);
+    expect(fresh).toMatchObject({ conflict: false, record: { revision: accepted.record.revision + 1, draft: { text: 'new draft' } } });
+    store.close();
+  });
 });

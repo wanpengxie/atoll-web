@@ -224,6 +224,40 @@ describe('current submission owner: outbox-store + composer runtime', () => {
     store.close();
   });
 
+  it('fails closed for a stale picker update after another owner consumed the draft', async () => {
+    const harness = runtimeHarness({ principalId: 'late-picker-root' });
+    const first = await harness.store.writeDraft(harness.principalId, 'c0', { text: 'late picker', editorRevision: 1 }, 0);
+    const writeDraft = vi.fn((...args) => harness.store.writeDraft(...args));
+    const outbox = { ...harness.store, writeDraft };
+    harness.outboxFactory = () => outbox;
+    const { result, unmount } = renderHook(() => useComposerSubmissionRuntime(harness));
+    await waitFor(() => expect(result.current.draftFor('c0')).toMatchObject({
+      revision: first.record.revision, text: 'late picker',
+    }));
+
+    const accepted = await harness.store.acceptDraft({
+      principalId: harness.principalId, channelId: 'c0', expectedRevision: first.record.revision,
+      editorRevision: 1, submissions: [row('late-picker')],
+    });
+    expect(accepted).toMatchObject({ accepted: true, consumed: true, record: { draft: null } });
+
+    await expect(act(async () => result.current.updateDraft(
+      'c0', { text: 'late picker', editorRevision: 1 }, { preserveEditorRevision: true },
+    ))).rejects.toMatchObject({ code: 'draft_consumed' });
+    expect(writeDraft).toHaveBeenCalledTimes(1);
+    expect((await harness.store.restoreDrafts(harness.principalId))[0]).toMatchObject({
+      revision: accepted.record.revision, draft: null,
+    });
+    await waitFor(() => expect(result.current.draftFor('c0')).toMatchObject({ text: '', editorRevision: 0 }));
+
+    await act(async () => {
+      await result.current.updateDraft('c0', { text: 'fresh draft', editorRevision: 2 }, { preserveEditorRevision: true });
+    });
+    expect((await harness.store.restoreDrafts(harness.principalId))[0]).toMatchObject({ draft: { text: 'fresh draft' } });
+    unmount();
+    harness.store.close();
+  });
+
   it('rejects renderer-only attachments instead of making an unrecoverable durable record', async () => {
     const store = createOutboxStore({ databaseName: databaseName() });
     await expect(store.putMany('root', [{ ...row('m7'), frame: { ...frame('m7'), payload: { attachments: [{ resource_id: 'blob:local' }] } } }]))

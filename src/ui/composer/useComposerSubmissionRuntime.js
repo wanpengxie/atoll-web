@@ -313,6 +313,16 @@ export function useComposerSubmissionRuntime({
         expectedRevision,
       );
       if (result.conflict) {
+        if (result.reason === 'draft_consumed') {
+          const consumed = result.current;
+          persistedDraftRevisionRef.current.set(channelId, Number(consumed?.revision || 0));
+          if (consumed) {
+            publishDrafts((rows) => new Map(rows).set(channelId, consumed));
+          }
+          const error = new Error('草稿已被发送，请重新编辑后再保存');
+          error.code = 'draft_consumed';
+          throw error;
+        }
         const conflicts = result.current?.draft ? [result.current.draft] : [];
         result = await outboxRef.current.writeDraft(owner.principalId, channelId, {
           ...optimistic.draft,

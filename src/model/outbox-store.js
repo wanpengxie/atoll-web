@@ -211,7 +211,11 @@ export function createOutboxStore({
         assertCurrent();
         const revision = Number(current?.revision || 0);
         if (Number.isFinite(expectedRevision) && Number(expectedRevision) !== revision) {
-          return { conflict: true, current };
+          return {
+            conflict: true,
+            current,
+            ...(current?.draft == null && revision > Number(expectedRevision) ? { reason: 'draft_consumed' } : {}),
+          };
         }
         const next = {
           principalId,
