@@ -2643,3 +2643,123 @@ npx playwright test tests/browser/ui-visual.spec.js --grep 'UI-VIS-08' \
   projection 排序问题，不弱化测试。
 - 本轮只修改 `tests/browser/ui-visual.spec.js` 严格红例/排序 gate 与本审计；未修改
   产品、vendor、package、fixture 或截图阈值，未删除 skip。共享树其他脏改未触碰。
+
+## 第四十四轮：UI-VIS-06 详情取消端口与 UI-VIS-08 候选目录/上翻语义
+
+本轮在当前 HEAD `9896328` 复验上一轮的两个真实红例，目标是把“按钮存在”和
+“菜单能打开”拆回公开用户能力、公开投影与通用布局 owner。没有改产品、mock、截图
+或阈值；`CHOKIDAR_USEPOLLING=true` 只用于绕过共享机器 inotify 已耗尽的测试环境限制，
+不改变浏览器运行时。
+
+### UI-VIS-06：详情取消是真实能力缺口，唯一 owner 是 WorkspaceApp 的 tasks port
+
+当前 HEAD 的真实浏览器复现（3 次，每次从 reset 创建新的本设备定时动作，再打开任务详情）：
+
+```text
+CHOKIDAR_USEPOLLING=true \
+ATOLL_TEST_WEB_PORT=15685 ATOLL_TEST_MOCK_PORT=19985 \
+ATOLL_TEST_OUTPUT=/tmp/tz-r44-vis06 \
+npx playwright test tests/browser/ui-visual.spec.js \
+  --grep 'UI-VIS-06 本设备自动动作取消入口保持可执行' \
+  --workers=1 --repeat-each=3 --reporter=line \
+  --output=test-results-tz-r44-vis06-repeat3
+3 failed（3/3 同一首断点，line 132）
+```
+
+用户路径确实完成了“安排自动动作 → 真实任务 row → 工作项详情”，详情也显示
+`取消本设备自动动作`；但严格可执行 gate 收到同一 DOM 结果：
+
+```text
+<button disabled ... title="该动作的命令端口尚未接入">取消本设备自动动作</button>
+```
+
+owner 对齐如下：
+
+| 用户结果 | fae8b70 | 当前公开 owner | 裁决 |
+| --- | --- | --- | --- |
+| 详情中的本设备动作可取消 | `src/App.jsx` 的 `workItems.onCancelAutomation: handleCancelTimer` | `WorkspaceApp.jsx` 的 `cancelAutomation` 已绑定 `automationPort.commands.cancel`，但 `tasksPort.commands`（`WorkspaceApp.jsx:1384-1447`）没有 `cancelAutomation`；详情因此由 `TaskDetailPanel.jsx:36-38,50-55` 渲染 disabled fallback | 产品缺口，保留严格 RED |
+| 自动动作面板取消已知 receipt | 同一旧 `handleCancelTimer` | 当前 `WorkspaceApp.jsx:1095-1109` → wire `cancelTimer`，仅覆盖 automation panel 的公开 receipt | 不能冒充详情取消能力 |
+
+旧体验的证据是 `fae8b70:src/App.jsx:2196` 明确将真实取消 handler 传入
+`workItems`；这不是要求恢复旧内部 store，而是当前 `tasksPort` 必须向既有详情 owner
+提供同一公开 command contract。最小复现已纳入
+[`tests/browser/ui-visual.spec.js:110`](/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web/tests/browser/ui-visual.spec.js:110)，
+不以 `toBeVisible()` 或截图代替可执行性。
+
+### UI-VIS-08：候选顺序是治理目录投影回归；上翻是布局后果，不应拿截图掩盖
+
+当前 HEAD 的真实 Chromium 复现（3 次）：
+
+```text
+CHOKIDAR_USEPOLLING=true \
+ATOLL_TEST_WEB_PORT=15686 ATOLL_TEST_MOCK_PORT=19986 \
+ATOLL_TEST_OUTPUT=/tmp/tz-r44-vis08 \
+npx playwright test tests/browser/ui-visual.spec.js \
+  --grep 'UI-VIS-08 600px' \
+  --workers=1 --repeat-each=3 --reporter=line \
+  --output=test-results-tz-r44-vis08-repeat3
+3 failed（3/3 同一首断点，line 180）
+```
+
+严格 DOM 候选列表收到：
+
+```text
+搜索用户、Agent 或工具 → Alice · 用户 → Bob · 用户 →
+Steward · Agent → Claude · Agent → Analyst Agent · Agent → Search Tool · 工具
+```
+
+`fae8b70` 的公开 `usablePrincipals` 与 `usableDeclarations` 分别按显示名排序
+（`src/model/channel-governance.js:72-82`），因此同一 fixture 的用户可观察顺序应为：
+
+```text
+搜索用户、Agent 或工具 → Alice · 用户 → Bob · 用户 →
+Analyst Agent · Agent → Claude · Agent → Search Tool · 工具 → Steward · Agent
+```
+
+当前 mock 的四个 declaration 事实没有变（`mock/domain.mjs:96-100`）；当前
+`WorkspaceApp.jsx:1558-1563` 只做权限/可管理过滤，
+`GovernanceFeature.jsx:140-146` 直接按 receipt insertion order 拼接，没有 canonical
+display-name sort。唯一首 owner 是 **WorkspaceApp 的 directory→governance projection /
+`ChannelMembers` candidates 组合**；`isManageableDeclaration` 只负责标准 actor/状态
+过滤（`src/model/actor-visibility.js:32-40`），不是排序 owner。这个顺序改变影响发现
+与选择，不是合法视觉 successor，故不迁移旧 screenshot，也不改产品或把 gate 放宽。
+
+同一真实菜单还在 600×720 当前布局向上翻转，listbox 覆盖 roster 卡底部及添加卡说明，
+而旧 fae 图是在 trigger 下方展开。placement 的直接算法 owner 是通用
+`SelectMenu.jsx:46-50`：当 trigger 下方可用高度小于候选菜单且上方更多时选择 `top`；
+CSS 的 `placement-top` 仅做绝对定位（`src/styles/primitives.css:34-35`）。因此本轮把
+两层语义分开：
+
+- **排序**是治理公开 directory projection 的产品回归，已由
+  [`ui-visual.spec.js:175-188`](/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web/tests/browser/ui-visual.spec.js:175)
+  固化严格合同，保留 RED。
+- **上翻**是当前治理卡片高度/trigger 位置触发的通用 fit 结果；当前 listbox 仍在 viewport
+  内、候选可点击、Escape 可关闭，没有证据证明应通过 CSS 隐藏或强行向下溢出。它是
+  successor layout/可用性审查项，不可用截图差异掩盖排序回归；若产品要求不覆盖前一卡片，
+  应由治理布局 owner 与 SelectMenu owner 共同给出新的公开空间合同，而非本迁移轮调数。
+
+### 下一条基线：UI-VIS-09 用户结果 PASS
+
+当前 HEAD 定向真实 Chromium repeat3：
+
+```text
+ATOLL_TEST_WEB_PORT=15684 ATOLL_TEST_MOCK_PORT=19984 \
+ATOLL_TEST_OUTPUT=/tmp/tz-r44-vis09 \
+npx playwright test tests/browser/ui-visual.spec.js --grep 'UI-VIS-09' \
+  --workers=1 --repeat-each=3 --reporter=line \
+  --output=test-results-tz-r44-vis09-repeat3
+3 passed (20.0s)
+```
+
+用户消息与 Agent 答案均可见，历史回合横向 containment、viewport scrollWidth、操作控件
+非零宽度均通过；因此 VIS09 当前没有新增产品/迁移缺口，旧截图差异不单独升级为能力红例。
+
+### Round44 交付与边界
+
+- 修改范围仅为本审计和已有 `tests/browser/ui-visual.spec.js` 严格用户合同；本轮未改
+  `src/`、vendor、package、mock、fixture、截图或 skip。
+- VIS06 复现包：`test-results-tz-r44-vis06-repeat3`，3/3 disabled 详情取消。
+- VIS08 复现包：`test-results-tz-r44-vis08-repeat3`，3/3 候选顺序 RED；向上翻转由
+  `SelectMenu` fit 算法触发，排序由治理 directory projection 缺少 canonical sort 触发。
+- VIS09 复现包：`test-results-tz-r44-vis09-repeat3`，3/3 用户合同 PASS。
+- 共享树既有其他 agent 脏改未触碰、未纳入本提交。
