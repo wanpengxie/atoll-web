@@ -200,3 +200,35 @@ F4 TC-0188/0189/0190 的旧动作、observable 与前一轮三条 PRODUCT REGRES
 [E-H-R26-F4-TASK-PRODUCT-REGRESSIONS.md](/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web/audit-output/E-H-R26-F4-TASK-PRODUCT-REGRESSIONS.md:1)
 及其 successor [f4-tasks-restore.spec.js](/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web/tests/browser/f4-tasks-restore.spec.js:1)。本轮未在上述共享 source
 阻断下冒充 F4 重跑或改产品；TDZ/重复声明修复后应按该报告的三条旧合同逐案定向重跑。
+
+## R28 frozen-head follow-up — TC-0176–0182 strict 1487 mapping
+
+在产品 owner 提交 `3432851` 后，对同一 `f3-dynamic-restore.spec.js` 逐条重跑。TC-0178
+仍严格失败：surface `76→142`（增长 `66px`），timeline geometry 为
+`top=101,bottom=588` 前后不变，故等量让位差值为 `66px`。focused command：
+
+```sh
+ATOLL_TEST_WEB_PORT=16543 ATOLL_TEST_MOCK_PORT=19943 \
+  npx playwright test tests/browser/f3-dynamic-restore.spec.js \
+  --grep '多行内容向上增高' --reporter=line --workers=1 \
+  --output=test-results-e-h-r28-f3-0178-3432851
+```
+
+结果为 `1 failed`，不是旧的 suite/import/fixture 阻断；failure evidence 仍要求
+`beforeBottom - afterBottom == surfaceGrowth`，实际 `0 != 66`。因此 TC-0178 继续交给
+Composer/ConversationSurface layout owner，测试不放宽。
+
+其余六条是六个可独立入账的 PASS rows，不得以“6 绿”合并成一条：
+
+| Case | 1487 strict ledger disposition | evidence |
+| --- | --- | --- |
+| TC-0176 | PASS | 同一 post-`3432851` frozen run；焦点表面/outline/尺寸断言完整。 |
+| TC-0177 | PASS | 同一 post-`3432851` frozen run；连续中文输入前后 layout geometry 完整。 |
+| TC-0179 | PASS | 同一 post-`3432851` frozen run；approval 正文列、narration=0、320px overflow 完整。 |
+| TC-0180 | PASS | 同一 post-`3432851` frozen run；真实 approval 到达与底部连续采样完整。 |
+| TC-0181 | PASS | 同一 post-`3432851` frozen run；真实 LaTeX renderer/KaTeX/窄屏断言完整。 |
+| TC-0182 | PASS | focused successor `1 passed (8.6s)`；latest 展开、roundtrip、append 后历史折叠完整。 |
+
+这六条各自已有 baseline file/title、capability、invariant、public owner、setup/action/
+observable 记录于本报告前文，因此可以逐行纳入严格 1487 总账；不能用 aggregate green
+替代 case records。TC-0178 保持唯一未闭合产品回归，必须单独保留。
