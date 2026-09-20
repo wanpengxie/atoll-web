@@ -92,6 +92,17 @@ function eligiblePrincipal(row = {}) {
     && Boolean(row.id);
 }
 
+function participantCandidateName(candidate) {
+  const row = candidate?.row || {};
+  return String(row.display_name || row.email || row.name || row.id || '');
+}
+
+function compareParticipantCandidates(left, right) {
+  return participantCandidateName(left).localeCompare(participantCandidateName(right), 'zh-CN')
+    || String(left?.row?.id || '').localeCompare(String(right?.row?.id || ''), 'zh-CN')
+    || String(left?.value || '').localeCompare(String(right?.value || ''), 'zh-CN');
+}
+
 function ChannelOverview({ channel, port }) {
   const [description, setDescription] = useState(channel?.description || '');
   const [child, setChild] = useState({ name: '', purpose: '', templateId: '' });
@@ -137,12 +148,20 @@ function ChannelMembers({ channel, port }) {
   const commandPort = port.commands || {};
   const roster = (port.roster || []).filter(isVisibleActor);
   const currentPrincipals = new Set(roster.map((row) => row.principal).filter(Boolean));
-  const candidates = [
-    ...(port.principals || []).map((entry) => entry?.declared || entry).filter((row) => eligiblePrincipal(row) && !currentPrincipals.has(row.id)).map((row) => ({ value: `principal:${row.id}`, label: `${row.display_name || row.email || row.id} · 用户`, row, kind: 'principal', participantKind: 'human' })),
-    ...(port.declarations || []).filter(isManageableDeclaration).map((entry) => entry?.declared || entry).map((row) => {
+  const principalCandidates = (port.principals || []).map((entry) => entry?.declared || entry)
+    .filter((row) => eligiblePrincipal(row) && !currentPrincipals.has(row.id))
+    .map((row) => ({ value: `principal:${row.id}`, label: `${row.display_name || row.email || row.id} · 用户`, row, kind: 'principal', participantKind: 'human' }))
+    .sort(compareParticipantCandidates);
+  const declarationCandidates = (port.declarations || []).filter(isManageableDeclaration)
+    .map((entry) => entry?.declared || entry)
+    .map((row) => {
       const participantKind = declarationKind(row);
       return { value: `declaration:${row.id}`, label: `${row.name || row.id} · ${participantTypeLabel(participantKind)}`, row, kind: 'declaration', participantKind };
-    }),
+    })
+    .sort(compareParticipantCandidates);
+  const candidates = [
+    ...principalCandidates,
+    ...declarationCandidates,
   ];
   const selected = candidates.find((row) => row.value === candidate);
   const restartCommand = commandPort.restartActor || commandPort.restart;
