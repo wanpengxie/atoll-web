@@ -1144,6 +1144,47 @@ Round-39 evidence:
 * Current-owner rerun: the existing 17-file command → **110/110 GREEN**.
 * The correction changes only `tests/i-m-exact-path-contracts.test.jsx` and this audit report. No product source, notification/arrival owner, old API, private production function, compatibility parser, vendor/package/lockfile, or test skip was introduced.
 
+## Round 40 physical-root contract and exact successor counterexample
+
+This pass keeps the geometry contract at the public mounted root. TC-0985 and
+TC-0986 now explicitly bind the successful tail write to the mounted root's
+public `scrollTo` port and resulting geometry, while retaining
+`followOutput={false}` and the one-write assertions. No vendor callback, text
+point, timer, or private production helper is observed.
+
+TC-1024 is strengthened as an exact same-root counterexample: capture the
+public `totalListHeightChanged` callback from activation A, render activation B
+onto the same physical root, and deliver the captured callback after the root
+reports B's geometry. The stale callback must not write or move the root; the
+current B callback must still write one tail command to that same root. This
+proves the public activation fence without testing an implementation-specific
+callback identity or internal timing sequence.
+
+| case | user capability / invariant | current public owner | exact evidence at HEAD `cc221b3` |
+|---|---|---|---|
+| TC-0985 | Following uses the mounted physical root as the sole tail-write port; vendor `followOutput` is disabled and the typed intent becomes idle after the write. | `VendorListExecutor` → physical root `scrollTo` + Reading session | `npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'TC-0985' --retry=2` → **GREEN**; root's public `scrollTo` is the recorded writer. |
+| TC-0986 | A role-only height commit reaches the same mounted root exactly once after public geometry is committed. | `VendorListExecutor.totalListHeightChanged` + physical root gap check | Covered by the Round-40 focused command below; one `{top:1200}` write and root `scrollTop=1200`. |
+| TC-1024 | A stale callback from activation A cannot write into activation B even when both share one physical root; B's live callback remains authorized. | `VendorListExecutor` activation tuple fence + physical root | `npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'TC-1024' --retry=2` → **GREEN**; stale callback leaves `scrollTop=400`, live callback writes `{top:1200}` once. |
+
+The seven remaining red cases are retained as independent user contracts, not
+internal timing oracles:
+
+| case | current user-visible failure | public owner / regression package |
+|---|---|---|
+| TC-1010 | Intermediate target-row commit writes `{top:1000}` before committed measurement. | `VendorListExecutor` typed send intent + physical root; current product red. |
+| TC-1011 | First/later public height delivery writes before the pending join's authorized boundary. | `VendorListExecutor` typed intent + public height; current product red. |
+| TC-1012 | Equal-height target baseline emits a visible `{top:1000}` write instead of waiting for resize. | `VendorListExecutor` target fence + physical root; current product red. |
+| TC-1014 | Same-revision height writes `{top:1132}` before public revoke. | `VendorListExecutor` intent fence + public height; current product red. |
+| TC-1015 | Send-owned baseline writes `{top:1132}` before revoke releases ordinary following. | `VendorListExecutor` Reading intent + following writer; current product red. |
+| TC-1018 | Unrelated committed tail does not receive its allowed `{top:1132}` ordinary-follow write while a newer target is pending. | `VendorListExecutor` following writer + target fence; current product red. |
+| TC-1019 | Queued target row causes premature `{top:1000}` before destination-ready Waiting presentation. | `VendorListExecutor` typed target presence + public height; current product red. |
+
+Round-40 evidence:
+
+* Physical-root and successor command: `npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'TC-0985|TC-0986|TC-1024' --retry=2` → **3/3 GREEN**.
+* Seven-red command: `npx vitest run tests/i-m-exact-path-contracts.test.jsx -t 'TC-1010|TC-1011|TC-1012|TC-1014|TC-1015|TC-1018|TC-1019' --retry=2` → **7/7 stable product regressions**, each repeated across three attempts.
+* Full exact bridge remains **147/155 GREEN**; current-owner rerun remains **110/110 GREEN**. This pass changes only this test file and audit report; no product source is modified.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test

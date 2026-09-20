@@ -2846,6 +2846,9 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     expect(vendorHarness.props.followOutput).toBe(false);
     expect(reading.getSession().bottomIntent.id).toBe('');
     expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_200, behavior: 'auto' });
+    // The public bottom owner writes the mounted physical root itself; no
+    // vendor followOutput or detached geometry proxy is part of this contract.
+    expect(vendorHarness.root.scrollTo).toBe(vendorHarness.scrollTo);
   });
 
   it('message-list-lifecycle TC-0986: a role-only public height commit lets following tail exactly once', () => {
@@ -2872,6 +2875,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     act(() => vendorHarness.props.totalListHeightChanged());
     expect(vendorHarness.scrollTo).toHaveBeenCalledTimes(1);
     expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_200, behavior: 'auto' });
+    expect(scroller.scrollTop).toBe(1_200);
   });
 
   it('message-list-lifecycle TC-0987: native older input cancels a child-first role height before it can follow', () => {
@@ -4059,6 +4063,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     });
     vendorHarness.scrollTo.mockClear();
     const staleHeightCallback = vendorHarness.props.totalListHeightChanged;
+    const physicalRoot = scroller;
     const successor = round34Reading({ mode: READING_MODE.following, activationID: 'activation:round38-successor' });
 
     view.rerender(
@@ -4070,11 +4075,19 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     );
     vendorHarness.scrollTo.mockClear();
     setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_200, scrollTop: 400 });
+    expect(vendorHarness.root).toBe(physicalRoot);
     staleHeightCallback();
 
     expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
     expect(scroller.scrollTop).toBe(400);
     expect(screen.getByText('round38-successor')).toBeTruthy();
+
+    // The current successor callback still owns this same physical root; the
+    // stale callback above is the only one that must be fenced out.
+    vendorHarness.props.totalListHeightChanged();
+    expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
+    expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_200, behavior: 'auto' });
+    expect(physicalRoot.scrollTop).toBe(1_200);
   });
 
   it('message-list-lifecycle TC-1025: a late public height callback after unmount is a no-op', () => {
