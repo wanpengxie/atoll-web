@@ -34,6 +34,7 @@ import {
 } from '../model/feature-tasks.js';
 import { selectFeatureSearchIndex } from '../model/feature-search.js';
 import { terminalResultPayload, terminalResultState } from '../model/terminal-result.js';
+import { argsOf } from '../protocol/envelope.js';
 import { isManageableDeclaration } from '../model/actor-visibility.js';
 import { SYSTEM_ACTOR_ID, TYPES } from '../protocol/vocab.js';
 import { Auth } from '../ui/Auth.jsx';
@@ -175,6 +176,99 @@ function governanceTerminalError(payload, fallback = '治理命令未完成') {
   const error = new Error(String(payload?.detail || payload?.error || payload?.reason || fallback));
   error.code = String(payload?.error_code || payload?.reason || 'governance_failed');
   return error;
+}
+
+function timelineTurns(timeline = []) {
+  const rows = [];
+  const visit = (entry) => {
+    if (entry?.kind === 'turn' && entry.turn?.request?.id) rows.push(entry.turn);
+    for (const child of entry?.thread || []) visit(child);
+  };
+  for (const entry of timeline) visit(entry);
+  return rows;
+}
+
+function sourceView(source) {
+  if (source?.workItemKey || source?.objectType === 'work_item') return 'tasks';
+  if (source?.objectType === 'artifact' || source?.view === 'artifacts' || source?.view === 'files') return 'files';
+  return source?.view === 'tasks' ? 'tasks' : 'conversation';
+}
+
+function sourceFocus(source) {
+  const workItemKey = String(source?.workItemKey || '');
+  if (workItemKey) return { type: 'work_item', key: workItemKey };
+  if (source?.objectType === 'work_item') {
+    const key = String(source.objectId || source.taskId || '');
+    return key ? { type: 'work_item', key } : null;
+  }
+  if (source?.objectType === 'turn') {
+    const key = String(source.requestId || source.objectId || '');
+    return key ? { type: 'turn', key } : null;
+  }
+  if (source?.objectType === 'artifact') {
+    const key = String(source.objectId || source.resourceId || source.fileId || '');
+    return key ? { type: 'artifact', key } : null;
+  }
+  if (source?.objectType === 'participant') {
+    const key = String(source.objectId || source.actorId || '');
+    return key ? { type: 'participant', key } : null;
+  }
+  if (source?.objectType === 'channel') {
+    const key = String(source.objectId || source.channelId || '');
+    return key ? { type: 'channel', key } : null;
+  }
+  return null;
+}
+
+function channelCreationOperation(turn, channel) {
+  const request = turn?.request;
+  if (request?.type !== TYPES.channel.create) return null;
+  const requestId = String(turn.requestId || request.id || '');
+  if (!requestId || !channel?.id) return null;
+  const body = argsOf(request);
+  const resultState = terminalResultState(turn);
+  const result = terminalResultPayload(turn) || {};
+  const value = result.value && typeof result.value === 'object' && !Array.isArray(result.value)
+    ? result.value
+    : result;
+  const status = String(result.status || '');
+  const state = resultState.phase === 'unavailable'
+    ? 'uncertain'
+    : !turn.terminal
+      ? 'active'
+      : status === 'completed'
+        ? 'completed'
+        : status === 'cancelled'
+          ? 'cancelled'
+          : 'failed';
+  const targetId = String(value.channel_id || value.channelId || '');
+  const detail = !turn.terminal
+    ? '等待账本确认'
+    : resultState.phase === 'unavailable'
+      ? resultState.error
+      : status === 'completed' && targetId
+        ? '账本已确认，等待频道目录投影'
+        : String(result.detail || result.error || result.reason || status || '命令已完成');
+  return Object.freeze({
+    key: `operation:${channel.id}:${requestId}`,
+    operationId: requestId,
+    kind: 'operation',
+    kindLabel: ACTIVITY_KIND_LABELS.operation,
+    title: `创建频道 ${String(body.name || targetId || '未命名频道')}`,
+    state,
+    channelId: channel.id,
+    channelName: channel.qualified_name || channel.name || channel.id,
+    detail,
+    updatedAt: turn.terminal?.ts || request.ts || turn.requestSeq || 0,
+    source: Object.freeze({
+      channelId: channel.id,
+      view: 'conversation',
+      objectType: 'turn',
+      objectId: requestId,
+      requestId,
+      seq: turn.requestSeq,
+    }),
+  });
 }
 
 function IdentityBoundary() {
@@ -1176,6 +1270,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     deviceId: attachments.deviceId,
     directory: attachments.directory,
     entries: attachments.entries,
+    refreshReceipt: attachments.directoryReceipt,
     selectedKey: attachments.selectedKey,
     selectedArtifact: attachments.selectedArtifact,
     preview: attachments.artifactPreview,
@@ -1220,7 +1315,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
         setPanel('artifact');
         return operation;
       },
-      refresh: () => attachments.refreshDirectory(),
+      refresh: () => attachments.refreshDirectoryReceipt(),
       rememberScroll: attachments.rememberFilesScroll,
       remove: attachments.removeFile,
       select: attachments.setSelectedArtifact,
@@ -1495,58 +1590,24 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       release();
     };
   }, [feedCommands, navigation.activeChannelId, searchOpen, searchableChannelKey, showError, wire.state]);
-  const openSearchResult = (source) => {
-    if (!source?.channelId) return;
+  const openWorkspaceSource = useCallback(({ source } = {}) => {
+    if (!source?.channelId) return false;
     const sourceChannel = navigation.channels.find((row) => row.id === source.channelId);
     if (!sourceChannel || !canViewChannelContent(sourceChannel.access)) {
       setChannelNotice('来源频道当前不可访问，未打开缓存内容。');
       setPanel('');
-      return;
-    }
-    if (source.kind === 'actor') {
-      const actor = (roster.rosters.get(source.channelId) || EMPTY_ARRAY).find((row) => row.id === source.actorId);
-      if (!actor) { setChannelNotice('该成员已不在当前名册快照中。'); return; }
-      navigation.select(source.channelId);
-      navigation.setActiveView('conversation');
-      setPanel({ kind: 'actor', actor, channelId: source.channelId });
-      return;
-    }
-    if (source.kind === 'task') {
-      const item = taskItems.find((row) => (row.key || row.id) === source.taskId);
-      if (!item) { setChannelNotice('该任务已不在当前任务事实中。'); return; }
-      navigation.select(source.channelId);
-      openTaskItem(item);
-      return;
-    }
-    if (source.kind === 'file') {
-      const entry = attachments.entries.find((row) => [row.resourceId, row.path, row.key].includes(source.fileId));
-      if (!entry || source.channelId !== navigation.activeChannelId) {
-        setChannelNotice('该文件不在当前 attachment owner 的目录快照中。');
-        return;
-      }
-      navigation.setActiveView('files');
-      void attachments.previewArtifact(entry, source.channelId);
-      setPanel('artifact');
-      return;
+      return false;
     }
     navigation.select(source.channelId);
-    navigation.setActiveView('conversation');
-    if (typeof navigation.setFocus === 'function') navigation.setFocus(null);
-    setPanel('');
-  };
-  const openActivitySource = useCallback((source) => {
-    if (!source?.channelId) return;
-    const sourceChannel = navigation.channels.find((row) => row.id === source.channelId);
-    if (!sourceChannel || !canViewChannelContent(sourceChannel.access)) {
-      setChannelNotice('来源频道当前不可访问，未打开缓存内容。');
-      setPanel('');
-      return;
-    }
-    navigation.select(source.channelId);
-    navigation.setActiveView(source.view === 'tasks' ? 'tasks' : 'conversation');
-    if (typeof navigation.setFocus === 'function') navigation.setFocus(null);
-    setPanel('');
-  }, [navigation.channels, navigation.select, navigation.setActiveView, navigation.setFocus]);
+    navigation.setActiveView(sourceView(source));
+    const focus = sourceFocus(source);
+    if (typeof navigation.setFocus === 'function') navigation.setFocus(focus);
+    const turn = focus?.type === 'turn'
+      ? timelineTurnForRequest(feed.stateFor(source.channelId), focus.key)
+      : null;
+    setPanel(turn ? { kind: 'turn', channelId: source.channelId, requestId: focus.key } : '');
+    return true;
+  }, [feed, navigation.channels, navigation.select, navigation.setActiveView, navigation.setFocus]);
   const activityPort = useMemo(() => {
     const visibleChannels = navigation.channels.filter((channel) => canViewChannelContent(channel.access));
     const channelById = new Map(visibleChannels.map((channel) => [channel.id, channel]));
@@ -1559,16 +1620,26 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
         now: Date.now(),
       });
       for (const fact of facts) {
+        const source = fact.source && ['approval', 'agent_run', 'task'].includes(fact.kind)
+          ? { ...fact.source, workItemKey: fact.key }
+          : fact.source;
         activities.push({
           ...fact,
           key: `activity:${fact.key}`,
           kindLabel: ACTIVITY_KIND_LABELS[fact.kind] || fact.kind || '动态',
           channelName: channel.qualified_name || channel.name || channel.id,
           detail: ACTIVITY_STATE_LABELS[fact.state] || fact.state || '有更新',
+          source,
         });
       }
     }
     const operations = [];
+    for (const channel of visibleChannels) {
+      for (const turn of timelineTurns(feed.stateFor(channel.id)?.timeline || [])) {
+        const operation = channelCreationOperation(turn, channel);
+        if (operation) operations.push(operation);
+      }
+    }
     for (const [channelId, snapshot] of Object.entries(feed.agentActivity?.byChannel || {})) {
       const channel = channelById.get(channelId);
       if (!channel) continue;
@@ -1585,7 +1656,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
           updatedAt: entry.updatedAt,
           source: {
             channelId,
-            view: 'dynamic',
+            view: 'conversation',
             objectType: 'turn',
             objectId: entry.requestId,
             requestId: entry.requestId,
@@ -1601,9 +1672,9 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       activities: Object.freeze(activities),
       operations: Object.freeze(operations),
       operationsUnavailable: feed.agentActivity?.connected !== true,
-      commands: Object.freeze({ open: openActivitySource }),
+      commands: Object.freeze({ open: openWorkspaceSource }),
     });
-  }, [feed.agentActivity, feed.version, navigation.channels, navigation.selfFor, openActivitySource]);
+  }, [feed, navigation.channels, navigation.selfFor, openWorkspaceSource]);
   const featureElement = <WorkspaceFeatures
     activeView={navigation.terminalVisible ? 'conversation' : navigation.activeView}
     channel={navigation.activeChannel}
@@ -1631,6 +1702,9 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const selectedTaskItem = panelKind === 'task'
     ? taskItems.find((item) => (item.key || item.id) === (panel.key || panel.item?.key || panel.item?.id)) || null
     : null;
+  const selectedTurn = panelKind === 'turn'
+    ? timelineTurnForRequest(feed.stateFor(panel.channelId || navigation.activeChannelId), panel.requestId || panel.key)
+    : null;
   const rightPanel = panel && !searchOpen && (panelKind !== 'task' || selectedTaskItem) ? <WorkspaceRightPanel
     panel={panel}
     channel={navigation.activeChannel}
@@ -1642,6 +1716,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     governance={governancePort}
     automation={automationPort}
     activity={activityPort}
+    turn={selectedTurn}
     onClose={() => {
       setPanel('');
       if (typeof navigation.setFocus === 'function') navigation.setFocus(null);
@@ -1656,7 +1731,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
           setPanel('');
           if (typeof navigation.setFocus === 'function') navigation.setFocus(null);
         },
-        open: openSearchResult,
+        open: openWorkspaceSource,
       },
     }} filePicker={{
       open: Boolean(filePickerRequest),

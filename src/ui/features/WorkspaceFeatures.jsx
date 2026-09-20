@@ -1,5 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { attachmentFromFileReference } from '../../model/file-references.js';
+import { argsOf } from '../../protocol/envelope.js';
 import { MarkdownFileReferenceProvider } from '../MarkdownContent.jsx';
 import { ArtifactPreviewPanel } from './files/ArtifactPreviewPanel.jsx';
 import { FilesFeature } from './files/FilesFeature.jsx';
@@ -32,6 +33,24 @@ function InaccessibleFeature({ label }) {
   return <section className="workspace-view channel-private-empty" role="region" aria-label={label}><strong>{label}不可访问</strong><p>恢复频道访问后才能查看。</p></section>;
 }
 
+function TurnDetailPanel({ turn, onClose }) {
+  const request = argsOf(turn?.request);
+  const terminal = argsOf(turn?.terminal);
+  const value = terminal.value && typeof terminal.value === 'object' && !Array.isArray(terminal.value)
+    ? terminal.value
+    : terminal;
+  const title = String(request.name || request.text || request.description || turn?.request?.type || '频道回合');
+  return <section className="turn-detail-page" role="region" aria-label="回合详情">
+    <header className="turn-detail-header"><button type="button" onClick={onClose}>← 返回动态</button><div><p className="eyebrow">WORK TURN</p><h2>回合详情</h2></div></header>
+    <div className="turn-detail-scroll"><div className="turn-detail-content">
+      <h3>{title}</h3>
+      <dl><dt>请求编号</dt><dd>{turn?.requestId || turn?.request?.id || '—'}</dd><dt>类型</dt><dd>{turn?.request?.type || '—'}</dd><dt>状态</dt><dd>{terminal.status || turn?.status || '进行中'}</dd></dl>
+      {value.channel_id && <p>目标频道：{value.channel_id}</p>}
+      {terminal.detail && <p>{terminal.detail}</p>}
+    </div></div>
+  </section>;
+}
+
 // The picker is a presentation of the existing Files owner. It never keeps a
 // directory/device/resource store of its own: navigation, refresh and the
 // resource rows all come from the typed Files port, while the Workspace owner
@@ -39,21 +58,52 @@ function InaccessibleFeature({ label }) {
 function ChannelFilePickerModal({ channel, files = {}, requestId, onChoose, onClose, onRequestSettled }) {
   const dialogRef = useRef(null);
   const closeRef = useRef(null);
+  const refreshBaselineRef = useRef(null);
+  const refreshSettledRef = useRef(false);
   const commands = files.commands || {};
   const entries = files.entries || [];
   useModalFocus({ dialogRef, initialFocusRef: closeRef, onClose });
   useEffect(() => {
     if (!channel?.id || !files.deviceId || typeof commands.refresh !== 'function') return;
+    const baseline = Number(files.refreshReceipt?.epoch || 0);
+    refreshBaselineRef.current = {
+      epoch: baseline,
+      requestId: String(requestId || ''),
+      channelId: String(channel.id),
+      deviceId: String(files.deviceId),
+    };
+    refreshSettledRef.current = false;
+    let active = true;
     void Promise.resolve()
       .then(() => commands.refresh())
-      .catch(() => onRequestSettled?.(null, requestId));
+      .catch(() => {
+        if (active) onRequestSettled?.(null, requestId);
+      });
+    return () => { active = false; };
     // The Files owner changes its directory/device state; the picker only
     // asks for the initial authoritative page when its channel/device changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [channel?.id, files.deviceId]);
+  }, [channel?.id, files.deviceId, requestId]);
   useEffect(() => {
-    if (files.error) onRequestSettled?.(null, requestId);
-  }, [files.error, onRequestSettled, requestId]);
+    const baseline = refreshBaselineRef.current;
+    const receipt = files.refreshReceipt;
+    if (!baseline || refreshSettledRef.current
+      || String(baseline.requestId) !== String(requestId || '')
+      || String(receipt?.channelId || '') !== baseline.channelId
+      || String(receipt?.deviceId || '') !== baseline.deviceId
+      || Number(receipt?.epoch || 0) <= baseline.epoch
+      || receipt?.phase !== 'settled') return;
+    refreshSettledRef.current = true;
+    if (receipt.error) onRequestSettled?.(null, requestId);
+  }, [files.refreshReceipt, onRequestSettled, requestId]);
+  const refreshBaseline = refreshBaselineRef.current;
+  const refreshError = refreshBaseline
+    && String(files.refreshReceipt?.channelId || '') === refreshBaseline.channelId
+    && String(files.refreshReceipt?.deviceId || '') === refreshBaseline.deviceId
+    && Number(files.refreshReceipt?.epoch || 0) > refreshBaseline.epoch
+    && files.refreshReceipt?.phase === 'settled'
+    ? String(files.refreshReceipt?.error || '')
+    : '';
   return <div
     className="modal-backdrop attachment-picker-backdrop"
     data-modal-layer
@@ -73,7 +123,7 @@ function ChannelFilePickerModal({ channel, files = {}, requestId, onChoose, onCl
           : files.devices?.[0] && <span className="picker-daemon">{files.devices[0].name || files.devices[0].id}</span>}
       </div>
       <div className="attachment-picker-list" aria-busy={files.busy || undefined}>
-        {files.error && <p className="governance-error" role="alert">{files.error}</p>}
+        {refreshError && <p className="governance-error" role="alert">{refreshError}</p>}
         {!files.deviceId && <div className="attachment-picker-empty"><strong>当前频道没有可用的 daemon 挂载</strong></div>}
         {files.deviceId && files.busy && !entries.length && <div className="attachment-picker-empty"><strong>正在读取频道目录…</strong></div>}
         {files.deviceId && !files.busy && !entries.length && <div className="attachment-picker-empty"><strong>当前目录为空</strong></div>}
@@ -108,40 +158,17 @@ function ActivityRows({ rows = [], empty, unavailable = '', onOpen }) {
   </div>;
 }
 
-function activityRoute(item) {
-  const channelId = String(item?.channelId || item?.source?.channelId || '');
-  if (!channelId || !globalThis.location) return '';
-  const kind = String(item?.kind || '');
-  if (['approval', 'agent_run', 'task'].includes(kind)) {
-    const key = String(item?.workItemKey || item?.key || '').replace(/^activity:/, '');
-    if (!key) return '';
-    return `#/channels/${encodeURIComponent(channelId)}/tasks?focus=${encodeURIComponent(`work_item:${key}`)}`;
-  }
-  if (kind === 'operation') {
-    const requestId = String(item?.requestId || item?.source?.requestId || item?.source?.objectId || '');
-    if (!requestId) return '';
-    return `#/channels/${encodeURIComponent(channelId)}/conversation?focus=${encodeURIComponent(`turn:${requestId}`)}`;
-  }
-  return '';
-}
-
 function ActivityFeature({ port = {}, onClose }) {
   const [tab, setTab] = useState('activity');
   const operationsUnavailable = tab === 'operations' && port.operationsUnavailable;
   const rows = tab === 'activity' ? port.activities || [] : port.operations || [];
   const empty = tab === 'activity' ? '没有需要关注的活动' : '没有进行中的操作';
   const open = (item) => {
-    const route = activityRoute(item);
-    if (route) {
-      onClose?.();
-      globalThis.location.hash = route;
-      return;
-    }
-    // Rows without a feature-owned canonical target retain the existing
-    // public source command. In particular this keeps generic activity facts
-    // from manufacturing a task or turn that the current projection cannot
-    // prove.
-    port.commands?.open?.(item?.source || item);
+    const source = item?.source;
+    if (!source) return;
+    // Activity owns presentation only. The Workspace command validates access,
+    // chooses the channel/view, preserves the typed focus and commits the URL.
+    port.commands?.open?.({ source });
   };
   return <SidePanel
     className="activity-center"
@@ -244,7 +271,7 @@ function ArtifactReferenceBoundary({ channel, files, children }) {
   return <MarkdownFileReferenceProvider onOpen={openFileReference}>{children}</MarkdownFileReferenceProvider>;
 }
 
-export function WorkspaceRightPanel({ panel, channel, files = {}, tasks = {}, roster = {}, governance = {}, automation = {}, activity = {}, onClose }) {
+export function WorkspaceRightPanel({ panel, channel, files = {}, tasks = {}, roster = {}, governance = {}, automation = {}, activity = {}, turn = null, onClose }) {
   const kind = typeof panel === 'string' ? panel : panel?.kind || panel?.value || '';
   let content = null;
   let dismiss = onClose;
@@ -265,6 +292,10 @@ export function WorkspaceRightPanel({ panel, channel, files = {}, tasks = {}, ro
   else if (kind === WORKSPACE_FEATURE_PANEL.task) {
     focusKey = `${kind}:${tasks.selectedItem?.key || tasks.selectedItem?.id || ''}`;
     content = <TaskDetailPanel port={tasks} onClose={onClose} />;
+  }
+  else if (kind === 'turn') {
+    focusKey = `${kind}:${typeof panel === 'object' ? panel.requestId || panel.key || '' : ''}`;
+    content = <TurnDetailPanel turn={turn} onClose={onClose} />;
   }
   else if (kind === WORKSPACE_FEATURE_PANEL.automation) content = <ChannelAutomationPanel channel={channel} port={automation} onClose={onClose} />;
   else if (kind === WORKSPACE_FEATURE_PANEL.channelAdministration) {

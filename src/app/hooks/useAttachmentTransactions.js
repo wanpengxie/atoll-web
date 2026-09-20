@@ -281,6 +281,14 @@ export function useAttachmentTransactions({
   const [filesBusy, setFilesBusy] = useState(false);
   const [filesUploading, setFilesUploading] = useState(false);
   const [filesError, setFilesError] = useState('');
+  const [directoryReceipt, setDirectoryReceipt] = useState(() => Object.freeze({
+    epoch: 0,
+    channelId: '',
+    deviceId: '',
+    directory: '',
+    phase: 'idle',
+    error: '',
+  }));
   const [selectedKey, setSelectedKey] = useState('');
   const [filesScrollTop, setFilesScrollTop] = useState(0);
   const [selectedArtifact, setSelectedArtifactState] = useState(null);
@@ -532,15 +540,31 @@ export function useAttachmentTransactions({
     const request = beginRequest(directoryRequestRef, channelId);
     const channel = channelId === activeChannel?.id ? activeChannel : null;
     const device = devices.find((row) => row.id === targetDeviceId);
+    const normalized = normalizeFeatureDirectory(targetDirectory);
+    setDirectoryReceipt(Object.freeze({
+      epoch: request.generation,
+      channelId,
+      deviceId: String(targetDeviceId || ''),
+      directory: normalized,
+      phase: 'pending',
+      error: '',
+    }));
     if (!channel || !device) {
       if (directoryRequestRef.current.request === request && activeChannelRef.current === channelId) {
         setEntries([]);
         setFilesNext('');
+        setDirectoryReceipt(Object.freeze({
+          epoch: request.generation,
+          channelId,
+          deviceId: String(targetDeviceId || ''),
+          directory: normalized,
+          phase: 'settled',
+          error: '',
+        }));
       }
       finishRequest(directoryRequestRef, request);
       return [];
     }
-    const normalized = normalizeFeatureDirectory(targetDirectory);
     setFilesBusy(true);
     setFilesError('');
     try {
@@ -566,6 +590,14 @@ export function useAttachmentTransactions({
         });
         setFilesNext(String(receipt?.next || ''));
         restoredDirectoryRef.current = '';
+        setDirectoryReceipt(Object.freeze({
+          epoch: request.generation,
+          channelId,
+          deviceId: String(targetDeviceId || ''),
+          directory: normalized,
+          phase: 'settled',
+          error: '',
+        }));
       }
       return rows;
     } catch (error) {
@@ -574,10 +606,19 @@ export function useAttachmentTransactions({
         && !request.controller.signal.aborted
         && activeChannelRef.current === channelId
       ) {
-        if (restoredDirectoryRef.current && normalized === restoredDirectoryRef.current) {
+        const restored = Boolean(restoredDirectoryRef.current && normalized === restoredDirectoryRef.current);
+        if (restored) {
           restoredDirectoryRef.current = '';
           setDirectory('');
         } else setFilesError(errorText(error));
+        setDirectoryReceipt(Object.freeze({
+          epoch: request.generation,
+          channelId,
+          deviceId: String(targetDeviceId || ''),
+          directory: normalized,
+          phase: 'settled',
+          error: restored ? '' : errorText(error),
+        }));
       }
       return [];
     } finally {
@@ -602,6 +643,14 @@ export function useAttachmentTransactions({
     abortRequest(deviceRequestRef);
     abortRequest(directoryRequestRef);
     abortRequest(previewRequestRef);
+    setDirectoryReceipt(Object.freeze({
+      epoch: directoryRequestRef.current.generation,
+      channelId: activeChannelId || '',
+      deviceId: String(restored?.deviceId || ''),
+      directory: normalizeFeatureDirectory(restored?.directory || ''),
+      phase: 'idle',
+      error: '',
+    }));
     setDevices([]);
     setDeviceId(changingChannel ? '' : (restored?.deviceId || ''));
     setDirectory(restored?.directory || '');
@@ -820,6 +869,14 @@ export function useAttachmentTransactions({
     if (!cursor) return Promise.resolve([]);
     return refreshDirectory({ cursor, append: true });
   }, [filesNext, refreshDirectory]);
+
+  const refreshDirectoryReceipt = useCallback((options = {}) => {
+    const epoch = directoryRequestRef.current.generation + 1;
+    return refreshDirectory(options).then((rows) => ({
+      epoch,
+      rows,
+    }));
+  }, [refreshDirectory]);
 
   useEffect(() => {
     for (const [key, active] of activeUploadsRef.current) {
@@ -1058,6 +1115,14 @@ export function useAttachmentTransactions({
     setFilesBusy(false);
     setFilesUploading(false);
     setFilesError('');
+    setDirectoryReceipt(Object.freeze({
+      epoch: directoryRequestRef.current.generation,
+      channelId: '',
+      deviceId: '',
+      directory: '',
+      phase: 'idle',
+      error: '',
+    }));
     setSelectedKey('');
     setFilesScrollTop(0);
     setSelectedArtifactState(null);
@@ -1088,6 +1153,7 @@ export function useAttachmentTransactions({
     deviceId,
     devices,
     directory,
+    directoryReceipt,
     downloadFile,
     entries,
     filesBusy,
@@ -1101,6 +1167,7 @@ export function useAttachmentTransactions({
     previewArtifact,
     recentFiles: recentFiles.filter((row) => row.channelId === activeChannelId),
     refreshDirectory,
+    refreshDirectoryReceipt,
     rememberFilesScroll,
     removeFile,
     reset,

@@ -75,6 +75,8 @@ describe('F5 成员与全局表面', () => {
     }} />);
     await user.type(screen.getByLabelText('搜索频道、消息、文件、任务或成员'), '设计');
     await user.click(screen.getByRole('button', { name: /设计报告/ }));
-    expect(onOpen).toHaveBeenCalledWith({ channelId: 'c0.project', view: 'artifacts', objectType: 'artifact', objectId: 'artifact-1' });
+    expect(onOpen).toHaveBeenCalledWith({
+      source: { channelId: 'c0.project', view: 'artifacts', objectType: 'artifact', objectId: 'artifact-1' },
+    });
   });
 });

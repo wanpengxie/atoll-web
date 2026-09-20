@@ -9,12 +9,10 @@ const KIND_LABELS = {
 
 function openSearchResult(item, commands) {
   const source = item?.source || item;
-  if (source?.workItemKey && source.channelId && globalThis.location) {
-    commands.close?.();
-    globalThis.location.hash = `#/channels/${encodeURIComponent(source.channelId)}/tasks?focus=${encodeURIComponent(`work_item:${source.workItemKey}`)}`;
-    return;
-  }
-  commands.open?.(source);
+  if (!source?.channelId) return;
+  // Search owns the result presentation only. The Workspace command is the
+  // sole route/access owner and receives one typed SourceRef envelope.
+  commands.open?.({ source });
 }
 
 export function SearchFeature({ port = {} }) {

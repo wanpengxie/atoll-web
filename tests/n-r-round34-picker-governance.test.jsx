@@ -77,6 +77,40 @@ describe('N-R round 34 public picker/governance owner contracts', () => {
     expect(onChoose).not.toHaveBeenCalled();
   });
 
+  it('does not settle a picker from a stale files error before its refresh receipt', async () => {
+    const onRequestSettled = vi.fn();
+    const refresh = vi.fn().mockResolvedValue({ epoch: 8, rows: [] });
+    const props = {
+      open: true,
+      requestId: 'picker-1',
+      channel: { id: 'c0', qualified_name: 'c0' },
+      files: {
+        deviceId: 'local-device',
+        entries: [],
+        error: '旧刷新失败',
+        refreshReceipt: {
+          epoch: 7, channelId: 'c0', deviceId: 'local-device', phase: 'settled', error: '旧刷新失败',
+        },
+        commands: { refresh },
+      },
+      onRequestSettled,
+    };
+    const view = render(<WorkspaceFeatureOverlays filePicker={props} />);
+    await waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+    expect(onRequestSettled).not.toHaveBeenCalled();
+
+    view.rerender(<WorkspaceFeatureOverlays filePicker={{
+      ...props,
+      files: {
+        ...props.files,
+        refreshReceipt: {
+          epoch: 8, channelId: 'c0', deviceId: 'local-device', phase: 'settled', error: '本次刷新失败',
+        },
+      },
+    }} />);
+    await waitFor(() => expect(onRequestSettled).toHaveBeenCalledWith(null, 'picker-1'));
+  });
+
   it('carries the selected channel template through the public governance command port', async () => {
     const submit = vi.fn().mockResolvedValue('create-request');
     const refresh = vi.fn().mockResolvedValue(undefined);

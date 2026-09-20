@@ -103,7 +103,7 @@ describe('Activity Center public accessibility contract', () => {
     await user.click(screen.getByRole('button', { name: '打开活动中心' }));
     await user.click(screen.getByRole('button', { name: /整理预算/ }));
     expect(openSource).toHaveBeenCalledTimes(1);
-    expect(openSource).toHaveBeenCalledWith(source);
+    expect(openSource).toHaveBeenCalledWith({ source });
   });
 
   it('states operation facts are unavailable and exposes no fabricated operation row', async () => {

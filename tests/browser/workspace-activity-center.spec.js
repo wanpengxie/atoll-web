@@ -36,7 +36,7 @@ test('Activity Center is composed from the live Workspace Feed and returns to it
   await rows.first().click();
   await expect(panel).toHaveCount(0);
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('c0');
-  await expect(page.getByRole('tab', { name: '动态', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab', { name: '任务', exact: true })).toHaveAttribute('aria-selected', 'true');
 });
 
 test('Activity Center has a safe unavailable state and does not survive channel ownership changes', async ({ page, request }) => {
