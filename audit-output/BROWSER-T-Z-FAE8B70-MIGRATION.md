@@ -2316,3 +2316,57 @@ Chromium 期间的 wire reconnect warning 是测试服务器连接生命周期�
   15/15、mobile drawer 3/3。
 - 本轮未修改产品、未放宽断言、未删 skip；仅追加本审计。当前共享树后来出现的
   outbox/reading 脏改及 `90f2e8d` 不在本轮证据范围。
+
+## 第四十轮：UX-A01 member-filter 真实用户合同复验
+
+本轮从仍标为 BLOCKED 的 T–Z 基线中选择 `UX-A01`，不重复已闭的 Governance/Shell。
+目标是验证 stale exact-incarnation filter 的完整用户路径，而不是只验证 chip 文本：
+真实 deep-history 行先由公开 history owner 挂载，再写入 schema-3 `ViewSession`
+preference；reload 后 stale filter 必须保持显式、可移除，移除后历史行恢复；随后真实
+member filter 仍须可选择、取消且不制造 loading/unknown state。旧记录中“post-mount
+localStorage seam”导致的阻塞保留为历史证据，不通过放宽 row-return 合同消除。
+
+### Real Chromium（repeat3）
+
+先单独重跑旧阻塞的 stale-incarnation 首案：
+
+```text
+ATOLL_TEST_WEB_PORT=15640 ATOLL_TEST_MOCK_PORT=19940 \
+ATOLL_TEST_OUTPUT=/tmp/tz-r40-a01-repeat \
+npx playwright test tests/browser/member-filter-timeline.spec.js \
+  --grep 'opaque member filter' --workers=1 --repeat-each=3 \
+  --reporter=line --output=test-results-tz-r40-a01-repeat3
+3 passed (27.4s)
+```
+
+三次均通过：`c0 history 120: ask steward for PONG` 公开行先出现；reload 后
+`.timeline-actor-filter .is-stale` 可见且 `aria-pressed=true`；点击后 stale filter
+消失、同一历史行恢复；`steward` 真实按钮可选中（`aria-pressed=true`），目标回合含
+`c0 PONG 120`，再次点击可清除（`aria-pressed=false`），且动态范围不再处于
+“正在确认频道内容”。没有使用文本匹配代替 row identity，也没有 source/internal
+helper 断言。
+
+随后整份 spec（stale exact-incarnation + selected Agent conversation）重复三轮：
+
+```text
+ATOLL_TEST_WEB_PORT=15641 ATOLL_TEST_MOCK_PORT=19941 \
+ATOLL_TEST_OUTPUT=/tmp/tz-r40-member-repeat \
+npx playwright test tests/browser/member-filter-timeline.spec.js \
+  --workers=1 --repeat-each=3 --reporter=line \
+  --output=test-results-tz-r40-member-repeat3
+6 passed (41.6s)
+```
+
+六次均通过：第二案 `c0.project history 120: ask project-agent for PONG` 在选择与
+清除 `project-agent` 后保持可见，且 `c0.project PONG 120` 可见。Chromium 仅出现
+web/mock server 的 Node `NO_COLOR`/生命周期 warning；没有 page error、unhandled
+rejection、超时或 selector fallback。
+
+### Round40 裁决
+
+- **PASS（6/6，repeat3）：** UX-A01 的 stale exact-incarnation filter 与相邻
+  member selection/clear 合同在当前 clean product candidate 上闭环通过。
+- 该结果更新当前状态：UX-A01 不再是当前 RED/BLOCKED；旧报告中的竞态观察仍保留，
+  作为此前候选失败的历史记录，不是产品缺口。
+- 本轮未修改产品、未删 skip、未放宽断言、未改 fixture；仅追加本审计。启动期间共享
+  工作树已有的 `tests/i-m-exact-path-contracts.test.jsx` 脏改不属于本轮，未触碰或暂存。
