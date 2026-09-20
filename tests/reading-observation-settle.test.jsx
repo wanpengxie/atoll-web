@@ -199,7 +199,7 @@ describe('reading observation settlement authority (VendorListExecutor)', () => 
       source: 'user',
       settled: true,
       atTail: true,
-      bookmark: { messageID: 'tail' },
+      bookmark: { messageID: 'tail', blockID: 'block:tail' },
     });
     expect(owner.getSession().mode).toBe(READING_MODE.following);
   });
