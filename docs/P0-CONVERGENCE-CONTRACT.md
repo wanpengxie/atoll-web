@@ -156,6 +156,12 @@ commit is accepted or rejected; idle verification capacity is left idle or
 used by an explicitly assigned implementation lane rather than manufacturing
 more reports.
 
+Scheduling is event-driven. A completed implementation, review, or verification
+is integrated or reassigned immediately; it never waits for the architecture
+audit interval. A short queue watchdog may drain missed completion events.
+The twenty-minute checkpoint is reserved for architecture drift, throughput,
+blocked time, and duplicate-work review, not ordinary dispatch.
+
 ## Current P0 decisions
 
 - **Reading/notification re-entry:** explicit return to tail mints a successor
