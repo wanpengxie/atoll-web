@@ -47,7 +47,7 @@
 
 ## 严格逐 case ledger（256 条；替代旧的 EHxx.C/I/O/S/F 泛化行）
 
-本节是本报告唯一的 case-level 裁决源：**256/256 行**均带 baseline 文件与精确标题、旧 setup/action/result、用户能力、不变量、当前公开 owner、证据/合并桥和 disposition。状态统计（HEAD `6f673cb`）：**PROVEN-DIRECT 79**，**PROVEN-MERGED 177**，**OWNER-MAPPED 0**，owner-covered **256**；**REGRESSION 0**，**FIXTURE-BLOCKED 0**，**NO-OWNER 0**，未闭合 **0**。`4a7e623` 后 R22 逐条重跑 EH03-01/02 的完整旧 action/observable 均通过；EH03-03、EH08-12、EH09-08/09/14 也已逐条恢复原动作与 observable。本轮不以聚合绿数替代 case 证据，也未修改产品。
+本节是本报告唯一的 case-level 裁决源：**256/256 行**均带 baseline 文件与精确标题、旧 setup/action/result、用户能力、不变量、当前公开 owner、证据/合并桥和 disposition。状态统计（HEAD `217404c`）：**PROVEN-DIRECT 79**，**PROVEN-MERGED 177**，**OWNER-MAPPED 0**，owner-covered **256**；**REGRESSION 0**，**FIXTURE-BLOCKED 0**，**NO-OWNER 0**，未闭合 **0**。`4a7e623` 后 R22 逐条重跑 EH03-01/02 的完整旧 action/observable 均通过；EH03-03、EH08-12、EH09-08/09/14 也已逐条恢复原动作与 observable。本轮不以聚合绿数替代 case 证据，也未修改产品。
 
 “PROVEN-MERGED”只有在同一行同时写出旧动作/结果、当前 owner 和 bridge 不变量时才计入 owner-covered；它不伪装成旧测试文件的一对一复制。REGRESSION、FIXTURE-BLOCKED、OWNER-MAPPED、NO-OWNER 都不计入严格已证明。此前标记的 207 条返工债务以本表逐行重算；本轮新增 scheduler 5 条、VendorListExecutor 4 条、Composer public outbox harness、Replica arrival journal 和 runtime generation-fence assertions，未修改产品代码；12 条原 NO-OWNER 已逐条映射到既有公开 owner。EH03-03 的 reconnect settled-retention 已由同一 channel/request key 的公开 runtime 证据闭合。
 
@@ -321,7 +321,7 @@
 - **R4 — frame-batcher 私有机制（EH19）**：旧 frame-batcher 已逐条映射到现有 Replica arrival journal、presentation visibility/release、exact revision acknowledgement 和 runtime generation/incompatible fence；`flushNow`/hidden timer 等内部 knob 已退休，不恢复第二 frame store。
 - **R5 — F6 私有性能 helper（EH06）**：list-window/ArtifactContext/readBoundedText/Prism 私有 exports 已退出；当前只测 public feature port，不能为旧断言加私有导出。
 
-汇总（HEAD `6f673cb`）：当前公开 owner 的真实产品回归 **0 个**；无 owner **0 个**；owner-mapped 未闭合 **0 个**；fixture/证据待收敛 **0 条**。EH03-01/02 已在 `4a7e623` 后按完整 baseline action 严格复核通过，EH09-08/09/14 也已在 `31a892d` 后通过；严格证明总账现为 **256/256**（79 direct + 177 merged）。剩余 expected-fail 仅保留在非 baseline 的右栏无扩展名 preview malformed-fixture witness（R22），不计入 256 条总账；本分区不改产品。
+汇总（HEAD `217404c`）：当前公开 owner 的真实产品回归 **0 个**；无 owner **0 个**；owner-mapped 未闭合 **0 个**；fixture/证据待收敛 **0 条**。EH03-01/02 已在 `4a7e623` 后按完整 baseline action 严格复核通过，EH09-08/09/14 也已在 `31a892d` 后通过；严格证明总账现为 **256/256**（79 direct + 177 merged）。剩余 expected-fail 仅保留在非 baseline 的右栏无扩展名 preview malformed-fixture witness（R22），不计入 256 条总账；本分区不改产品。
 
 ## 本 agent 定向验证
 

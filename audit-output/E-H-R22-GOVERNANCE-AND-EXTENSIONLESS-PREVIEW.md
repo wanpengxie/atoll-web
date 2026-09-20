@@ -1,6 +1,6 @@
 # E–H round 22 — governance recheck and extensionless preview proof
 
-审计快照：HEAD `6f673cb`。本轮先等待并复核治理 owner；并行 owner 修复
+审计快照：HEAD `217404c`。本轮先等待并复核治理 owner；并行 owner 修复
 `4a7e623` 已在复核期间落地，故 EH03-01/02 经过完整旧动作重跑后从
 REGRESSION 回填 PASS。随后把右栏无扩展名文本预览拆成真实网络
 `Response/blob()` 合同，只增加测试证据，不修改产品、旧 expected-fail witness。
