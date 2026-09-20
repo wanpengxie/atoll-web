@@ -4,32 +4,74 @@ import { useModalFocus } from '../ui/primitives/useModalFocus.js';
 
 const VIEW_LABELS = Object.freeze({ conversation: '动态', tasks: '任务' });
 const VIEW_ENTRIES = Object.freeze(Object.entries(VIEW_LABELS));
-const RAIL_WIDTH_DEFAULT = 264;
-const RAIL_WIDTH_MIN = 200;
-const RAIL_WIDTH_MAX = 520;
-const RAIL_WIDTH_STEP = 16;
-const RAIL_WIDTH_STORAGE_KEY = 'atoll.web.pane.rail';
+const PANE_CONFIG = Object.freeze({
+  rail: Object.freeze({
+    defaultWidth: 264,
+    min: 200,
+    max: 520,
+    step: 16,
+    storageKey: 'atoll.web.pane.rail',
+    grows: 'right',
+    label: '调整频道栏宽度',
+  }),
+  context: Object.freeze({
+    defaultWidth: 360,
+    min: 300,
+    workspaceReserve: 420,
+    step: 16,
+    storageKey: 'atoll.web.pane.context',
+    grows: 'left',
+    label: '调整右侧面板宽度',
+  }),
+  artifact: Object.freeze({
+    defaultWidth: 520,
+    min: 420,
+    workspaceReserve: 360,
+    step: 16,
+    storageKey: 'atoll.web.pane.artifact',
+    grows: 'left',
+    label: '调整右侧面板宽度',
+  }),
+});
 
-function clampRailWidth(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return null;
-  return Math.round(Math.min(RAIL_WIDTH_MAX, Math.max(RAIL_WIDTH_MIN, number)));
+function viewportWidth() {
+  const value = Number(globalThis.innerWidth);
+  return Number.isFinite(value) && value > 0 ? value : Number.POSITIVE_INFINITY;
 }
 
-function readRailWidth() {
+function paneMax(kind, availableWidth = viewportWidth()) {
+  const config = PANE_CONFIG[kind];
+  if (!config) return null;
+  if (config.max !== undefined) return config.max;
+  if (!Number.isFinite(availableWidth)) return Number.POSITIVE_INFINITY;
+  return Math.max(config.min, availableWidth - config.workspaceReserve);
+}
+
+function clampPaneWidth(kind, value, availableWidth = viewportWidth()) {
+  const config = PANE_CONFIG[kind];
+  const number = Number(value);
+  if (!config || !Number.isFinite(number)) return null;
+  return Math.round(Math.min(paneMax(kind, availableWidth), Math.max(config.min, number)));
+}
+
+function readPaneWidth(kind) {
+  const config = PANE_CONFIG[kind];
+  if (!config) return null;
   try {
-    const raw = globalThis.localStorage?.getItem(RAIL_WIDTH_STORAGE_KEY);
+    const raw = globalThis.localStorage?.getItem(config.storageKey);
     if (raw === null || raw === undefined || raw === '') return null;
-    return clampRailWidth(raw);
+    return clampPaneWidth(kind, raw);
   } catch {
     return null;
   }
 }
 
-function writeRailWidth(value) {
+function writePaneWidth(kind, value) {
+  const config = PANE_CONFIG[kind];
+  if (!config) return;
   try {
-    if (value === null || value === undefined) globalThis.localStorage?.removeItem(RAIL_WIDTH_STORAGE_KEY);
-    else globalThis.localStorage?.setItem(RAIL_WIDTH_STORAGE_KEY, String(Math.round(value)));
+    if (value === null || value === undefined) globalThis.localStorage?.removeItem(config.storageKey);
+    else globalThis.localStorage?.setItem(config.storageKey, String(Math.round(value)));
   } catch {
     // A disabled/full convenience store must not break the active shell.
   }
@@ -80,14 +122,15 @@ function nodeUpdateCurrentVersion(update) {
   return value == null || value === '' ? '未提供' : String(value);
 }
 
-function RailResizeHandle({ width, measure, onResize, onCommit, onReset }) {
+function PaneResizeHandle({ kind, width, measure, onResize, onCommit, onReset }) {
+  const config = PANE_CONFIG[kind] || PANE_CONFIG.rail;
   const dragRef = useRef(null);
   const [dragging, setDragging] = useState(false);
   const startWidth = useCallback(() => {
     const measured = Number(measure?.());
-    return clampRailWidth(width ?? (Number.isFinite(measured) && measured > 0 ? measured : RAIL_WIDTH_DEFAULT))
-      ?? RAIL_WIDTH_DEFAULT;
-  }, [measure, width]);
+    return clampPaneWidth(kind, width ?? (Number.isFinite(measured) && measured > 0 ? measured : config.defaultWidth))
+      ?? config.defaultWidth;
+  }, [config.defaultWidth, kind, measure, width]);
 
   const onPointerDown = useCallback((event) => {
     if (event.button !== 0) return;
@@ -105,11 +148,12 @@ function RailResizeHandle({ width, measure, onResize, onCommit, onReset }) {
   const onPointerMove = useCallback((event) => {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
-    const next = clampRailWidth(drag.originWidth + (event.clientX - drag.originX));
+    const direction = config.grows === 'left' ? -1 : 1;
+    const next = clampPaneWidth(kind, drag.originWidth + direction * (event.clientX - drag.originX));
     if (next === null || next === drag.last) return;
     drag.last = next;
     onResize?.(next);
-  }, [onResize]);
+  }, [config.grows, kind, onResize]);
 
   const finish = useCallback((event) => {
     const drag = dragRef.current;
@@ -122,8 +166,8 @@ function RailResizeHandle({ width, measure, onResize, onCommit, onReset }) {
 
   const onKeyDown = useCallback((event) => {
     let delta = 0;
-    if (event.key === 'ArrowLeft') delta = -RAIL_WIDTH_STEP;
-    else if (event.key === 'ArrowRight') delta = RAIL_WIDTH_STEP;
+    if (event.key === 'ArrowLeft') delta = config.grows === 'left' ? config.step : -config.step;
+    else if (event.key === 'ArrowRight') delta = config.grows === 'left' ? -config.step : config.step;
     else if (event.key === 'Home' || event.key === 'End') delta = 0;
     else return;
     event.preventDefault();
@@ -131,21 +175,22 @@ function RailResizeHandle({ width, measure, onResize, onCommit, onReset }) {
       onReset?.();
       return;
     }
-    const next = clampRailWidth(startWidth() + delta);
+    const next = clampPaneWidth(kind, startWidth() + delta);
     if (next !== null) {
       onResize?.(next);
       onCommit?.(next);
     }
-  }, [onCommit, onResize, onReset, startWidth]);
+  }, [config.grows, config.step, kind, onCommit, onResize, onReset, startWidth]);
 
   return <div
     role="separator"
     aria-orientation="vertical"
-    aria-label="调整频道栏宽度"
-    aria-valuemin={RAIL_WIDTH_MIN}
+    aria-label={config.label}
+    aria-valuemin={config.min}
+    aria-valuemax={Number.isFinite(paneMax(kind)) ? paneMax(kind) : undefined}
     aria-valuenow={width ?? undefined}
     tabIndex={0}
-    className={`pane-resizer pane-resizer-rail grows-right${dragging ? ' is-dragging' : ''}`}
+    className={`pane-resizer pane-resizer-${kind} grows-${config.grows}${dragging ? ' is-dragging' : ''}`}
     title="拖动调整宽度，双击复原"
     onPointerDown={onPointerDown}
     onPointerMove={onPointerMove}
@@ -300,25 +345,58 @@ export function WorkspaceLayout({
   const filesToggleRef = useRef(null);
   const filesOpenRef = useRef(filesOpen);
   const viewTabRefs = useRef([]);
-  const [railWidth, setRailWidth] = useState(readRailWidth);
-  const previewRailWidth = useCallback((value) => {
-    const next = clampRailWidth(value);
-    if (next !== null) setRailWidth(next);
-  }, []);
-  const commitRailWidth = useCallback((value) => {
-    const next = clampRailWidth(value);
+  const [paneWidths, setPaneWidths] = useState(() => ({
+    rail: readPaneWidth('rail'),
+    context: readPaneWidth('context'),
+    artifact: readPaneWidth('artifact'),
+  }));
+  const previewPaneWidth = useCallback((kind, value) => {
+    const next = clampPaneWidth(kind, value);
     if (next === null) return;
-    setRailWidth(next);
-    writeRailWidth(next);
+    setPaneWidths((current) => current[kind] === next ? current : { ...current, [kind]: next });
   }, []);
-  const resetRailWidth = useCallback(() => {
-    setRailWidth(null);
-    writeRailWidth(null);
+  const commitPaneWidth = useCallback((kind, value) => {
+    const next = clampPaneWidth(kind, value);
+    if (next === null) return;
+    setPaneWidths((current) => current[kind] === next ? current : { ...current, [kind]: next });
+    writePaneWidth(kind, next);
+  }, []);
+  const resetPaneWidth = useCallback((kind) => {
+    if (!PANE_CONFIG[kind]) return;
+    setPaneWidths((current) => current[kind] === null ? current : { ...current, [kind]: null });
+    writePaneWidth(kind, null);
   }, []);
   const measureRailWidth = useCallback(() => {
     const measured = Number(mobileRailRef.current?.getBoundingClientRect?.().width);
-    return Number.isFinite(measured) && measured > 0 ? measured : RAIL_WIDTH_DEFAULT;
+    return Number.isFinite(measured) && measured > 0 ? measured : PANE_CONFIG.rail.defaultWidth;
   }, []);
+  // WorkspaceLayout is the sole geometry/storage owner. ContextHost only
+  // receives this narrow presentation port and never owns width state or keys.
+  const paneLayoutPort = {
+    forPane: (kind) => {
+      const config = PANE_CONFIG[kind];
+      if (!config) return null;
+      return {
+        kind,
+        width: paneWidths[kind],
+        min: config.min,
+        max: paneMax(kind),
+        grows: config.grows,
+        label: config.label,
+        renderHandle: (measure) => <PaneResizeHandle
+          kind={kind}
+          width={paneWidths[kind]}
+          measure={measure}
+          onResize={(value) => previewPaneWidth(kind, value)}
+          onCommit={(value) => commitPaneWidth(kind, value)}
+          onReset={() => resetPaneWidth(kind)}
+        />,
+      };
+    },
+  };
+  const rightPanelElement = React.isValidElement(rightPanel)
+    ? React.cloneElement(rightPanel, { layout: paneLayoutPort })
+    : rightPanel;
   const pendingChannelSelectionRef = useRef(null);
   // Presentation-only handoff gate. `navigation.activeChannelId` remains the
   // sole committed selection authority; this state only disables controls
@@ -515,10 +593,17 @@ export function WorkspaceLayout({
     topology={topology}
     className={['shell', mobileChannelsOpen && 'mobile-channels-open', rightPanel && 'has-context'].filter(Boolean).join(' ')}
     data-workspace-view={navigation.activeView}
-    style={railWidth === null ? undefined : { '--rail-width': `${railWidth}px` }}
+    style={paneWidths.rail === null ? undefined : { '--rail-width': String(paneWidths.rail) + 'px' }}
   >
     <WorkspaceRail session={session} navigation={navigation} onSelect={selectChannel} onClose={mobileChannelsOpen ? closeMobileChannels : null} closeButtonRef={mobileRailCloseRef} railRef={mobileRailRef} />
-    <RailResizeHandle width={railWidth} measure={measureRailWidth} onResize={previewRailWidth} onCommit={commitRailWidth} onReset={resetRailWidth} />
+    <PaneResizeHandle
+      kind="rail"
+      width={paneWidths.rail}
+      measure={measureRailWidth}
+      onResize={(value) => previewPaneWidth('rail', value)}
+      onCommit={(value) => commitPaneWidth('rail', value)}
+      onReset={() => resetPaneWidth('rail')}
+    />
     <main className="workspace">
       <header className="channel-header">
         <div className="channel-identity">
@@ -580,7 +665,7 @@ export function WorkspaceLayout({
       title="最近阅读"
       onClick={navigation.openReadingHistory}
     >最近</button>}
-    {rightPanel}
+    {rightPanelElement}
     {overlays}
   </SurfaceShell>;
 }

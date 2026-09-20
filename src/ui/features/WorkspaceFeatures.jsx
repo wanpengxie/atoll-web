@@ -261,7 +261,7 @@ export function WorkspaceFeatures({
   </>;
 }
 
-function ContextHost({ type, focusKey, onClose, children }) {
+function ContextHost({ type, focusKey, onClose, paneLayout = null, children }) {
   const hostRef = useRef(null);
   const openerRef = useRef(null);
   useLayoutEffect(() => {
@@ -284,13 +284,26 @@ function ContextHost({ type, focusKey, onClose, children }) {
     document.addEventListener('keydown', escape);
     return () => document.removeEventListener('keydown', escape);
   }, [onClose]);
-  return <div ref={hostRef} className="context-host" data-context-type={type || 'context'} data-context-key={focusKey || ''}>
+  const measurePane = () => {
+    const measured = Number(hostRef.current?.querySelector('.context-pane')?.getBoundingClientRect?.().width);
+    return Number.isFinite(measured) && measured > 0 ? measured : undefined;
+  };
+  return <div
+    ref={hostRef}
+    className="context-host"
+    data-context-type={type || 'context'}
+    data-context-key={focusKey || ''}
+    style={paneLayout?.width == null ? undefined : { '--context-width': String(paneLayout.width) + 'px' }}
+  >
     <button type="button" className="context-backdrop" aria-label="关闭上下文" tabIndex={-1} onClick={onClose} />
-    <div className="context-pane">{children}</div>
+    <div className="context-pane">
+      {paneLayout?.renderHandle?.(measurePane)}
+      {children}
+    </div>
   </div>;
 }
 
-export function WorkspaceRightPanel({ panel, channel, files = {}, tasks = {}, roster = {}, governance = {}, automation = {}, activity = {}, turn = null, onClose }) {
+export function WorkspaceRightPanel({ panel, channel, files = {}, tasks = {}, roster = {}, governance = {}, automation = {}, activity = {}, turn = null, onClose, layout = null }) {
   const kind = typeof panel === 'string' ? panel : panel?.kind || panel?.value || '';
   let content = null;
   let dismiss = onClose;
@@ -333,7 +346,14 @@ export function WorkspaceRightPanel({ panel, channel, files = {}, tasks = {}, ro
   // Keep this feature-owned branch outside ContextHost so the public rail
   // contract has one dialog and no hidden governance panel behind it.
   if (kind === WORKSPACE_FEATURE_PANEL.channelAdministration && typeof panel === 'object' && panel.initialTab === 'overview') return content;
-  return <ContextHost key={focusKey} type={kind === WORKSPACE_FEATURE_PANEL.artifact ? 'artifact' : kind} focusKey={focusKey} onClose={dismiss}>{content}</ContextHost>;
+  const paneLayout = layout?.forPane?.(kind === WORKSPACE_FEATURE_PANEL.artifact ? 'artifact' : 'context') || null;
+  return <ContextHost
+    key={focusKey}
+    type={kind === WORKSPACE_FEATURE_PANEL.artifact ? 'artifact' : kind}
+    focusKey={focusKey}
+    onClose={dismiss}
+    paneLayout={paneLayout}
+  >{content}</ContextHost>;
 }
 
 export function WorkspaceFeatureOverlays({ search = {}, filePicker = null }) {
