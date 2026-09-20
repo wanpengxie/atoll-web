@@ -1530,6 +1530,69 @@ store, or compatibility path is part of the repair contract. The design is
 based on the existing strict evidence (7/7 stable RED at latest45b); no
 product or test file was modified in this read-only round.
 
+## Round 47 read-only send-join acceptance matrix
+
+This matrix turns the Round-46 handoff into a black-box acceptance contract.
+It is intentionally written in terms of public Reading/Composer events,
+rendered rows, public height delivery, the mounted physical root, and the
+typed intent receipt.  `VendorListExecutor` is the sole owner for every
+physical-root write: no Composer callback, notification path, private helper,
+or second store may write the root.  “Anchor unchanged” means that the
+currently visible row/offset and `scrollTop` remain where the user left them;
+“bottom” means the mounted root has reached its current committed tail and the
+corresponding intent has a single receipt.
+
+### State/event matrix
+
+| state | public event / black-box input | next state and required retained fact | unique Vendor writer | screen anchor / bottom expectation |
+|---|---|---|---|---|
+| `Idle` | No send or append; mounted root is observed. | Remains `Idle`; no live send tuple. | None. | Preserve the existing anchor; do not claim bottom. |
+| `Idle → Armed` | The本人 Composer send starts and publicly calls `requestLatest`; no target row exists yet. | `Armed`; retain the public activation/input epoch, `afterPresentationRevision`, `baselineTailID`, and intent id, but no guessed target IDs. | None; `requestLatest` is not a scroll receipt. | Preserve the sender’s current anchor. The bottom intent is pending, not consumed and not yet at bottom. |
+| `Armed → Bound` | Public target binding supplies the durable target message IDs. | `Bound`; retain the same intent tuple and wait for every target ID. | None; target binding is not a geometry write. | Anchor unchanged; no bottom move and no receipt. |
+| `Bound` | Target is absent from the current committed presentation, or is rendered as `Waiting`. | `WaitingBaseline` (or remain pending `Bound` until a presentation can establish the baseline); retain the intent and target IDs. | None. | Anchor unchanged; absence/Waiting is not destination-ready and cannot claim bottom or consume. |
+| `Bound → Baseline` | The本人 send target rows first become present in one committed presentation, with the first public geometry/height observation. | `Baseline`; retain the first target-complete geometry as non-writing baseline evidence. | None. | Keep the pre-send anchor exactly; first target presence/height must not move to bottom. |
+| `Baseline` | First, equal, role-only, or repeated same-revision height/layout observation arrives while the target tuple is still live. | Remains `Baseline`; update only read-only evidence for this intent. | None. | Anchor unchanged; bottom remains unclaimed. No root write and no receipt. |
+| `Baseline → Ready` | A later authorized destination height is publicly committed, all targets remain present, and activation/input/root/generation fences still match. | `Ready`; it is eligible for exactly one write and one receipt. | `VendorListExecutor` only, through the mounted physical root. | One transition to bottom is expected: the root tail becomes the visible anchor; no intermediate anchor jump is allowed. |
+| `Ready → Consumed` | The sole authorized root-tail command completes and the public intent is consumed. | `Consumed`/idle for that intent; no replay token remains. | No second writer; the same `VendorListExecutor` command is the only write. | Remain at bottom. Duplicate height, render, or callback evidence is a no-op and cannot move or consume again. |
+| `Bound`/`Baseline` | The target changes to `Waiting`/absent before destination-ready geometry. | `WaitingBaseline`; keep the active intent, target IDs, and baseline; do not infer a fallback destination. | None. | Anchor unchanged; no bottom claim, no root write, no receipt. Only a later valid target-plus-authorized-height sequence may reach `Ready`. |
+| Any live state | Public send revoke/reject occurs. | `Revoked → Idle`; invalidate the old tuple and any captured height token. | None for the send join. A fresh ordinary-follow event may be evaluated separately by the same public owner. | No retroactive move. The pre-revoke anchor stays put; only a fresh post-revoke ordinary-follow boundary can lawfully move to bottom once. |
+| Any live state | A stale activation, input epoch, generation, or callback addresses an old physical root after a successor is live. | Stale event is invalidated; the successor tuple remains authoritative. | None for the stale event; only the successor’s live `VendorListExecutor` may write. | Do not touch the successor anchor or bottom state. The stale event cannot consume the successor intent. |
+| Any live state | The mounted root unmounts before the authorized write or while a callback is in flight. | Invalidate the detached-root event; a later mount starts/continues only under its own live root fence. | None against the detached root. | No write to a detached root and no receipt. The next mounted root preserves its own anchor unless it independently reaches `Ready`. |
+
+### Other-append coexistence matrix
+
+An unrelated committed tail is a separate public obligation from the本人
+send-join.  It must not be used to advance, consume, or clear the newer send
+intent.
+
+| send-join state | public event | unique Vendor writer | screen anchor / bottom expectation |
+|---|---|---|---|
+| `Armed`/`Bound`/`Baseline`/`WaitingBaseline` | 他人 appends an unrelated committed tail while the user is still in ordinary following mode and the physical gap requires following. | `VendorListExecutor` once through the mounted physical root; this is Batch B ordinary follow, not a Batch-A receipt. | One ordinary-follow move to the new tail is allowed. The send target/intent remains pending in the same state; it is not `Ready`, not consumed, and its target IDs stay intact. |
+| `Armed`/`Bound`/`Baseline`/`WaitingBaseline` | 他人 appends while the user is browsing/not following, or the root is already at the tail. | None. The same owner must not manufacture a write merely because a send intent exists. | Preserve the browsing anchor (or existing bottom without a redundant command); the send intent remains pending. |
+| Any send state | The same commit both presents the本人 target and appends the tail. | Batch A rules win: no write at target presentation/baseline; only the later authorized destination-height event may use the one `VendorListExecutor` write. | Preserve the pre-send anchor until `Ready`; then one bottom transition and one receipt. It is not an unrelated Batch-B write. |
+
+### Acceptance and failure mapping
+
+The public evidence for this matrix is limited to root `scrollTo` calls and
+resulting `scrollTop`, rendered target/Waiting rows, public height delivery,
+and the typed Reading intent/receipt.  The current seven-red baseline remains
+the failure evidence recorded in Round 46; the matrix does not turn callback
+names, timer order, or private flags into new contracts.
+
+| case | required matrix path | acceptance condition |
+|---|---|---|
+| TC-1010 | `Armed → Bound → Baseline` on intermediate target presentation | Zero root writes before destination-ready height; anchor remains unchanged. |
+| TC-1011 | First 1132 observation establishes `Baseline`; later 1200 observation reaches `Ready → Consumed` | No first-height write; exactly one later root-tail write and one receipt. |
+| TC-1012 | Equal-height acknowledgement is `Baseline`; later resize reaches `Ready` | Equal-height path is silent; only later authorized resize moves to bottom once. |
+| TC-1014 / TC-1015 | `Baseline` remains send-owned until public revoke | No pre-revoke write; post-revoke ordinary following may write once through the same owner. |
+| TC-1018 | Batch-B other append while a newer Batch-A target is pending | Allowed ordinary-follow write occurs only when following is due; Batch-A target remains pending/unconsumed. |
+| TC-1019 | Target present → `WaitingBaseline`/absent before destination-ready geometry | Zero write and zero receipt; later valid target-plus-height sequence is still required. |
+| TC-1024 | Stale activation/root callback against a live successor | Stale callback makes no root write or receipt; successor’s live owner remains able to perform its one authorized write. |
+
+This is a read-only acceptance artifact for the Reading owner.  No product or
+test file was changed in Round 47, and no private API, compatibility path, or
+second lifecycle is implied.
+
 ## Final disposition and verification
 
 - Baseline accounting is complete: rows 1–159 above represent all 158 test
