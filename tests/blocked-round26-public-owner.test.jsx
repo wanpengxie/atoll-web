@@ -426,13 +426,19 @@ describe('A-D round 26 public-owner evidence', () => {
     expect(screen.queryByRole('option', { name: /retired/ })).toBeNull();
   });
 
-  it('[AD-193] waits for ledger, OBS, membership, and serving convergence after create', () => {
+  it('[AD-193] waits for ledger, OBS, membership, and serving convergence after create', async () => {
     // 用户能力：创建成功分别收敛四类事实。
-    // 不变量：receipt 不能替代 serving/membership；公开 owner：GovernanceFeature。
-    governance({ commands: { submit: vi.fn().mockResolvedValue('request-1'), refresh: vi.fn() } });
-    fireEvent.change(screen.getByLabelText('名称'), { target: { value: 'research' } });
-    fireEvent.click(screen.getByRole('button', { name: '创建子频道' }));
+    // 不变量：receipt 不能替代 serving/membership；公开 owner：WorkspaceRightPanel → ChannelCreateModal。
+    const submit = vi.fn().mockResolvedValue('request-1');
+    createChannelModal({ commands: { submit, refresh: vi.fn() } });
+    fireEvent.change(screen.getByLabelText('新频道名称'), { target: { value: 'research' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建频道' }));
+    await waitFor(() => expect(submit).toHaveBeenCalledWith(expect.objectContaining({
+      scope: 'channel', action: 'create_child',
+      payload: { name: 'research', purpose: '', parentId: 'c0' },
+    })));
     expect(screen.getByText('服务就绪')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '进入新频道' })).toBeNull();
   });
 
   it('[AD-194] keeps member ledger terminal and roster convergence as separate facts', () => {

@@ -569,6 +569,37 @@ AD-192 is promoted to PASS. The ledger is now **331 PASS / 0 REGRESSION / 34
 BLOCKED**. The case-level contract and evidence are in
 [`A-D-ROUND47-AD192-HUMAN-PRINCIPAL-SELECTOR-20260920.md`](./A-D-ROUND47-AD192-HUMAN-PRINCIPAL-SELECTOR-20260920.md).
 
+## Round 48 — AD-193 channel-creation convergence fixture recovery
+
+Round 48 recovers AD-193 without changing the Governance product owner. The
+old fixture opened `ChannelAdministrationPanel` with its default members tab,
+then searched for the create-child labels that belong to the current public
+`WorkspaceRightPanel` → `ChannelCreateModal` route. That was a fixture/owner
+mismatch, not evidence that the creation contract should be weakened.
+
+The migrated case now enters the public create route, submits the typed
+`scope: 'channel'`, `action: 'create_child'` command with the current parent,
+and asserts the visible convergence state. A command receipt alone does not
+unlock “进入新频道”; the modal remains in its waiting state until the public
+creation projection supplies accepted, ledger, observable, membership, and
+serving facts plus a resolved channel. This preserves the user's ability to
+create a child channel while preventing a receipt from being presented as a
+ready/servable channel.
+
+The focused current-head result is **1 passed / 19 focused-out skips**:
+
+```text
+npx vitest run tests/blocked-round26-public-owner.test.jsx \
+  --reporter=verbose -t '\\[AD-193\\]'
+
+Test Files  1 passed (1)
+Tests       1 passed | 19 skipped (20)
+```
+
+AD-193 is promoted to PASS. The ledger is now **332 PASS / 0 REGRESSION / 33
+BLOCKED**. Case evidence and the exact baseline mapping are in
+[`A-D-ROUND48-AD193-CREATE-CONVERGENCE-FIXTURE-20260920.md`](./A-D-ROUND48-AD193-CREATE-CONVERGENCE-FIXTURE-20260920.md).
+
 ## Public-boundary migration completed in this pass
 
 `tests/channel-access.test.js` and `tests/channel-name-cache.test.js` no longer
