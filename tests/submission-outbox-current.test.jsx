@@ -136,6 +136,95 @@ describe('current submission owner: outbox-store + composer runtime', () => {
     store.close();
   });
 
+  it('keeps an accepted receipt visible until feed lands without retransmitting', async () => {
+    let resolveReceipt;
+    const submit = vi.fn(() => new Promise((resolve) => {
+      resolveReceipt = resolve;
+    }));
+    const harness = runtimeHarness({ wireState: 'open', submit, principalId: 'receipt-before-feed-root' });
+    const { result, unmount } = renderHook(() => useComposerSubmissionRuntime(harness));
+    await waitFor(() => expect(result.current.pending).toEqual([]));
+
+    await act(async () => {
+      await result.current.send({ messageId: 'receipt-before-feed', text: 'receipt first', msgType: 'agent.ask', audience: ['agent:worker:1'] });
+    });
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+    await waitFor(async () => expect((await harness.store.restore(harness.principalId))[0]).toMatchObject({
+      messageId: 'receipt-before-feed', state: 'transmitting',
+    }));
+
+    await act(async () => { resolveReceipt({ message_id: 'receipt-before-feed' }); });
+    await waitFor(() => expect(result.current.pending[0]).toMatchObject({
+      messageId: 'receipt-before-feed', state: 'accepted',
+    }));
+    expect((await harness.store.restore(harness.principalId))[0]).toMatchObject({
+      messageId: 'receipt-before-feed', state: 'accepted',
+    });
+    expect(submit).toHaveBeenCalledTimes(1);
+
+    expect(result.current.reconcileFeed(
+      new Set(['receipt-before-feed']), new Set(), harness.producerOwnerToken,
+    )).toBe(true);
+    await waitFor(() => expect(result.current.pending).toEqual([]));
+    await waitFor(async () => expect(await harness.store.restore(harness.principalId)).toEqual([]));
+    expect(submit).toHaveBeenCalledTimes(1);
+    unmount();
+    harness.store.close();
+  });
+
+  it('reconnects an uncertain id once despite duplicate open notifications', async () => {
+    const firstSubmit = vi.fn().mockRejectedValue(Object.assign(new Error('closed'), { code: 'closed' }));
+    let resolveRetry;
+    const retrySubmit = vi.fn(() => new Promise((resolve) => {
+      resolveRetry = resolve;
+    }));
+    const harness = runtimeHarness({
+      wireState: 'open', submit: firstSubmit, principalId: 'uncertain-reconnect-root',
+    });
+    const { wireRef } = harness;
+    const { result, rerender, unmount } = renderHook(
+      ({ wireState }) => useComposerSubmissionRuntime({ ...harness, wireState }),
+      { initialProps: { wireState: 'open' } },
+    );
+    await waitFor(() => expect(result.current.pending).toEqual([]));
+
+    await act(async () => {
+      await result.current.send({ messageId: 'uncertain-reconnect', text: 'retry once', msgType: 'agent.ask', audience: ['agent:worker:1'] });
+    });
+    await waitFor(() => expect(result.current.pending[0]).toMatchObject({
+      messageId: 'uncertain-reconnect', state: 'uncertain',
+    }));
+    expect(firstSubmit).toHaveBeenCalledTimes(1);
+
+    wireRef.current = null;
+    rerender({ wireState: 'reconnecting' });
+    wireRef.current = { submit: retrySubmit };
+    rerender({ wireState: 'open' });
+    await waitFor(() => expect(retrySubmit).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(result.current.pending[0]).toMatchObject({
+      messageId: 'uncertain-reconnect', state: 'transmitting',
+    }));
+
+    // A second open notification receives a fresh transport object while the
+    // first reconnect attempt is still in flight. It must not create a second
+    // transmit for the same durable id.
+    wireRef.current = null;
+    rerender({ wireState: 'reconnecting' });
+    wireRef.current = { submit: retrySubmit };
+    rerender({ wireState: 'open' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(retrySubmit).toHaveBeenCalledTimes(1);
+
+    await act(async () => { resolveRetry({ message_id: 'uncertain-reconnect' }); });
+    await waitFor(() => expect(result.current.pending[0]).toMatchObject({
+      messageId: 'uncertain-reconnect', state: 'accepted',
+    }));
+    expect(firstSubmit).toHaveBeenCalledTimes(1);
+    expect(retrySubmit).toHaveBeenCalledTimes(1);
+    unmount();
+    harness.store.close();
+  });
+
   it('refuses durable acceptance without confirmed membership and accepts after access changes', async () => {
     let access = memberAccess({ relationship: 'unknown' });
     const submit = vi.fn().mockResolvedValue({ message_id: 'm4' });
