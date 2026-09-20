@@ -339,6 +339,28 @@ describe('真实 Workspace owner composition', () => {
     expect(mocks.feedRuntime.getSnapshot().stateFor(mocks.channelId)?.rows.has(8)).toBe(true);
   });
 
+  it('clamps a restored future cursor before Workspace exposes channel history', async () => {
+    const key = ['atoll.feed-cursors.v1.', mocks.principalId, '\u0000world-real'].join('');
+    localStorage.setItem(key, JSON.stringify({
+      reads: { [mocks.channelId]: 999 },
+      notifications: { [mocks.channelId]: 999 },
+    }));
+    render(<WorkspaceApp />);
+    await waitFor(() => expect(mocks.feedRuntime).toBeTruthy());
+    await act(async () => {
+      await mocks.feedRuntime.getSnapshot().prepareLocalReplica(mocks.principalId, {
+        focus: mocks.channelId,
+      });
+      await mocks.feedRuntime.getSnapshot().setHistoryGrants([
+        { channel_id: mocks.channelId, head_seq: 40, has_rows: true },
+      ], { generation: 1, boot: 'world-real', focus: mocks.channelId });
+    });
+
+    expect(mocks.layoutProps.conversation.history.status.notificationHighWater).toBe(40);
+    expect(mocks.layoutProps.navigation.unread[mocks.channelId].total).toBe(0);
+    localStorage.removeItem(key);
+  });
+
   it('marks a probe control landed from Feed before its transport receipt, and keeps Waiting/Probe gates authoritative', async () => {
     render(<WorkspaceApp />);
     await waitFor(() => expect(mocks.feedRuntime).toBeTruthy());

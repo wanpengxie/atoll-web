@@ -235,6 +235,17 @@ function createCursorOwner(storage = globalThis.localStorage) {
       notifications.set(channelId, next); persist(); return next;
     },
     baselineNotifications(channelId, seq) { if (!notifications.has(channelId)) notifications.set(channelId, historyNumeric(seq)); persist(); },
+    clampNotificationsToHead(channelId, seq) {
+      const head = historyNumeric(seq);
+      const notification = notifications.get(channelId);
+      const nextNotification = notification === undefined
+        ? undefined
+        : Math.min(notification, head);
+      const changed = nextNotification !== notification;
+      if (nextNotification !== undefined) notifications.set(channelId, nextNotification);
+      if (changed) persist();
+      return changed;
+    },
     destroy() { authority = ''; reads.clear(); notifications.clear(); },
   });
 }
@@ -1211,6 +1222,7 @@ export function createChannelFeedRuntime(options = {}) {
       if (cursors.isReadAuthorityReady()) {
         cursors.baselineRead(channelId, grantedHeadSeq);
         cursors.baselineNotifications(channelId, grantedHeadSeq);
+        cursors.clampNotificationsToHead(channelId, grantedHeadSeq);
       }
     }
     const focus = String(detail.focus || activeChannelRef.current || '');
