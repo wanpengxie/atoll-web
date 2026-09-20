@@ -603,18 +603,29 @@ describe('A-D round 24 public-owner evidence', () => {
     const terminal = envelope({ id: 'answer', body: { status: 'completed', text: '最终答复' } });
     const { view } = renderTurnRow(turnOf({ status: 'completed', terminal }), { onReply });
     const answer = view.container.querySelector('.agent-turn-bubble');
+    const surface = within(answer).getByText('最终答复').closest('.message-body');
     const copy = within(answer).getByRole('button', { name: '复制' });
     const reply = within(answer).getByRole('button', { name: '↩ 回复' });
     fireEvent.click(copy);
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('最终答复'));
+    fireEvent.pointerDown(surface, { pointerType: 'touch', button: 0 });
+    fireEvent.pointerUp(surface, { pointerType: 'touch', button: 0 });
+    expect(onReply).toHaveBeenCalledTimes(1);
+    expect(writeText).toHaveBeenCalledTimes(1);
+    fireEvent.click(reply, { detail: 0 });
+    expect(onReply).toHaveBeenCalledTimes(2);
+    fireEvent.pointerDown(surface, { pointerType: 'touch', button: 0 });
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    fireEvent.pointerUp(surface, { pointerType: 'touch', button: 0 });
+    expect(writeText).toHaveBeenCalledTimes(2);
+    expect(onReply).toHaveBeenCalledTimes(2);
+    fireEvent.click(copy, { detail: 0 });
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(3));
+    expect(onReply).toHaveBeenCalledTimes(2);
     fireEvent.pointerDown(reply, { pointerType: 'touch', button: 0 });
     fireEvent.pointerUp(reply, { pointerType: 'touch', button: 0 });
-    expect(onReply).toHaveBeenCalledTimes(1);
-    fireEvent.pointerDown(copy, { pointerType: 'touch', button: 0 });
-    await new Promise((resolve) => setTimeout(resolve, 600));
-    fireEvent.pointerUp(copy, { pointerType: 'touch', button: 0 });
-    expect(writeText).toHaveBeenCalledTimes(2);
-    expect(onReply).toHaveBeenCalledTimes(1);
+    fireEvent.click(reply, { pointerType: 'touch', detail: 1 });
+    expect(onReply).toHaveBeenCalledTimes(3);
   });
 
   it('[AD-334] exposes audit identifiers in turn detail without serializing the payload JSON', () => {

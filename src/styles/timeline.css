@@ -476,10 +476,16 @@
 }
 
 @media (hover: none) {
-  .replyable-message > .message-actions { display: none; }
-  .replyable-message > .message-actions.has-feedback { position: absolute; z-index: 3; right: 12px; bottom: 4px; display: block; padding: 5px 8px; border-radius: var(--pill); background: var(--raised); box-shadow: 0 3px 10px var(--shadow); }
+  /* Keep touch actions out of the hit surface while retaining sequential
+     keyboard focus. The message body owns touch gestures; focused controls
+     temporarily return to their normal flow for keyboard users. */
+  .replyable-message > .message-actions { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); border: 0; white-space: nowrap; }
+  .replyable-message > .message-actions:focus-within { position: static; width: auto; height: auto; margin: 0; padding-top: 3px; overflow: visible; clip: auto; clip-path: none; white-space: normal; display: flex; }
+  .replyable-message > .message-actions.has-feedback { position: absolute; z-index: 3; right: 12px; bottom: 4px; width: auto; height: auto; margin: 0; display: block; padding: 5px 8px; overflow: visible; clip: auto; clip-path: none; white-space: normal; border-radius: var(--pill); background: var(--raised); box-shadow: 0 3px 10px var(--shadow); }
   .replyable-message > .message-actions.has-feedback button { display: none; }
   .replyable-message > .message-actions.has-feedback .message-copy-feedback { display: block; }
+  .replyable-message > .message-actions.has-feedback:focus-within { position: static; right: auto; bottom: auto; display: flex; padding-top: 3px; }
+  .replyable-message > .message-actions.has-feedback:focus-within button { display: inline-block; }
 }
 .approval-card { width: min(100%, 620px); overflow: hidden; border-color: var(--warning-line); background: var(--surface-approval); }
 .approval-card.settled { opacity: .65; }

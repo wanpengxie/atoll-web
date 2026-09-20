@@ -20,10 +20,10 @@ const FAILURE_LABELS = Object.freeze({
   permission_denied: '没有执行该操作的权限',
 });
 
-function MessageFrame({ className = '', actions = null, identity = null, contentClassName = '', children, ...articleProps }) {
+function MessageFrame({ className = '', actions = null, identity = null, contentClassName = '', contentProps = {}, children, ...articleProps }) {
   return <article className={`message-row ${className}`.trim()} tabIndex="0" {...articleProps}>
     {actions}<div className="information-flow-avatar-slot">{identity}</div>
-    <div className={`message-body information-flow-content ${contentClassName}`.trim()}>{children}</div>
+    <div {...contentProps} className={`message-body information-flow-content ${contentClassName}`.trim()}>{children}</div>
   </article>;
 }
 
@@ -289,21 +289,123 @@ async function copyMessageText(text) {
   if (!copied) throw new Error('copy failed');
 }
 
-function MessageActions({ envelope, turn = null, onReply, onCreateTask, onOpen }) {
+const TOUCH_LONG_PRESS_MS = 500;
+
+function isInteractiveTouchTarget(target) {
+  return Boolean(target && typeof target.closest === 'function'
+    && target.closest('button, a, input, textarea, select, summary, [role="button"], [contenteditable="true"]'));
+}
+
+function useMessageActionController(envelope, onReply) {
   const feedbackTimer = useRef(0);
+  const gestureRef = useRef({ active: null, suppressClick: false, suppressTimer: 0 });
   const [copyState, setCopyState] = useState('');
   const body = textOf(envelope).trim();
-  useEffect(() => () => globalThis.clearTimeout(feedbackTimer.current), []);
-  if (!body && !onReply && !onCreateTask && !onOpen) return null;
+  useEffect(() => () => {
+    globalThis.clearTimeout(feedbackTimer.current);
+    if (gestureRef.current.active?.timer) globalThis.clearTimeout(gestureRef.current.active.timer);
+    globalThis.clearTimeout(gestureRef.current.suppressTimer);
+  }, []);
   const copy = body ? async () => {
     globalThis.clearTimeout(feedbackTimer.current);
     try { await copyMessageText(body); setCopyState('copied'); } catch { setCopyState('error'); }
     feedbackTimer.current = globalThis.setTimeout(() => setCopyState(''), 1600);
   } : null;
+  const reply = onReply ? () => onReply({ id: envelope.id, sender: envelope.sender, text: body }) : null;
+  const beginTouch = (kind) => (event) => {
+    if (event.pointerType !== 'touch') {
+      gestureRef.current.suppressClick = false;
+      return;
+    }
+    if (kind === 'surface' && isInteractiveTouchTarget(event.target)) return;
+    const previous = gestureRef.current.active;
+    if (previous?.timer) globalThis.clearTimeout(previous.timer);
+    globalThis.clearTimeout(gestureRef.current.suppressTimer);
+    gestureRef.current.suppressClick = false;
+    const gesture = { kind, completed: false, timer: 0, startX: event.clientX, startY: event.clientY };
+    if (kind === 'copy' || kind === 'surface') {
+      gesture.timer = globalThis.setTimeout(() => {
+        if (gestureRef.current.active !== gesture) return;
+        gesture.completed = true;
+        void copy?.();
+      }, TOUCH_LONG_PRESS_MS);
+    }
+    gestureRef.current.active = gesture;
+  };
+  const endTouch = (kind) => (event) => {
+    if (event.pointerType !== 'touch') return;
+    const gesture = gestureRef.current.active;
+    if (!gesture || gesture.kind !== kind) return;
+    if (gesture.timer) globalThis.clearTimeout(gesture.timer);
+    gestureRef.current.active = null;
+    if (kind !== 'surface') {
+      gestureRef.current.suppressClick = true;
+      gestureRef.current.suppressTimer = globalThis.setTimeout(() => {
+        gestureRef.current.suppressClick = false;
+      }, TOUCH_LONG_PRESS_MS);
+      event.preventDefault();
+    }
+    if (gesture.completed || (kind !== 'reply' && kind !== 'surface')) return;
+    reply?.();
+  };
+  const cancelTouch = (event) => {
+    if (event.pointerType !== 'touch') return;
+    const gesture = gestureRef.current.active;
+    if (!gesture) return;
+    if (gesture.timer) globalThis.clearTimeout(gesture.timer);
+    gestureRef.current.active = null;
+    if (gesture.kind !== 'surface') {
+      gestureRef.current.suppressClick = true;
+      gestureRef.current.suppressTimer = globalThis.setTimeout(() => {
+        gestureRef.current.suppressClick = false;
+      }, TOUCH_LONG_PRESS_MS);
+      event.preventDefault();
+    }
+  };
+  const moveTouch = (event) => {
+    if (event.pointerType !== 'touch') return;
+    const gesture = gestureRef.current.active;
+    if (!gesture || !Number.isFinite(gesture.startX) || !Number.isFinite(gesture.startY)) return;
+    const dx = Number(event.clientX) - gesture.startX;
+    const dy = Number(event.clientY) - gesture.startY;
+    if (Math.hypot(dx, dy) > 8) cancelTouch(event);
+  };
+  const click = (action) => (event) => {
+    // A touch pointer-up can be followed by the browser's compatibility click
+    // (detail > 0). Keyboard activation is detail === 0 and must remain a
+    // direct public action even when it follows a touch gesture.
+    if (gestureRef.current.suppressClick && event.detail !== 0) {
+      gestureRef.current.suppressClick = false;
+      globalThis.clearTimeout(gestureRef.current.suppressTimer);
+      event.preventDefault();
+      return;
+    }
+    action?.();
+  };
+  const gestureProps = (kind) => ({
+    onPointerDown: beginTouch(kind),
+    onPointerMove: moveTouch,
+    onPointerUp: endTouch(kind),
+    onPointerCancel: cancelTouch,
+    onPointerLeave: cancelTouch,
+  });
+  return {
+    copy,
+    copyState,
+    reply,
+    onCopyClick: click(copy),
+    onReplyClick: click(reply),
+    actionGestureProps: gestureProps,
+    surfaceProps: gestureProps('surface'),
+  };
+}
+
+function MessageActions({ envelope, turn = null, onReply, onCreateTask, onOpen, copy, copyState, onCopyClick, onReplyClick, actionGestureProps }) {
+  if (!copy && !onReply && !onCreateTask && !onOpen) return null;
   const feedback = copyState === 'copied' ? '已复制正文' : copyState === 'error' ? '复制失败' : '';
   return <div className={`message-actions${feedback ? ' has-feedback' : ''}`} aria-label="条目操作">
-    {copy && <button type="button" onClick={copy}>{copyState === 'copied' ? '✓ 已复制' : '复制'}</button>}
-    {onReply && <button type="button" onClick={() => onReply({ id: envelope.id, sender: envelope.sender, text: body })}>↩ 回复</button>}
+    {copy && <button type="button" onClick={onCopyClick} {...actionGestureProps('copy')}>{copyState === 'copied' ? '✓ 已复制' : '复制'}</button>}
+    {onReply && <button type="button" onClick={onReplyClick} {...actionGestureProps('reply')}>↩ 回复</button>}
     {onCreateTask && <button type="button" onClick={() => turn ? onCreateTask(envelope, turn) : onCreateTask(envelope)}>创建任务</button>}
     {onOpen && turn && <button type="button" onClick={() => onOpen(turn)}>查看过程</button>}
     <span className="message-copy-feedback" role="status">{feedback}</span>
@@ -311,8 +413,12 @@ function MessageActions({ envelope, turn = null, onReply, onCreateTask, onOpen }
 }
 
 function ReplyableMessageFrame({ envelope, turn = null, onReply, onCreateTask, onOpen, children, className = '', ...props }) {
+  const actions = useMessageActionController(envelope, onReply);
   return <MessageFrame {...props} className={`replyable-message ${className}`.trim()}
-    actions={<MessageActions envelope={envelope} turn={turn} onReply={onReply} onCreateTask={onCreateTask} onOpen={onOpen} />}
+    contentProps={actions.surfaceProps}
+    actions={<MessageActions envelope={envelope} turn={turn} onReply={onReply} onCreateTask={onCreateTask} onOpen={onOpen}
+      copy={actions.copy} copyState={actions.copyState} onCopyClick={actions.onCopyClick}
+      onReplyClick={actions.onReplyClick} actionGestureProps={actions.actionGestureProps} />}
   >{children}</MessageFrame>;
 }
 
