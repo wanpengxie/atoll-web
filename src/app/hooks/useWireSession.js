@@ -532,6 +532,19 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
     }
   }, [accessRef, activeChannelId, channels, commitActiveChannel, commitFocus, onNotice]);
 
+  // Terminal visibility is a navigation fact, so directory/world replacement
+  // must retire facts for identities that are no longer in the public channel
+  // projection.  The terminal feature keeps its existing session port; this
+  // only prevents a deleted channel from becoming visible again if it returns.
+  useEffect(() => {
+    const available = new Set(channels.map((row) => row.id));
+    setTerminalChannels((current) => {
+      if (!current.size) return current;
+      const next = new Set([...current].filter((channelId) => available.has(channelId)));
+      return next.size === current.size ? current : next;
+    });
+  }, [channels]);
+
   useEffect(() => {
     const receiveRoute = () => {
       const route = readInitialRoute();
@@ -607,7 +620,10 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
   }, []);
   const bump = useCallback(() => setRevision((value) => value + 1), []);
   const setChannels = useCallback((next) => {
-    if (next instanceof Map && next.size === 0) filesReturnIntentRef.current = null;
+    if (next instanceof Map && next.size === 0) {
+      filesReturnIntentRef.current = null;
+      setTerminalChannels((current) => (current.size ? new Set() : current));
+    }
     setProfiles(next);
   }, []);
   const clear = useCallback(() => {

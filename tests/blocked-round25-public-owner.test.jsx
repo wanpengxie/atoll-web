@@ -171,8 +171,12 @@ function session() {
   };
 }
 
-function navigation(activeChannelId = 'c0', { access = 'member_active', terminalVisible = false } = {}) {
-  let visible = terminalVisible;
+function navigation(activeChannelId = 'c0', {
+  access = 'member_active',
+  terminalVisible = false,
+  terminalChannels = new Set(),
+} = {}) {
+  if (terminalVisible) terminalChannels.add(activeChannelId);
   const channelRows = [
     { id: 'c0', name: 'c0', access: 'member_active' },
     { id: 'c1', name: 'c1', access: 'member_active' },
@@ -192,8 +196,11 @@ function navigation(activeChannelId = 'c0', { access = 'member_active', terminal
     openSearch: vi.fn(),
     openSpaceAdministration: vi.fn(),
     openRoster: vi.fn(),
-    get terminalVisible() { return visible; },
-    openTerminal: vi.fn(() => { visible = !visible; }),
+    get terminalVisible() { return terminalChannels.has(activeChannelId); },
+    openTerminal: vi.fn(() => {
+      if (terminalChannels.has(activeChannelId)) terminalChannels.delete(activeChannelId);
+      else terminalChannels.add(activeChannelId);
+    }),
   };
 }
 
@@ -593,14 +600,15 @@ describe('A-D round 25 public-owner evidence', () => {
 
   it('[AD-106] retains a channel terminal split when leaving and returning', () => {
     // 用户能力：切走再回来保留该频道 terminal split；不变量：terminal/session/layout 按 channel 隔离；公开 owner：WorkspaceLayout + WorkspaceFeatures。
-    const first = navigation('c0', { terminalVisible: true });
+    const terminalChannels = new Set();
+    const first = navigation('c0', { terminalVisible: true, terminalChannels });
     const view = renderWorkspace(first);
-    const second = navigation('c1', { terminalVisible: false });
+    const second = navigation('c1', { terminalVisible: false, terminalChannels });
     view.rerender(<WorkspaceLayout
       session={session()} navigation={second}
       conversation={{ element: <div>消息</div> }} features={terminalFeatures(second)}
     />);
-    const returned = navigation('c0', { terminalVisible: false });
+    const returned = navigation('c0', { terminalVisible: false, terminalChannels });
     view.rerender(<WorkspaceLayout
       session={session()} navigation={returned}
       conversation={{ element: <div>消息</div> }} features={terminalFeatures(returned)}
@@ -610,15 +618,16 @@ describe('A-D round 25 public-owner evidence', () => {
 
   it('[AD-108] closing one channel split does not close another channel split', () => {
     // 用户能力：收起 c0 不影响 c1；不变量：terminal visibility 按 channel 隔离；公开 owner：WorkspaceLayout + WorkspaceFeatures。
-    const first = navigation('c0', { terminalVisible: true });
+    const terminalChannels = new Set();
+    const first = navigation('c0', { terminalVisible: true, terminalChannels });
     const view = renderWorkspace(first);
-    const second = navigation('c1', { terminalVisible: true });
+    const second = navigation('c1', { terminalVisible: true, terminalChannels });
     view.rerender(<WorkspaceLayout
       session={session()} navigation={second}
       conversation={{ element: <div>消息</div> }} features={terminalFeatures(second)}
     />);
     second.openTerminal();
-    const returned = navigation('c0', { terminalVisible: false });
+    const returned = navigation('c0', { terminalVisible: false, terminalChannels });
     view.rerender(<WorkspaceLayout
       session={session()} navigation={returned}
       conversation={{ element: <div>消息</div> }} features={terminalFeatures(returned)}

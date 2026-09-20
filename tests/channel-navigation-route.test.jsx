@@ -8,13 +8,13 @@ afterEach(() => {
   window.history.replaceState({}, '', '#/channels/c0/conversation');
 });
 
-function navigation() {
-  const rows = [
+function navigation(rowsRef = { current: [
     { id: 'c0', name: 'c0', access: 'member_active' },
     { id: 'c1', name: 'c1', access: 'member_active' },
-  ];
+  ] }) {
+  const accessRef = { current: { rows: () => rowsRef.current } };
   return renderHook(() => useChannelNavigation({
-    accessRef: { current: { rows: () => rows } },
+    accessRef,
     rosterRef: { current: null },
   }));
 }
@@ -66,5 +66,48 @@ describe('useChannelNavigation Files/Tasks temporary return owner', () => {
       result.current.setActiveView('conversation');
     });
     expect(result.current.activeView).toBe('conversation');
+  });
+
+  it('retains terminal visibility per channel and closes only the active channel', () => {
+    const { result } = navigation();
+
+    act(() => result.current.setTerminalVisible(true));
+    act(() => result.current.select('c1'));
+    expect(result.current.terminalVisible).toBe(false);
+
+    act(() => result.current.setTerminalVisible(true));
+    act(() => result.current.select('c0'));
+    expect(result.current.terminalVisible).toBe(true);
+
+    act(() => result.current.setTerminalVisible(false));
+    act(() => result.current.select('c1'));
+    expect(result.current.terminalVisible).toBe(true);
+  });
+
+  it('retires terminal visibility when a channel is removed or the world is replaced', () => {
+    const rowsRef = { current: [
+      { id: 'c0', name: 'c0', access: 'member_active' },
+      { id: 'c1', name: 'c1', access: 'member_active' },
+    ] };
+    const { result } = navigation(rowsRef);
+
+    act(() => result.current.setTerminalVisible(true));
+    rowsRef.current = [rowsRef.current[1]];
+    act(() => result.current.bump());
+    expect(result.current.activeChannelId).toBe('c1');
+    expect(result.current.terminalVisible).toBe(false);
+
+    act(() => result.current.setTerminalVisible(true));
+    rowsRef.current = [];
+    act(() => result.current.setChannels(new Map()));
+    expect(result.current.terminalVisible).toBe(false);
+
+    rowsRef.current = [
+      { id: 'c0', name: 'c0', access: 'member_active' },
+      { id: 'c1', name: 'c1', access: 'member_active' },
+    ];
+    act(() => result.current.bump());
+    act(() => result.current.select('c1'));
+    expect(result.current.terminalVisible).toBe(false);
   });
 });
