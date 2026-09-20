@@ -8,6 +8,7 @@ import {
   ownsHistoryOperation,
 } from '../src/ui/timeline/history-consumer-obligation.js';
 import { executeReadingDOMCommand } from '../src/ui/timeline/reading-dom-command-executor.js';
+import { topVisibleBookmark } from '../src/ui/timeline/reading-geometry.js';
 
 describe('ReadingSession pure ports', () => {
   it('names one exact history obligation without owning its lifecycle', () => {
@@ -87,6 +88,26 @@ describe('ReadingSession pure ports', () => {
     expect(executeReadingDOMCommand({ type: 'claim-focus' }, { root })).toBe(true);
     expect(focus).toHaveBeenCalledWith({ preventScroll: true });
     expect(executeReadingDOMCommand({ type: 'unknown' }, { root })).toBe(false);
+  });
+
+  it('does not promote a virtualizer top sliver to the reading bookmark', () => {
+    const rows = [{ id: 'm111', seqLow: 111 }, { id: 'm112', seqLow: 112 }];
+    const nodes = [
+      { dataset: { presentationRowId: 'm111' }, getBoundingClientRect: () => ({
+        left: 0, right: 100, top: -8, bottom: 1.5,
+      }), contains: () => false },
+      { dataset: { presentationRowId: 'm112' }, getBoundingClientRect: () => ({
+        left: 0, right: 100, top: 1.5, bottom: 220,
+      }), contains: () => false },
+    ];
+    const root = {
+      getBoundingClientRect: () => ({ left: 0, right: 100, top: 0, bottom: 500 }),
+      querySelectorAll: () => nodes,
+    };
+
+    expect(topVisibleBookmark(root, rows)).toMatchObject({
+      messageID: 'm112', rowViewportOffset: 1.5,
+    });
   });
 
   it('restores a committed content anchor only after the measured extent changes', () => {

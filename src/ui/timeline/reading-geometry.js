@@ -103,7 +103,23 @@ export function topVisibleBookmark(root, rows) {
   const rootRect = root.getBoundingClientRect?.();
   if (!rootRect) return null;
   const rowNode = [...root.querySelectorAll('[data-presentation-row-id]')]
-    .filter((node) => node.getBoundingClientRect().bottom > rootRect.top + 0.5)
+    .filter((node) => {
+      const rect = node.getBoundingClientRect();
+      const left = Math.max(rootRect.left, rect.left);
+      const right = Math.min(rootRect.right, rect.right);
+      const top = Math.max(rootRect.top, rect.top);
+      const bottom = Math.min(rootRect.bottom, rect.bottom);
+      // A one-pixel top sliver is a virtualizer boundary, not a reliable
+      // reading anchor. Require a small painted region and, where available,
+      // a hit-tested point owned by this row before recording its identity.
+      if (right - left <= 1 || bottom - top <= 2) return false;
+      if (typeof globalThis.document?.elementFromPoint !== 'function') return true;
+      const x = (left + right) / 2;
+      return [top + 1, (top + bottom) / 2, bottom - 1].some((y) => {
+        const hit = globalThis.document.elementFromPoint(x, y);
+        return Boolean(hit && (hit === node || node.contains(hit)));
+      });
+    })
     .sort((left, right) => left.getBoundingClientRect().top - right.getBoundingClientRect().top)[0] || null;
   if (!rowNode) return null;
   const messageID = String(rowNode.dataset.presentationRowId || '');
