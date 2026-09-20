@@ -1030,7 +1030,19 @@ export function createChannelFeedRuntime(options = {}) {
     const batch = payload?.ref ? networkBatches.get(payload.ref) : null;
     if (batch) return adapters.appendRow(batch, payload);
     if (payload.generation && historyNumeric(payload.generation) !== generation) return false;
-    applyRows([payload], { source: payload.source || 'live', producerToken });
+    const source = payload.source || 'live';
+    if (source === 'cache') {
+      const status = histories.get(String(payload.channel_id || ''));
+      const admitted = grants.has(String(payload.channel_id || ''))
+        && status?.attached === true
+        && status.generation === generation;
+      // The transport has consumed this cache frame, but a revoked or
+      // replacement-world channel must not acquire a new Replica state from
+      // it. Keep enqueue's handled-result contract; admission is the commit
+      // boundary, not a second caller-visible owner.
+      if (!admitted) return true;
+    }
+    applyRows([payload], { source, producerToken });
     return true;
   }
 

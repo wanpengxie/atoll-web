@@ -304,6 +304,41 @@ describe('真实 Workspace owner composition', () => {
     expect(mocks.wire.wireRef.current.channelMeta).toHaveBeenCalledWith(mocks.channelId, 2);
   });
 
+  it('keeps revoked cache rows out of the composed Workspace conversation', async () => {
+    render(<WorkspaceApp />);
+    await waitFor(() => expect(mocks.feedRuntime).toBeTruthy());
+    await act(async () => {
+      await mocks.feedRuntime.getSnapshot().setHistoryGrants([
+        { channel_id: mocks.channelId, head_seq: 0, has_rows: false },
+      ], { generation: 1, boot: 'world-real', focus: mocks.channelId });
+      await mocks.feedRuntime.getSnapshot().setHistoryGrants([], {
+        generation: 1, boot: 'world-real', focus: mocks.channelId,
+      });
+    });
+
+    const revokedRow = {
+      channel_id: mocks.channelId,
+      seq: 7,
+      generation: 1,
+      source: 'cache',
+      envelope: requestEnvelope('revoked-cache-row'),
+    };
+    expect(mocks.feedRuntime.getSnapshot().enqueue(revokedRow)).toBe(true);
+    expect(mocks.feedRuntime.getSnapshot().stateFor(mocks.channelId)?.rows.has(7)).toBe(false);
+
+    await act(async () => {
+      await mocks.feedRuntime.getSnapshot().setHistoryGrants([
+        { channel_id: mocks.channelId, head_seq: 0, has_rows: false },
+      ], { generation: 2, boot: 'world-real-next', focus: mocks.channelId });
+    });
+    expect(mocks.feedRuntime.getSnapshot().enqueue({
+      ...revokedRow,
+      seq: 8,
+      generation: 2,
+    })).toBe(true);
+    expect(mocks.feedRuntime.getSnapshot().stateFor(mocks.channelId)?.rows.has(8)).toBe(true);
+  });
+
   it('marks a probe control landed from Feed before its transport receipt, and keeps Waiting/Probe gates authoritative', async () => {
     render(<WorkspaceApp />);
     await waitFor(() => expect(mocks.feedRuntime).toBeTruthy());
