@@ -560,8 +560,9 @@ export function useWireSessionPort() {
   const accessRef = useRef(null);
 
   const close = useCallback(() => {
-    wireRef.current?.close();
-    wireRef.current = null;
+    const owner = wireRef.current;
+    owner?.close();
+    if (wireRef.current === owner) wireRef.current = null;
     setState('closed');
   }, []);
 
@@ -651,6 +652,7 @@ export function useWireConnection({
     let refreshQueued = false;
     let attachedOnce = false;
     let wire = null;
+    let attachedGeneration = 0;
     let versionBlocked = false;
     const scheduleAccessRefresh = () => {
       if (!alive || versionBlocked || refreshTimer != null) return;
@@ -688,7 +690,8 @@ export function useWireConnection({
       });
       return refreshInFlight;
     };
-    accessRefreshActionsRef.current = { schedule: scheduleAccessRefresh, refresh: refreshAccess };
+    const accessRefreshActions = { schedule: scheduleAccessRefresh, refresh: refreshAccess };
+    accessRefreshActionsRef.current = accessRefreshActions;
     void refreshAccess();
 
     setState('connecting');
@@ -700,6 +703,10 @@ export function useWireConnection({
       since: resumeLocalReplica,
       focus: () => activeChannelRef.current,
       onAttach: (detail) => {
+        const nextGeneration = Number(detail?.generation);
+        attachedGeneration = Number.isSafeInteger(nextGeneration) && nextGeneration > 0
+          ? nextGeneration
+          : 0;
         const sameServerWorld = commitServerWorld(detail?.boot);
         onServerWorld(String(detail?.boot || readServerWorld()));
         if (!sameServerWorld) {
@@ -803,13 +810,17 @@ export function useWireConnection({
     return () => {
       alive = false;
       if (refreshTimer != null) clearTimeout(refreshTimer);
-      accessRefreshActionsRef.current = {};
-      wire?.close();
+      const ownedWire = wire;
+      const ownedGeneration = attachedGeneration;
+      wire = null;
+      attachedGeneration = 0;
+      if (accessRefreshActionsRef.current === accessRefreshActions) accessRefreshActionsRef.current = {};
+      ownedWire?.close();
       roster?.close();
-      cancelFeedTask();
-      obsRef.current = null;
-      accessRef.current = null;
-      wireRef.current = null;
+      cancelFeedTask(ownedWire, ownedGeneration);
+      if (obsRef.current === obs) obsRef.current = null;
+      if (accessRef.current === access) accessRef.current = null;
+      if (wireRef.current === ownedWire) wireRef.current = null;
     };
   }, [accessRef, accessRefreshActionsRef, activeChannelRef, agentActivityRef, bumpAccess, cancelFeedTask, disconnectHistory, displayError, enqueueFeed, expireSession, finishHistoryPage, finishLiveCheckpoint, incompatibleEpochRef, incompatibleRef, obsRef, onServerWorld, onWorldChanged, prepareLocalReplica, principalId, reconcileIdentity, resetSubmissionWorld, resumeLocalReplica, rosterRef, setActiveChannelId, setChannels, setHistoryGrants, setIncompatible, setState, setTopError, stopIncompatibleFeed, wireRef]);
 

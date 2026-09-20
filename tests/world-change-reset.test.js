@@ -14,7 +14,7 @@ afterEach(() => {
   globalThis.localStorage?.clear();
 });
 
-function connectionHarness({ onWorldChanged, setHistoryGrants }) {
+function connectionHarness({ onWorldChanged, setHistoryGrants, cancelFeedTask = vi.fn() }) {
   const obs = {
     spaceChannels: vi.fn(async () => ({ complete: true, items: [] })),
     spacePrincipals: vi.fn(async () => ({ complete: true, items: [] })),
@@ -44,7 +44,7 @@ function connectionHarness({ onWorldChanged, setHistoryGrants }) {
     accessActionsRef: { current: {} },
     agentActivityRef: { current: { attach: vi.fn(), disconnect: vi.fn() } },
     bumpAccess: vi.fn(),
-    cancelFeedTask: vi.fn(),
+    cancelFeedTask,
     clearRoster: vi.fn(),
     disconnectHistory: vi.fn(),
     displayError: (error) => error?.message || String(error),
@@ -71,7 +71,7 @@ function connectionHarness({ onWorldChanged, setHistoryGrants }) {
     useWireConnection({ ...stable, port });
     return port;
   });
-  return { result, unmount };
+  return { cancelFeedTask, result, unmount };
 }
 
 describe('server-world reset seam', () => {
@@ -93,5 +93,6 @@ describe('server-world reset seam', () => {
     expect(events).toEqual(['reset', 'grants']);
     expect(localStorage.getItem('atoll.server.boot.v2')).toBe('world-b');
     harness.unmount();
+    expect(harness.cancelFeedTask).toHaveBeenCalledWith(createWire.mock.results[0].value, 1);
   });
 });

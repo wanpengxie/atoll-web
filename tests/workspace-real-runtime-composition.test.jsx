@@ -140,6 +140,7 @@ const mocks = vi.hoisted(() => {
     probeResult: null,
     composerResult: null,
     layoutProps: null,
+    connectionProps: null,
   };
 });
 
@@ -153,7 +154,7 @@ vi.mock('../src/app/hooks/useWireSession.js', () => ({
   useIdentitySession: vi.fn(() => mocks.identity),
   useWireSessionPort: vi.fn(() => mocks.wire),
   useChannelNavigation: vi.fn(() => mocks.navigation),
-  useWireConnection: vi.fn(),
+  useWireConnection: vi.fn((props) => { mocks.connectionProps = props; }),
   readServerWorld: vi.fn(() => 'world-real'),
 }));
 vi.mock('../src/app/hooks/useAttachmentTransactions.js', () => ({
@@ -288,12 +289,27 @@ afterEach(async () => {
   mocks.probeResult = null;
   mocks.composerResult = null;
   mocks.layoutProps = null;
+  mocks.connectionProps = null;
   mocks.transportSubmissions.length = 0;
   mocks.deferredReceipts.clear();
   vi.clearAllMocks();
 });
 
 describe('真实 Workspace owner composition', () => {
+  it('treats an unconnected or stale wire cleanup as an idempotent no-op', async () => {
+    render(<WorkspaceApp />);
+    await waitFor(() => expect(mocks.feedRuntime).toBeTruthy());
+    const cancel = mocks.connectionProps?.cancelFeedTask;
+    expect(cancel).toBeTypeOf('function');
+
+    expect(cancel(null, 1)).toBe(false);
+    expect(cancel({ id: 'retired-wire' }, 1)).toBe(false);
+
+    // The current owner is still allowed to reach the canonical Feed release
+    // command; generation fencing decides whether that release is current.
+    expect(cancel(mocks.wire.wireRef.current, 1)).toBe(false);
+  });
+
   it('keeps cold Workspace history pending until the grant head arrives, then exposes active rows', async () => {
     const requests = [];
     const previousHistoryBefore = mocks.wire.wireRef.current.historyBefore;

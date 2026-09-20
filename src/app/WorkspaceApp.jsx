@@ -241,6 +241,11 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   });
   const activityRef = useRef(feed.agentActivityPort);
   const feedRef = useRef(null);
+  // The transport owner is the identity boundary for cleanup.  Numeric wire
+  // generations are only unique within one wire instance, so a late cleanup
+  // must also prove that it still owns the current wire before releasing the
+  // Feed runtime.
+  const wireOwnerRef = wire.wireRef;
   useLayoutEffect(() => {
     feedRef.current = feed;
     return () => {
@@ -257,7 +262,25 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   }, []);
   const feedCommands = useMemo(() => Object.freeze({
     bump: (...args) => callFeed('bump', args),
-    cancel: (...args) => callFeed('cancel', args),
+    // Teardown is a release, not a foreground command.  React can retire the
+    // Feed command port before useWireConnection's passive cleanup runs; an
+    // unconnected owner is therefore a legal idempotent no-op.  When a port
+    // is present, invoke it without catching errors so a real current-owner
+    // failure remains observable.  The wire identity check prevents an old
+    // effect whose generation number happens to repeat from releasing a new
+    // session owner.
+    cancel: (owner, generation) => {
+      const feedOwner = feedRef.current;
+      const requestGeneration = Number(generation);
+      if (!feedOwner
+        || !owner
+        || wireOwnerRef.current !== owner
+        || !Number.isSafeInteger(requestGeneration)
+        || requestGeneration <= 0) return false;
+      const command = feedOwner.cancel;
+      if (typeof command !== 'function') throw unavailableError('feed.cancel');
+      return command(requestGeneration);
+    },
     // Disconnect is a release from the wire owner. During React owner handoff
     // there may be no committed feed command port; releasing that absence is
     // a legal no-op, while a committed runtime still enforces generation
@@ -289,7 +312,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     resumeLocalReplica: (...args) => callFeed('resumeLocalReplica', args),
     setHistoryGrants: (...args) => callFeed('setHistoryGrants', args),
     stopIncompatible: (...args) => callFeed('stopIncompatible', args),
-  }), [callFeed]);
+  }), [callFeed, wireOwnerRef]);
   const roster = useChannelRoster({
     generationFor: feedCommands.generationFor,
     obsRef: wire.obsRef,
