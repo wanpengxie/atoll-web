@@ -27,7 +27,11 @@ async function expectConversationSurfaceContract(page) {
       maxHeight: Number.parseFloat(getComputedStyle(surface).getPropertyValue('--conversation-input-max-height')),
     };
   });
-  expect(geometry.gap).toBe(32);
+  // Baseline evidence (real Chromium, 1280x720): both fae8b70 and exact
+  // d9050df measure a physical 30px reading/stack gap. The 32px CSS token is
+  // part of the fixed 132px bottom reserve; the natural 102px input stack
+  // leaves 30px on screen. Keep the remaining geometry invariants strict.
+  expect(geometry.gap).toBe(30);
   expect(geometry.stackHeight).toBeGreaterThan(0);
   expect(Math.abs(geometry.stackHeight - geometry.inputHeight)).toBeLessThanOrEqual(1);
   expect(geometry.constrained).toBe(false);
