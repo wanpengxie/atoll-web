@@ -281,12 +281,22 @@ describe('notification confirmation contract', () => {
         payload: { body: { status: 'completed', text: 'B arrived before parent' } },
       },
     })).toBe(true);
+    expect(feed.enqueue({
+      channel_id: channelId,
+      seq: 5,
+      source: 'live',
+      envelope: {
+        id: 'lease-c-final', parent_id: 'lease-c-request', kind: 'response', type: 'human.approve',
+        sender: { kind: 'agent', id: 'agent:reviewer:1' }, audience: [selfId],
+        payload: { body: { status: 'completed', text: 'C arrived before parent' } },
+      },
+    })).toBe(true);
     expect(feed.historyFor(channelId).notificationHighWater).toBe(2);
     expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, total: 0 });
 
     expect(feed.enqueue({
       channel_id: channelId,
-      seq: 5,
+      seq: 6,
       source: 'live',
       envelope: {
         id: 'lease-b-request', kind: 'request', type: 'human.approve',
@@ -297,6 +307,22 @@ describe('notification confirmation contract', () => {
     expect(feed.historyFor(channelId).notificationHighWater).toBe(2);
     expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 1, total: 1 });
 
+    expect(feed.enqueue({
+      channel_id: channelId,
+      seq: 7,
+      source: 'live',
+      envelope: {
+        id: 'lease-c-request', kind: 'request', type: 'human.approve',
+        sender: { kind: 'agent', id: 'agent:reviewer:1' }, audience: [selfId],
+        payload: { body: { text: 'C parent arrived later' } },
+      },
+    })).toBe(true);
+    // The earliest blocked B obligation remains the lease fence while the
+    // independent C obligation closes; neither parent may retroactively
+    // expand the old following observation.
+    expect(feed.historyFor(channelId).notificationHighWater).toBe(2);
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 2, total: 2 });
+
     // Reload removes only the ephemeral following lease; durable high-water
     // remains at A and the now-closed B obligation is still visible.
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -305,11 +331,11 @@ describe('notification confirmation contract', () => {
     restored.mount();
     await restored.getSnapshot().prepareLocalReplica(selfId, { focus: channelId });
     await restored.getSnapshot().setHistoryGrants(
-      [{ channel_id: channelId, head_seq: 5 }], { generation: 1, boot },
+      [{ channel_id: channelId, head_seq: 7 }], { generation: 1, boot },
     );
     const restoredFeed = restored.getSnapshot();
     expect(restoredFeed.historyFor(channelId).notificationHighWater).toBe(2);
-    expect(restoredFeed.unreadFor(channelId, selfId)).toEqual({ related: 1, total: 1 });
+    expect(restoredFeed.unreadFor(channelId, selfId)).toEqual({ related: 2, total: 2 });
     restored.destroy();
   });
 });
