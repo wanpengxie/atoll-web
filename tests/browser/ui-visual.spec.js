@@ -107,6 +107,32 @@ test('UI-VIS-06 定时动作视觉基线', async ({ page, request }) => {
   await expect(panel).toHaveScreenshot('channel-automation.png', SCREENSHOT_OPTIONS);
 });
 
+test('UI-VIS-06 本设备自动动作取消入口保持可执行', async ({ page, request }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await reset(request, 'scheduled-action', 1403);
+  await login(page);
+  await page.getByRole('tab', { name: '任务', exact: true }).click();
+  await page.getByRole('button', { name: '安排自动动作' }).click();
+  const automation = page.getByRole('complementary', { name: '定时动作' });
+  await automation.getByLabel('定时延迟毫秒').fill('60000');
+  await automation.getByLabel('定时 Payload JSON').fill('{"text":"round43-cancel"}');
+  await automation.getByRole('button', { name: '创建定时动作' }).click();
+  await automation.getByRole('button', { name: '关闭定时动作' }).click();
+
+  const tasks = page.getByRole('tabpanel', { name: '任务' });
+  const task = tasks.getByRole('button', { name: /round43-cancel/ });
+  await expect(task).toBeVisible();
+  await task.click();
+  const context = page.getByRole('complementary', { name: '工作项详情' });
+  await expect(context).toContainText('不代表频道共享或跨设备的完整事实');
+  // A visible cancel control is not enough: the real task owner must expose a
+  // live command port so the user can actually cancel the timer receipt.
+  const cancel = context.getByRole('button', { name: '取消本设备自动动作' });
+  await expect(cancel).toBeVisible();
+  await expect(cancel).toBeEnabled();
+  await cancel.click();
+});
+
 test('UI-VIS-07 850px 频道管理抽屉视觉基线', async ({ page, request }) => {
   await page.setViewportSize({ width: 850, height: 720 });
   await reset(request, 'actor-governance', 905);
@@ -138,8 +164,40 @@ test('UI-VIS-08 600px 选择用户菜单视觉基线', async ({ page, request })
   await reset(request, 'actor-governance', 906);
   await login(page);
   const panel = await openChannelPanel(page, '成员');
-  await panel.getByRole('combobox', { name: '选择参与者' }).click();
-  await expect(panel.getByRole('listbox', { name: '选择参与者选项' })).toBeVisible();
+  const select = panel.getByRole('combobox', { name: '选择参与者' });
+  await expect(select).toBeVisible();
+  await select.click();
+  const listbox = panel.getByRole('listbox', { name: '选择参与者选项' });
+  await expect(listbox).toBeVisible();
+  await expect(panel.getByRole('option', { name: /Alice · 用户/ })).toBeVisible();
+  await expect(panel.getByRole('option', { name: /Analyst Agent · Agent/ })).toBeVisible();
+  await expect(panel.getByRole('option', { name: /svcactor/ })).toHaveCount(0);
+  // fae8b70's public directory owner sorted principal/declaration candidates by
+  // display name. Preserve that observable order: current receipt insertion
+  // order places Steward before Analyst/Search Tool, which changes discovery
+  // even though the same buttons remain clickable.
+  const optionLabels = await listbox.getByRole('option').allTextContents();
+  expect(optionLabels.map((label) => label.trim())).toEqual([
+    '搜索用户、Agent 或工具',
+    'Alice · 用户',
+    'Bob · 用户',
+    'Analyst Agent · Agent',
+    'Claude · Agent',
+    'Search Tool · 工具',
+    'Steward · Agent',
+  ]);
+  const geometry = await page.evaluate(() => ({
+    viewport: { width: window.innerWidth, height: window.innerHeight },
+    scrollWidth: document.documentElement.scrollWidth,
+    listbox: document.querySelector('[role="listbox"][aria-label="选择参与者选项"]')?.getBoundingClientRect().toJSON(),
+  }));
+  expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.viewport.width);
+  expect(geometry.listbox?.left).toBeGreaterThanOrEqual(0);
+  expect(geometry.listbox?.right).toBeLessThanOrEqual(geometry.viewport.width);
+  await page.keyboard.press('Escape');
+  await expect(listbox).toHaveCount(0);
+  await select.click();
+  await expect(listbox).toBeVisible();
   await expect(page).toHaveScreenshot('channel-members-select-600.png', SCREENSHOT_OPTIONS);
 });
 

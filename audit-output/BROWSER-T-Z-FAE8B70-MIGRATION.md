@@ -2523,3 +2523,123 @@ oracle 的可见差异逐项为：
   skip、未放宽截图合同、未更新快照。共享树已有的
   `tests/browser/f7-history-water-baseline-0217-0221.spec.js` 与
   `tests/i-m-exact-path-contracts.test.jsx` 脏改未触碰或暂存。
+
+## 第四十三轮：UI-VIS-06/07 体验等价裁决与 UI-VIS-08 首分叉
+
+本轮不把“按钮存在/截图稳定”当作迁移完成。对 UI-VIS-06/07 逐项回到
+`fae8b70` 的用户结果与当前公开 owner；能证明是合法 successor 的部分保留视觉 RED
+等待 oracle 决策，不能证明或已经出现结果缺口的部分继续保持严格 RED。下一条选择
+`UI-VIS-08` 600px 参与者菜单。
+
+### UI-VIS-06：新增取消入口不是完整等价，详情取消是产品缺口
+
+上一轮已经证明定时动作可创建和投影，但本轮把旧 F4 用户结果“创建后可取消”推进到
+真实浏览器的详情操作，不止检查按钮存在：
+
+```text
+ATOLL_TEST_WEB_PORT=15680 ATOLL_TEST_MOCK_PORT=19980 \
+ATOLL_TEST_OUTPUT=/tmp/tz-r43-vis06-cancel \
+npx playwright test tests/browser/ui-visual.spec.js \
+  --grep 'UI-VIS-06 本设备自动动作取消入口保持可执行' \
+  --workers=1 --repeat-each=3 --reporter=line \
+  --output=test-results-tz-r43-vis06-cancel-repeat3
+3 failed（每次均在真实详情取消结果 gate）
+```
+
+三次都走完：创建 `round43-cancel` → 任务列表真实 row → `工作项详情` → 可见
+`取消本设备自动动作`，但严格 `toBeEnabled()` 均收到：
+
+```text
+<button disabled ... title="该动作的命令端口尚未接入">取消本设备自动动作</button>
+```
+
+这不是旧截图与新布局的合法差异。`fae8b70` 的 `App` 将真实
+`handleCancelTimer` 作为 `workItems.onCancelAutomation` 传给详情 owner；当前
+`WorkspaceApp` 的 `tasksPort.commands` 没有 `cancelAutomation`，而 `TaskDetailPanel`
+因此只能渲染 disabled fallback。当前新增的 automation panel “取消已知动作”仍可解释为
+服务端没有 `timer list/OBS` 时的本会话 receipt 能力，但它不能替代任务详情中已展示的
+取消结果路径。结论：**UI-VIS-06 能力不能迁为全 PASS；详情取消是 live product gap，
+保留严格红例，不改产品。**
+
+### UI-VIS-07：850px 差异与用户结果映射
+
+最新 HEAD 重跑 UI-VIS-07（严格用户断言仍在原 spec 中）三次：
+
+```text
+ATOLL_TEST_WEB_PORT=15683 ATOLL_TEST_MOCK_PORT=19983 \
+ATOLL_TEST_OUTPUT=/tmp/tz-r43-vis07 \
+npx playwright test tests/browser/ui-visual.spec.js --grep 'UI-VIS-07' \
+  --workers=1 --repeat-each=3 --reporter=line \
+  --output=test-results-tz-r43-vis07-repeat3
+3 failed（用户断言先通过；截图均 46,389 pixels / ratio 0.08）
+```
+
+逐项裁决：
+
+- 850px rail 将搜索/活动按钮纵向排列、旧图的升级入口不再出现在 viewport：导航入口
+  仍可用且无横向溢出，属于当前 responsive shell 的空间分配变化，可作为 successor
+  讨论项，但不是能力丢失。
+- 当前 tab 是 `成员 / 概览 / 危险操作`，旧图中间 tab 是 `成员 / 信息 / 危险操作`；
+  这不是颜色或 spacing 微调，而是治理 owner 从旧信息卡到 canonical overview 的
+  语义迁移，不能用旧截图覆盖当前入口。
+- 当前 member row 在窄宽度下将 `移除` 换到 row 下方，并额外展示无命令时 disabled 的
+  `绑定`/`重启`；旧图把旧命令同行排列。当前严格断言只接受控件可见、viewport 内和
+  protected actor 不泄漏，不把 disabled 控件冒充可用能力；因此 action wrapping 可视为
+  合法 responsive successor，但视觉 oracle 暂不自动迁移。
+- 当前 roster card 的后端能力说明增加了纵向高度，导致“添加参与者”卡整体下移；这条
+  文案明确 unsupported owner 边界，属于用户理解所需事实，不应 CSS 压回旧高度。
+
+结论：UI-VIS-07 的用户结果（成员入口、业务 roster、刷新/参与者/添加控件、边界内布局）
+通过；视觉差异仍是 successor layout/oracle packet，不足以证明必须改产品或更新快照。
+
+### UI-VIS-08：600px 参与者菜单的真实首分叉
+
+先用不含顺序 gate 的黑盒+视觉组合确认原截图差异：
+
+```text
+ATOLL_TEST_WEB_PORT=15681 ATOLL_TEST_MOCK_PORT=19981 \
+ATOLL_TEST_OUTPUT=/tmp/tz-r43-vis08 \
+npx playwright test tests/browser/ui-visual.spec.js --grep 'UI-VIS-08' \
+  --workers=1 --repeat-each=3 --reporter=line \
+  --output=test-results-tz-r43-vis08-repeat3
+3 failed（原 screenshot 均 31,075 pixels / ratio 0.08）
+```
+
+随后保留旧体验的**候选排序**作为严格用户合同：`fae8b70` 的公开
+`usablePrincipals/usableDeclarations` 按显示名排序，预期顺序为 placeholder、Alice、
+Bob、Analyst Agent、Claude、Search Tool、Steward。当前真实 DOM 三次均返回：
+
+```text
+搜索用户、Agent 或工具 → Alice → Bob → Steward → Claude → Analyst Agent → Search Tool
+```
+
+因此在 `tests/browser/ui-visual.spec.js` 增加了 exact option-order gate（保留已有
+option visibility、标准 Actor 隔离、Escape close、listbox/right-edge/无横溢出断言）。
+最新 repeat3 命令为：
+
+```text
+ATOLL_TEST_WEB_PORT=15682 ATOLL_TEST_MOCK_PORT=19982 \
+ATOLL_TEST_OUTPUT=/tmp/tz-r43-vis08-order \
+npx playwright test tests/browser/ui-visual.spec.js --grep 'UI-VIS-08' \
+  --workers=1 --repeat-each=3 --reporter=line \
+  --output=test-results-tz-r43-vis08-order-repeat3
+3 failed（严格首断点：option order；后续旧 screenshot 仍保留）
+```
+
+当前 600px listbox 还从旧图的 select 下方改为向上翻转并覆盖 roster/add card；这部分
+可由新增卡片高度触发的 viewport-fit 解释，但排序变化不是合法的纯布局翻转：同一真实
+候选集合的发现顺序改变，Analyst/Search Tool 被 Steward 插队。它影响用户寻找参与者，
+故不能迁移 `channel-members-select-600.png` oracle，也不能把“所有 option 可见”当作
+等价；应交 Governance owner 评估 canonical declaration ordering，不在本轮改产品。
+
+### Round43 裁决
+
+- **UI-VIS-06：** automation panel 的事实边界/取消卡可解释为 successor，但任务详情
+  取消真实 disabled，能力仍 RED，未迁 oracle。
+- **UI-VIS-07：** 黑盒用户断言 repeat3 通过，视觉 3/3 RED；差异拆为 responsive
+  wrapping、unsupported 能力说明和治理 tab successor，暂不更新截图。
+- **UI-VIS-08：** 选项可见/隔离/关闭/无溢出通过，但旧候选排序在真实 DOM 3/3 RED，且
+  listbox 上翻遮挡层次；保留 strict order+视觉合同，归 Governance owner 产品/公开
+  projection 排序问题，不弱化测试。
+- 本轮只修改 `tests/browser/ui-visual.spec.js` 严格红例/排序 gate 与本审计；未修改
+  产品、vendor、package、fixture 或截图阈值，未删除 skip。共享树其他脏改未触碰。
