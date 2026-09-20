@@ -151,8 +151,13 @@ describe('current Composer command owner', () => {
       capabilityIndex: new Map([[AGENT.id, { describe: { types: new Set(['agent.compact']) } }]]),
     });
     expect(ready.controls.commands.compact).toMatchObject({ state: 'supported', enabled: true });
-    expect(createComposerCommandRequest(ready)).toMatchObject({
-      msgType: 'agent.compact', audience: [AGENT.id], targetLabel: AGENT.name, payload: {},
+    expect(createComposerCommandRequest(ready)).toEqual({
+      channelId: 'c0',
+      text: '',
+      msgType: 'agent.compact',
+      audience: [AGENT.id],
+      targetLabel: AGENT.name,
+      payload: {},
     });
   });
 
