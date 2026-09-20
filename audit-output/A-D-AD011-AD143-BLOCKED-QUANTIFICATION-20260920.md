@@ -123,6 +123,19 @@ triage counts are OWNER_MISSING **10**, FIXTURE_MISSING **0**, and
 CAPABILITY_GAP **31**. No row is obsolete, deleted, skipped, or judged
 complete from a red result.
 
+## Round 31 evidence packet
+
+Round 31 selects ten `CAPABILITY_GAP` rows with current public owners:
+AD-037, AD-156, AD-159–AD-161, and AD-192–AD-195/AD-197. It adds no new
+ordinary-red declaration; the existing Round 24 and Round 26 assertions are
+the unique executable sources. The six Waiting/Feed assertions produce
+**1 file failed; 6 failed; 14 skipped**, and the four Governance assertions
+produce **1 file failed; 4 failed; 16 skipped**. Combined, all ten remain
+ordinary red. No row can be recovered to PASS in the current public
+composition, so the ledger remains **324 PASS / 0 REGRESSION / 41 BLOCKED**
+with OWNER_MISSING **10**, FIXTURE_MISSING **0**, and CAPABILITY_GAP **31**.
+No capability is declared obsolete and no product source is changed.
+
 ## Minimal regression packets
 
 ### AD-011 — Activity retained-work settlement after reconnect

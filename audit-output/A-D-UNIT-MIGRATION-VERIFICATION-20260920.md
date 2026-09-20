@@ -320,6 +320,18 @@ REGRESSION / 41 BLOCKED**, with OWNER_MISSING **10**, FIXTURE_MISSING **0**,
 and CAPABILITY_GAP **31**. No capability is declared obsolete and no product
 source changed.
 
+Round 31 adds the case-level packet
+[`A-D-BLOCKED-EVIDENCE-ROUND31-20260920.md`](./A-D-BLOCKED-EVIDENCE-ROUND31-20260920.md)
+for ten existing capability-gap rows with public Waiting, Feed/Replica, and
+Governance owners: AD-037, AD-156, AD-159–AD-161, and AD-192–AD-195/AD-197.
+It deliberately adds no red test declaration. The unique Round 24 selection
+for six rows is **1 file failed; 6 failed; 14 skipped**; the unique Round 26
+selection for four rows is **1 file failed; 4 failed; 16 skipped**. No selected
+assertion recovers to PASS; all ten remain ordinary-red capability evidence.
+The ledger and categories remain **324 PASS / 0 REGRESSION / 41 BLOCKED** with
+OWNER_MISSING 10, FIXTURE_MISSING 0, and CAPABILITY_GAP 31. No product source
+or baseline declaration changed.
+
 ## Public-boundary migration completed in this pass
 
 `tests/channel-access.test.js` and `tests/channel-name-cache.test.js` no longer
@@ -382,6 +394,8 @@ The focused slices were run with Vitest against current public owners:
 | `tests/blocked-round24-public-owner.test.jsx tests/blocked-round25-public-owner.test.jsx -t '\[AD-(170|182|202|203|256|257|284|291|292|316)\]'` | 10 ordinary red, 30 skipped | Round 29 rechecks ten selected current-owner capability gaps without adding duplicate red declarations; all remain BLOCKED and are handed off case-by-case in the Round 29 packet |
 | `tests/blocked-round30-fixture-recovery.test.jsx` | 2 passed | AD-306/307 use public `ChannelFeedRuntime` unread/acknowledgement ports to recover the two cursor fixtures without private exports or a duplicate red declaration |
 | `tests/blocked-round24-public-owner.test.jsx tests/blocked-round25-public-owner.test.jsx -t '\[AD-(093|097|099|105|106|108|331|334)\]'` | 8 ordinary red, 32 skipped | Existing public WorkspaceLayout and ConversationPresentation/Composer assertions remain the unique red evidence for eight capability gaps; no result is counted as expected-fail completion |
+| `tests/blocked-round24-public-owner.test.jsx -t '\[AD-(037|156|159|160|161|197)\]'` | 6 ordinary red, 14 skipped | Round 31 reuses the existing Waiting/Feed/Governance public-owner assertions; no selected row recovers to PASS |
+| `tests/blocked-round26-public-owner.test.jsx -t '\[AD-(192|193|194|195)\]'` | 4 ordinary red, 16 skipped | Round 31 reuses the existing Governance public-owner assertions; no selected row recovers to PASS |
 | Round 15–20 blocked packets combined | 42 passed, 59 expected fail, 101 total | seven packet files remain green as suites; expected-fail rows are unresolved evidence and are not counted as completion |
 | A–D owner slices including Agent/Waiting/Composer/Artifact/Content/Workspace tests | PASS cases green; no registered regression case red | AD-011 and AD-143 are closed through their existing public owners; no AD-123 `it.fails` case remains |
 
@@ -468,6 +482,12 @@ scope), not to the 42-suite A–D baseline ledger.
   gaps. It does not add duplicate red tests, modify Workspace/Reading/Composer/
   Feed product code, export a private helper, add a compatibility API, or
   delete/skip/weaken a baseline declaration.
+- Round 31 changes only its case-level evidence packet and A–D ledger/
+  verification references. It reuses the unique existing Round 24/26
+  public-owner assertions for AD-037/156/159–161/192–195/197; all ten remain
+  ordinary-red capability evidence, so no status changes. No Waiting, Feed,
+  Replica, Governance, Workspace, Reading, product source, private export,
+  compatibility API, or baseline declaration changed.
 - No Reading, Outbox, vendor, package manifest,
   lockfile, or private production export changed.
 - No baseline declaration was deleted or skipped. BLOCKED rows remain explicit
