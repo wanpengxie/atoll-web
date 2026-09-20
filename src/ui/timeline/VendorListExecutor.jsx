@@ -1246,9 +1246,14 @@ export function VendorListExecutor({
     tabIndex={0}
     data={snapshot.rows}
     firstItemIndex={Number(snapshot.firstItemIndex || 1)}
+    // Browsing restoration is an explicit typed position-row command below.
+    // Passing the bookmark index here also arms Virtuoso's delayed initial
+    // location writer; it can run after the painted command and move the same
+    // anchor by one measured row. Start browsing mounts at the neutral origin
+    // and let the Reading executor own the exact row/offset handoff.
     initialTopMostItemIndex={reading.session.mode === READING_MODE.following
       ? Math.max(0, snapshot.rows.length - 1)
-      : resolveReadingBookmark(snapshot.rows, reading.session.bookmark)?.index || 0}
+      : 0}
     computeItemKey={(_index, row) => row.id}
     itemContent={(index, row) => <MessageRow
       row={row}
