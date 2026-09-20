@@ -2370,3 +2370,57 @@ rejection、超时或 selector fallback。
   作为此前候选失败的历史记录，不是产品缺口。
 - 本轮未修改产品、未删 skip、未放宽断言、未改 fixture；仅追加本审计。启动期间共享
   工作树已有的 `tests/i-m-exact-path-contracts.test.jsx` 脏改不属于本轮，未触碰或暂存。
+
+## 第四十一轮：UI-VIS-06 定时动作的视觉 successor 与用户能力复验
+
+本轮选择下一条尚未单独闭合的 T–Z 用户可见项 `UI-VIS-06`，不重复 Governance/Shell
+或 Round40 已闭合的 UX-A01。先运行原有视觉合同，记录它是否稳定到达真实生产 panel；
+再运行同一 `scheduled-action` fixture 的 F4-006 用户黑盒合同，验证“安排本设备动作”
+是可用能力，而不是截图通过就算完成。没有更新 screenshot oracle，也没有用 mask/文字
+匹配掩盖 panel 结构差异。
+
+### UI-VIS-06 视觉合同（repeat3）
+
+```text
+ATOLL_TEST_WEB_PORT=15650 ATOLL_TEST_MOCK_PORT=19950 \
+ATOLL_TEST_OUTPUT=/tmp/tz-r41-vis06 \
+npx playwright test tests/browser/ui-visual.spec.js --grep 'UI-VIS-06' \
+  --workers=1 --repeat-each=3 --reporter=line \
+  --output=test-results-tz-r41-vis06-repeat3
+3 failed (截图断言，三次均为 17,077 pixels / ratio 0.07)
+```
+
+三次均先通过真实登录、任务 tab、`安排自动动作` 按钮与
+`complementary[name="定时动作"]` panel 的可见性，随后仅在 360×715 panel screenshot
+处失败。当前截图与保留的 `channel-automation-linux.png` 同为 360×715，但首个稳定
+差异不是随机布局：旧 oracle 是“本设备记录”、默认 payload `{"text":"定时消息"}`
+与空白记录卡；当前 canonical surface 是“可观测边界”、明确的浏览器/服务端事实边界、
+默认 payload `{"text":"定时提醒"}`，并公开“取消已知动作”输入/按钮卡。差异为稳定
+successor 文案/能力层次变化，不把截图 RED 错报为 Chromium 环境波动。
+
+### UI-VIS-06 用户能力黑盒（F4-006 repeat3）
+
+```text
+ATOLL_TEST_WEB_PORT=15651 ATOLL_TEST_MOCK_PORT=19951 \
+ATOLL_TEST_OUTPUT=/tmp/tz-r41-f4-006 \
+npx playwright test tests/browser/f4-tasks-restore.spec.js --grep 'F4-006' \
+  --workers=1 --repeat-each=3 --reporter=line \
+  --output=test-results-tz-r41-f4-006-repeat3
+3 passed (21.0s)
+```
+
+三次均完成真实用户闭环：打开定时动作 panel，填写 `60000`ms 与本设备 payload，
+创建后关闭 panel；任务 tab 出现动作并可打开 `工作项详情`；详情明确“**不代表频道共享
+或跨设备的完整事实**”；切到 320px 后 `document.documentElement.scrollWidth <=
+innerWidth`，且“取消本设备自动动作”仍可达。此黑盒合同证明当前 owner 的本机
+automation 能力没有缺失，视觉差异应归为 successor/oracle migration packet，不能靠
+调阈值追绿或回退诚实 unsupported 文案。
+
+### Round41 裁决
+
+- **能力 PASS（3/3）：** UI-VIS-06 的定时动作入口、创建、任务投影、详情语义、取消
+  控件与 320px 可达性均通过真实 Chromium。
+- **视觉 RED（3/3）：** 旧 360×715 screenshot 与当前公开 successor surface 稳定差异
+  17,077px/7%；保留旧 oracle，暂不计为新产品能力回归。
+- 本轮未修改产品、未删 skip、未放宽断言或更新快照；仅追加本审计。运行期间共享树已有
+  的 `src/app/WorkspaceApp.jsx` 脏改不属于本轮，未触碰或暂存。
