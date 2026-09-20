@@ -142,4 +142,39 @@ describe('N-R round 34 public picker/governance owner contracts', () => {
     }));
     await waitFor(() => expect(refresh).toHaveBeenCalledWith('directory'));
   });
+
+  it('uses the stable template id and canonical parent id, never display names, for child creation', async () => {
+    const submit = vi.fn().mockResolvedValue('create-request-parent-id');
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    render(<ChannelAdministrationPanel
+      channel={{ id: 'channel:parent-7', qualified_name: '研究父频道' }}
+      initialTab="overview"
+      port={{
+        children: [],
+        channelTemplates: [{ id: 'registrar:team-v2', name: 'Team 模板（显示名）' }],
+        commands: { submit, refresh },
+      }}
+      onClose={vi.fn()}
+    />);
+
+    fireEvent.change(screen.getByLabelText('名称'), { target: { value: 'child-room' } });
+    fireEvent.click(screen.getByRole('combobox', { name: '频道模板' }));
+    fireEvent.click(screen.getByRole('option', { name: 'Team 模板（显示名）' }));
+    fireEvent.click(screen.getByRole('button', { name: '创建子频道' }));
+
+    await waitFor(() => expect(submit).toHaveBeenCalledWith({
+      scope: 'channel',
+      action: 'create_child',
+      payload: {
+        name: 'child-room',
+        purpose: '',
+        templateId: 'registrar:team-v2',
+        parentId: 'channel:parent-7',
+      },
+    }));
+    const payload = submit.mock.calls[0][0].payload;
+    expect(payload.parentName).toBeUndefined();
+    expect(payload.templateName).toBeUndefined();
+    await waitFor(() => expect(refresh).toHaveBeenCalledWith('directory'));
+  });
 });

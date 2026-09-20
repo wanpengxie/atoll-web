@@ -85,8 +85,14 @@ describe('server-world reset seam', () => {
     const onWorldChanged = vi.fn(() => reset);
     const setHistoryGrants = vi.fn(() => { events.push('grants'); return Promise.resolve(); });
     const harness = connectionHarness({ onWorldChanged, setHistoryGrants });
+    const access = harness.result.current.accessRef.current;
+    expect(access.channelTemplatesObserved([{ id: 'old-world:team', name: '旧世界模板' }])).toBe(true);
+    expect(access.directory().channelTemplates).toEqual([{ id: 'old-world:team', name: '旧世界模板' }]);
 
     await waitFor(() => expect(onWorldChanged).toHaveBeenCalledTimes(1));
+    // The session owner must clear Registrar projections synchronously at the
+    // world boundary, while the public reset waiter still blocks new grants.
+    expect(access.directory().channelTemplates).toBeNull();
     expect(setHistoryGrants).not.toHaveBeenCalled();
     release();
     await waitFor(() => expect(setHistoryGrants).toHaveBeenCalledTimes(1));
