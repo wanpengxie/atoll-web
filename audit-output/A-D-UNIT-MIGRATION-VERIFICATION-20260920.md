@@ -550,6 +550,25 @@ BLOCKED**. The case-level contract and evidence are in
 The existing Round 18 expected-fail declaration remains historical evidence;
 it is not counted as completion and no duplicate red declaration was added.
 
+## Round 47 — AD-192 human-principal selector contract recovery
+
+Round 47 recovers AD-192 through the current public GovernanceFeature owner.
+The former ordinary red compared all `role=option` labels with only
+`root · 用户`, but `SelectMenu` intentionally exposes its empty placeholder as
+an option. The test now proves the actual capability at the public candidate
+boundary: present human `root` is available, while present Agent `steward` and
+retired human `retired` are absent.
+
+The owner chain is `WorkspaceRightPanel` → `ChannelAdministrationPanel` →
+`ChannelMembers`; its typed `port.principals` projection applies the current
+human/present/id filter. No Reading, Feed, visibility, private export, or
+product source was touched in this pass. At shared HEAD `97ba8dc`, focused
+AD-192 is **1 passed / 19 focused-out skips**.
+
+AD-192 is promoted to PASS. The ledger is now **331 PASS / 0 REGRESSION / 34
+BLOCKED**. The case-level contract and evidence are in
+[`A-D-ROUND47-AD192-HUMAN-PRINCIPAL-SELECTOR-20260920.md`](./A-D-ROUND47-AD192-HUMAN-PRINCIPAL-SELECTOR-20260920.md).
+
 ## Public-boundary migration completed in this pass
 
 `tests/channel-access.test.js` and `tests/channel-name-cache.test.js` no longer

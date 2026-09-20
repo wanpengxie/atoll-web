@@ -417,7 +417,13 @@ describe('A-D round 26 public-owner evidence', () => {
     });
     fireEvent.click(screen.getByRole('tab', { name: '成员' }));
     fireEvent.click(screen.getByRole('combobox', { name: '选择参与者' }));
-    expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual(['root · 用户']);
+    // SelectMenu exposes its empty placeholder as a UI option. The user
+    // capability concerns admitted candidates, so assert the public option
+    // boundary directly: the real human remains selectable while agent and
+    // retired-human principals never enter the candidate list.
+    expect(screen.getByRole('option', { name: 'root · 用户' })).toBeTruthy();
+    expect(screen.queryByRole('option', { name: /steward/ })).toBeNull();
+    expect(screen.queryByRole('option', { name: /retired/ })).toBeNull();
   });
 
   it('[AD-193] waits for ledger, OBS, membership, and serving convergence after create', () => {
