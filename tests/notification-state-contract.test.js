@@ -178,6 +178,160 @@ describe('notification confirmation contract', () => {
     expect(secondFeed.unreadFor(channelId, selfId)).toMatchObject({ related: 0, total: 0 });
   });
 
+  it('accepts one frozen typed acknowledgement after network history admission', async () => {
+    runtimeID += 1;
+    const channelId = 'c0.project';
+    const selfId = `human:notification-history:${runtimeID}`;
+    const boot = `notification-history-boot-${runtimeID}`;
+    const ref = `notification-history-page-${runtimeID}`;
+    const wireRef = { current: {
+      historyBefore: vi.fn(() => {
+        const accepted = Promise.resolve({ accepted: true, generation: 1, channel_id: channelId });
+        accepted.ref = ref;
+        return accepted;
+      }),
+      cancelHistory: vi.fn(async () => undefined),
+    } };
+    const options = runtimeOptions(selfId);
+    options.wireRef = wireRef;
+    const runtime = createChannelFeedRuntime(options);
+    runtime.mount();
+    await runtime.getSnapshot().setHistoryGrants(
+      [{ channel_id: channelId, head_seq: 2 }],
+      { generation: 1, boot },
+    );
+    // Select the authority after the grant so bootstrap does not manufacture
+    // a high-water value; this is a history-only proof of the typed receipt.
+    await runtime.getSnapshot().prepareLocalReplica(selfId, { focus: channelId });
+    const feed = runtime.getSnapshot();
+    const pending = feed.loadHistory(channelId, { beforeSeq: 3, limit: 2 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(wireRef.current.historyBefore).toHaveBeenCalledWith(
+      channelId,
+      3,
+      2,
+      expect.objectContaining({ generation: 1 }),
+    );
+    expect(feed.enqueue({
+      ref,
+      channel_id: channelId,
+      seq: 1,
+      envelope: {
+        id: 'history-approval-request', kind: 'request', type: 'human.approve',
+        sender: { kind: 'agent', id: 'agent:reviewer:1' }, audience: [selfId],
+        payload: { body: { text: 'history approval' } },
+      },
+    })).toBe(true);
+    expect(feed.enqueue({
+      ref,
+      channel_id: channelId,
+      seq: 2,
+      envelope: {
+        id: 'history-approval-final', parent_id: 'history-approval-request',
+        kind: 'response', type: 'human.approve',
+        sender: { kind: 'agent', id: 'agent:reviewer:1' }, audience: [selfId],
+        payload: { body: { status: 'completed', text: 'history completed' } },
+      },
+    })).toBe(true);
+    expect(feed.pageEnd({
+      ref, channel_id: channelId, generation: 1,
+      rows: 2, scan_low_seq: 1, scan_high_seq: 2,
+      next_before_seq: 1, has_older: false,
+    })).toBe(true);
+    await expect(pending).resolves.toMatchObject({ kind: 'satisfied', released: 2 });
+    expect(feed.historyFor(channelId)).toMatchObject({ lastSource: 'network', headSeq: 2 });
+    expect(feed.historyFor(channelId).notificationHighWater).toBe(0);
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 1, total: 1 });
+
+    const status = feed.historyFor(channelId);
+    expect(feed.acknowledgeNotifications(
+      confirmationFor(channelId, status, 2, { cause: 'tail-backlog' }),
+    )).toBe(2);
+    expect(feed.historyFor(channelId).notificationHighWater).toBe(2);
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, total: 0 });
+    runtime.destroy();
+  });
+
+  it('accepts the same typed acknowledgement after cache-only admission and reload', async () => {
+    runtimeID += 1;
+    const channelId = 'c0.project';
+    const selfId = `human:notification-cache-history:${runtimeID}`;
+    const boot = `notification-cache-history-boot-${runtimeID}`;
+    const ref = `notification-cache-history-page-${runtimeID}`;
+    const wireRef = { current: {
+      historyBefore: vi.fn(() => {
+        const accepted = Promise.resolve({ accepted: true, generation: 1, channel_id: channelId });
+        accepted.ref = ref;
+        return accepted;
+      }),
+      cancelHistory: vi.fn(async () => undefined),
+    } };
+    const first = createChannelFeedRuntime({ ...runtimeOptions(selfId), wireRef });
+    first.mount();
+    await first.getSnapshot().setHistoryGrants(
+      [{ channel_id: channelId, head_seq: 0 }],
+      { generation: 1, boot },
+    );
+    await first.getSnapshot().prepareLocalReplica(selfId, { focus: channelId });
+    const firstFeed = first.getSnapshot();
+    const pending = firstFeed.loadHistory(channelId, { beforeSeq: 3, limit: 2 });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(firstFeed.enqueue({
+      ref,
+      channel_id: channelId,
+      seq: 1,
+      envelope: {
+        id: 'cache-history-approval-request', kind: 'request', type: 'human.approve',
+        sender: { kind: 'agent', id: 'agent:reviewer:1' }, audience: [selfId],
+        payload: { body: { text: 'cache history approval' } },
+      },
+    })).toBe(true);
+    expect(firstFeed.enqueue({
+      ref,
+      channel_id: channelId,
+      seq: 2,
+      envelope: {
+        id: 'cache-history-approval-final', parent_id: 'cache-history-approval-request',
+        kind: 'response', type: 'human.approve',
+        sender: { kind: 'agent', id: 'agent:reviewer:1' }, audience: [selfId],
+        payload: { body: { status: 'completed', text: 'cache history completed' } },
+      },
+    })).toBe(true);
+    expect(firstFeed.pageEnd({
+      ref, channel_id: channelId, generation: 1,
+      rows: 2, scan_low_seq: 1, scan_high_seq: 2,
+      next_before_seq: 1, has_older: false,
+    })).toBe(true);
+    await expect(pending).resolves.toMatchObject({ kind: 'satisfied', released: 2 });
+    // The network page is the only writer; cache is merely the durable
+    // source for the replacement runtime below.
+    for (let index = 0; index < 3; index += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    first.destroy();
+
+    const restored = createChannelFeedRuntime(runtimeOptions(selfId));
+    restored.mount();
+    await restored.getSnapshot().setHistoryGrants(
+      [{ channel_id: channelId, head_seq: 2 }],
+      { generation: 1, boot },
+    );
+    await restored.getSnapshot().prepareLocalReplica(selfId, { focus: channelId });
+    const feed = restored.getSnapshot();
+    expect([...feed.stateFor(channelId).rows.keys()]).toEqual([1, 2]);
+    expect(feed.historyFor(channelId)).toMatchObject({ headSeq: 2, loaded: true });
+    expect(feed.historyFor(channelId).notificationHighWater).toBe(0);
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 1, total: 1 });
+
+    const status = feed.historyFor(channelId);
+    expect(feed.acknowledgeNotifications(
+      confirmationFor(channelId, status, 2, { cause: 'tail-backlog' }),
+    )).toBe(2);
+    expect(feed.historyFor(channelId).notificationHighWater).toBe(2);
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, total: 0 });
+    restored.destroy();
+  });
+
   it('clears the old world cursor prefix through the sole notification reset port', async () => {
     const { runtime, channelId, selfId, boot } = await readyRuntime();
     const feed = runtime.getSnapshot();
