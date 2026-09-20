@@ -23,6 +23,19 @@ async function chooseSteward(page) {
     .getByRole('menuitem', { name: 'steward' }).click();
 }
 
+// A live notification must enter through the canonical presentable append
+// path. The legacy `pulse` action is a transient transport/demo event and is
+// intentionally rejected by notification policy.
+async function appendCanonicalTail(request, { ask, text }) {
+  const response = await request.post('/mock/control/action', {
+    data: { type: 'q_tail_append', channel_id: 'c0', ask, text },
+  });
+  expect(response.ok()).toBe(true);
+  const body = await response.json();
+  expect(body.request_id).toBeTruthy();
+  return body;
+}
+
 async function capturePaint(page, region, frames) {
   return page.evaluate(async ({ region: paintRegion, frames: encoded }) => {
     const decode = (base64) => new Promise((resolve, reject) => {
@@ -261,7 +274,7 @@ test('TC0213 F7 browsing send has one bottom intent and later user input defeats
   for (const event of required) expect(evidence.submissions.some((entry) => entry.event === event), event).toBe(true);
 });
 
-test('TC0214 F7 history and progress publication do not manufacture new-dynamic notifications', async ({ page, request }) => {
+test('TC0214 F7 history and progress stay quiet while a canonical live append creates new-dynamic notification', async ({ page, request }) => {
   await reset(request, 'deep-history', 1718);
   await login(page);
   const viewport = page.locator('.timeline-message-list');
@@ -279,8 +292,10 @@ test('TC0214 F7 history and progress publication do not manufacture new-dynamic 
   expect(progress.ok()).toBe(true);
   await page.waitForTimeout(250);
   await expect(page.getByRole('button', { name: /条新动态/ })).toHaveCount(0);
-  const pulse = await request.post('/mock/control/action', { data: { type: 'pulse' } });
-  expect(pulse.ok()).toBe(true);
+  await appendCanonicalTail(request, {
+    ask: 'TC0214 canonical live append',
+    text: 'TC0214 canonical live update',
+  });
   await expect(page.getByRole('button', { name: /1 条新动态/ })).toBeVisible();
 });
 
