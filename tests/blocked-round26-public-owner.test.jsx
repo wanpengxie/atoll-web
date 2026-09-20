@@ -359,7 +359,19 @@ describe('A-D round 26 public-owner evidence', () => {
       next_before_seq: 101, rows: 1, bytes: 100, has_older: false,
     });
     await pending;
-    expect(state.arrivalReceipts.timeline().events).toEqual([expect.objectContaining({ rowID: 'reconnect-related', seq: 101 })]);
+    expect(state.arrivalReceipts.timeline()).toMatchObject({
+      revision: 1,
+      acknowledgedRevision: 0,
+      events: [expect.objectContaining({ rowID: 'reconnect-related', seq: 101 })],
+    });
+    // pageEnd is physical completion metadata, not another ingress. A late
+    // duplicate completion must not mint a second public arrival receipt.
+    expect(snapshot().pageEnd({
+      source: 'history', ref: call.ref, generation: 1, channel_id: 'c0', purpose: call.purpose,
+      head_seq: 101, oldest_seq: 101, scan_low_seq: 101, scan_high_seq: 101,
+      next_before_seq: 101, rows: 1, bytes: 100, has_older: false,
+    })).toBe(false);
+    expect(state.arrivalReceipts.timeline().events).toHaveLength(1);
     release();
     runtime.destroy();
   });

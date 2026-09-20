@@ -757,8 +757,16 @@ export function createChannelReplicaStore() {
         record.state._timelineChangeBase = removed.at(-1)?.revision || record.state._timelineChangeBase;
       }
     }
-    if (source === 'live') {
+    // A reconnect tail delivered by Feed's history ingress is a new
+    // materialized fact for the mounted viewport just like a live row.  Keep
+    // both paths on this one Replica-owned timeline journal so page_end is
+    // only completion metadata and cannot create a second receipt.  History
+    // must not advance the presentation journal: older materialization is
+    // not a request to auto-scroll prose into view.
+    if (source === 'live' || source === 'history') {
       recordLiveTimelineArrival(record.state, envelope, seq, selfId);
+    }
+    if (source === 'live') {
       recordLivePresentationArrival(record.state, envelope, seq);
     }
     return { accepted: true, record, row: prepared };
