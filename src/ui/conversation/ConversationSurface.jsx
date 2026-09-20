@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { actorNameMap } from '../../model/actor-display.js';
-import { READING_MODE } from '../../model/reading-session.js';
 import { MarkdownFileReferenceProvider } from '../MarkdownContent.jsx';
 import { MessageLayoutProvider } from '../timeline/MessageLayoutState.jsx';
 import { ReadingContainerHandoff } from '../timeline/ReadingContainerHandoff.jsx';
@@ -206,11 +205,10 @@ export function ConversationSurface({
     composerSendStarted(channelID) {
       if (channelID !== state.channelId) return null;
       const token = viewport.captureBottomIntent();
-      // A send is not a request to abandon a browsing position. Only a
-      // reader already following the physical tail may absorb its own
-      // outgoing row through the bottom-intent transaction; browsing keeps
-      // its anchor and lets the ordinary arrival/jump notice own the result.
-      if (!token || token.mode !== READING_MODE.following) return null;
+      // Sending is an explicit user intent, unlike a passive arrival. It may
+      // promote a browsing reader to following and install one bottom intent
+      // for the row being submitted; unrelated appends never call this port.
+      if (!token) return null;
       if (!viewport.requestBottom('composer:send-start', token, {
         afterPresentationRevision: token.presentationRevision,
         baselineTailID: token.baselineTailID,
