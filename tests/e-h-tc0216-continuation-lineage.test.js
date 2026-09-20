@@ -6,10 +6,9 @@ const read = (relative) => readFileSync(resolve(process.cwd(), relative), 'utf8'
 
 /*
  * TC0216's sparse-page proof is allowed to remove the geometry-anchor
- * requirement, but it is not allowed to remove the lifecycle owner.  This
- * contract test is intentionally red on 253c113: the current consumer has no
- * stable-top continuation branch yet, and the later >=-epoch candidate does
- * not satisfy the exact lineage requirements below either.
+ * requirement, but it is not allowed to remove the lifecycle owner. This
+ * contract test keeps the exact-lineage and fail-stop boundary reviewable
+ * without exporting a private ref or adding a second product owner.
  *
  * This is a source-boundary test because the continuation is an ephemeral
  * private ref.  The user-visible browser contract remains the existing
@@ -33,10 +32,10 @@ describe('TC0216 sparse top continuation exact lineage contract', () => {
 
   it('requires every exact continuation lineage field, never a monotonic substitute', () => {
     const source = consumer();
-    const stableBranch = source.match(
-      /const stableTopContinuation[\s\S]*?(?=const continuationAnchorReady|return current && consumer)/,
+    const settlementGate = source.match(
+      /const sameExactLineage = [\s\S]*?const continueTop =/,
     )?.[0] || '';
-    expect(stableBranch, 'stable sparse continuation branch is missing').not.toBe('');
+    expect(settlementGate, 'exact sparse continuation settlement gate is missing').not.toBe('');
 
     const continuationObject = source.match(
       /const continuation = \{[\s\S]*?\n\s*\};/,
@@ -65,8 +64,8 @@ describe('TC0216 sparse top continuation exact lineage contract', () => {
     for (const field of fieldNames) {
       expect(insertionGate, `insertion gate lacks exact ${field} lineage`)
         .toMatch(exactField(field));
-      expect(stableBranch, `stable continuation lacks exact ${field} lineage`)
-        .toMatch(exactField(field));
+      expect(settlementGate, `settlement gate lacks exact ${field} lineage`)
+        .toMatch(new RegExp(`boundary\\.${field}\\s*===`));
     }
 
     const timerGate = source.match(
@@ -80,8 +79,8 @@ describe('TC0216 sparse top continuation exact lineage contract', () => {
 
     // A new epoch/revision is a new input or lifecycle boundary.  It must
     // fail-stop; >=/<= would let an old sparse timer adopt that boundary.
-    expect(stableBranch).not.toMatch(/inputEpoch[^\n]*(?:>=|<=)/);
-    expect(stableBranch).not.toMatch(/intentRevision[^\n]*(?:>=|<=)/);
+    expect(settlementGate).not.toMatch(/inputEpoch[^\n]*(?:>=|<=)/);
+    expect(settlementGate).not.toMatch(/intentRevision[^\n]*(?:>=|<=)/);
   });
 
   it('clears the timer and boundary on any lineage mismatch so the next input reissues', () => {
@@ -90,5 +89,17 @@ describe('TC0216 sparse top continuation exact lineage contract', () => {
     expect(source).toMatch(/topBoundaryRef\.current\s*=\s*null/);
     expect(source).toMatch(/position-anchor-missing/);
     expect(source).toMatch(/continuation(?:\.lineage)?\.(?:gestureID|rootIdentity|visibilityEpoch)/);
+  });
+
+  it('threads visibility/root observations from the existing Reading owner and reissues a clamped top input', () => {
+    const projection = read('src/ui/timeline/useConversationProjection.js');
+    expect(projection).toMatch(/visibilityBoundaryRef = useRef\([\s\S]*?visibilityEpoch:\s*0/);
+    expect(projection).toMatch(/const nextEffective = boundary\.documentVisible && boundary\.surfaceVisible;[\s\S]*?boundary\.visibilityEpoch \+= 1/);
+    expect(projection).toMatch(/getContinuationLineage = useCallback\([\s\S]*?rootIdentity[\s\S]*?visibilityEpoch/);
+    expect(projection).toMatch(/useHistoryConsumer\([\s\S]*?getContinuationLineage,[\s\S]*?continuationLineage,/);
+
+    const vendor = read('src/ui/timeline/VendorListExecutor.jsx');
+    expect(vendor).toMatch(/const atTop = root\.scrollTop <= 1/);
+    expect(vendor).toMatch(/direction === 'older' && atTop[\s\S]*?type: 'scroll-position'[\s\S]*?atTop: true/);
   });
 });

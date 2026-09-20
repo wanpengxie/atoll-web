@@ -1074,6 +1074,7 @@ export function VendorListExecutor({
     const wheel = (event) => {
       if (!event.deltaY) return;
       const direction = event.deltaY < 0 ? 'older' : 'newer';
+      const atTop = root.scrollTop <= 1;
       const atTail = root.scrollHeight - root.clientHeight - root.scrollTop <= 24;
       const current = readingRef.current.getSession();
       // A max-scroll wheel produces no native scroll event. Once following has
@@ -1090,6 +1091,24 @@ export function VendorListExecutor({
           : null,
       });
       const input = navigationPolicy.currentInput();
+      // At a clamped physical top Chromium may deliver a wheel without a
+      // native scroll event. Still publish the typed boundary for this new
+      // input transaction; otherwise an exact-lineage continuation correctly
+      // fail-stops but the user's next wheel has no public owner event that
+      // can reissue it.
+      if (direction === 'older' && atTop) {
+        reportDomEvidence(Object.freeze({
+          type: 'scroll-position',
+          activationID: readingRef.current.activationID,
+          inputEpoch: input.inputEpoch,
+          direction,
+          atTop: true,
+          scrollTop: Number(root.scrollTop || 0),
+          scrollHeight: Number(root.scrollHeight || 0),
+          clientHeight: Number(root.clientHeight || 0),
+          demandUnits: completeViewportUnits(root),
+        }));
+      }
       // A wheel at an already-clamped tail emits no scroll event. Publish the
       // same physical-tail evidence here so the input cannot transiently demote
       // an otherwise-following session to browsing before a live append lands.
