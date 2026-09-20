@@ -89,15 +89,40 @@ test('TC0218 F7 Claude filter silently scans nonmatching physical pages until se
     rows: [...document.querySelectorAll('[data-presentation-row-id]')].map((node) => node.textContent),
     diagnostics: window.__ATOLL_DIAGNOSTICS__.snapshot().filter((entry) => entry.event.startsWith('history.')),
   }));
+  const completed = evidence.diagnostics.filter((entry) => (
+    entry.event === 'history.batch_complete' && entry.detail?.channelId === 'c0'
+  ));
+  const completionRefs = completed.map((entry) => String(entry.detail?.ref || ''));
+  const duplicateRefs = completionRefs.filter((ref, index) => ref && completionRefs.indexOf(ref) !== index);
+  const completionRanges = completed.map((entry) => [
+    entry.detail?.scanLowSeq,
+    entry.detail?.scanHighSeq,
+    entry.detail?.nextBeforeSeq,
+  ].join(':'));
+  const duplicateRanges = completionRanges.filter((range, index) => (
+    range !== '::' && completionRanges.indexOf(range) !== index
+  ));
+  evidence.physicalCompletion = {
+    count: completed.length,
+    refs: completionRefs,
+    duplicateRefs,
+    ranges: completionRanges,
+    duplicateRanges,
+    coldSnapshotCompletedPages: evidence.diagnostics
+      .filter((entry) => entry.event === 'cold_entry.snapshot')
+      .at(-1)?.detail?.history?.completedPages ?? null,
+  };
   await testInfo.attach('filter-claude-deep-supply.json', {
     body: JSON.stringify(evidence, null, 2), contentType: 'application/json',
   });
   const started = evidence.diagnostics.find((entry) => (
     entry.event === 'history.intent_started' && entry.detail?.reason === 'projection-underfill'
   ));
-  const completed = evidence.diagnostics.filter((entry) => entry.event === 'history.batch_complete');
   expect(started?.detail).toMatchObject({ urgency: 'anticipatory', installedVisibleRows: 0, actorFilterCount: 1 });
   expect(completed.length).toBeGreaterThanOrEqual(2);
+  expect(completionRefs.every(Boolean)).toBe(true);
+  expect(duplicateRefs).toEqual([]);
+  expect(duplicateRanges).toEqual([]);
   expect(evidence.foreground || evidence.confirming).toBe(false);
   expect(evidence.rows.some((text) => text.includes('target claude question 2'))).toBe(true);
 });
@@ -185,16 +210,47 @@ test('TC0220 F7 a committed under-filled viewport establishes history demand wit
     body: JSON.stringify(preconditionEvidence, null, 2),
     contentType: 'application/json',
   });
-  await expect.poll(() => page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot()
-    .find((entry) => entry.event === 'history.viewport_underfilled')?.detail || null)).not.toBeNull();
-  const detail = await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot()
-    .find((entry) => entry.event === 'history.viewport_underfilled')?.detail || null);
-  expect(detail.clientHeight).toBeGreaterThan(0);
-  expect(detail.scrollHeight).toBeLessThanOrEqual(detail.clientHeight + 1);
-  expect(detail.rowCount).toBeGreaterThan(0);
-  expect(detail).toMatchObject({ attached: true, messageCurrent: true, bottomReady: true, hasOlder: true });
-  await expect.poll(() => page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot()
-    .some((entry) => entry.event === 'history.intent_started'))).toBe(true);
+  let replayEvidence = null;
+  try {
+    await expect.poll(() => page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot()
+      .find((entry) => entry.event === 'history.viewport_underfilled')?.detail || null)).not.toBeNull();
+    const detail = await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot()
+      .find((entry) => entry.event === 'history.viewport_underfilled')?.detail || null);
+    expect(detail.clientHeight).toBeGreaterThan(0);
+    expect(detail.scrollHeight).toBeLessThanOrEqual(detail.clientHeight + 1);
+    expect(detail.rowCount).toBeGreaterThan(0);
+    expect(detail).toMatchObject({ attached: true, messageCurrent: true, bottomReady: true, hasOlder: true });
+    await expect.poll(() => page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot()
+      .some((entry) => entry.event === 'history.intent_started'))).toBe(true);
+
+    // The same latest committed coverage may be replayed by layout callbacks,
+    // but it must not publish another admission for the same public coverage.
+    await page.waitForTimeout(500);
+    const events = await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot()
+      .filter((entry) => entry.event === 'history.viewport_underfilled'));
+    const keyOf = (entry) => JSON.stringify(entry?.detail || {});
+    const latestKey = keyOf(events[0]);
+    const sameCoverage = events.filter((entry) => keyOf(entry) === latestKey);
+    replayEvidence = {
+      events,
+      latestKey,
+      sameCoverageCount: sameCoverage.length,
+      intentStarted: await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot()
+        .filter((entry) => entry.event === 'history.intent_started')),
+    };
+    expect(sameCoverage).toHaveLength(1);
+  } finally {
+    const evidence = replayEvidence || await page.evaluate(() => ({
+      events: window.__ATOLL_DIAGNOSTICS__.snapshot()
+        .filter((entry) => entry.event === 'history.viewport_underfilled'),
+      intentStarted: window.__ATOLL_DIAGNOSTICS__.snapshot()
+        .filter((entry) => entry.event === 'history.intent_started'),
+    }));
+    await testInfo.attach('viewport-coverage-replay.json', {
+      body: JSON.stringify(evidence, null, 2),
+      contentType: 'application/json',
+    });
+  }
 });
 
 test('TC0221 F7 keyboard Home creates one physical top demand from the focused main scroller', async ({ page, request }) => {
