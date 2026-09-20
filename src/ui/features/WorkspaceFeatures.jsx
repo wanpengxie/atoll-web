@@ -10,6 +10,7 @@ import { TaskDetailPanel } from './tasks/TaskDetailPanel.jsx';
 import { TasksFeature } from './tasks/TasksFeature.jsx';
 import { TerminalFeature } from './terminal/TerminalFeature.jsx';
 import { SidePanel } from '../primitives/SidePanel.jsx';
+import { useModalFocus } from '../primitives/useModalFocus.js';
 
 export const WORKSPACE_FEATURE_PANEL = Object.freeze({
   roster: 'roster',
@@ -35,40 +36,31 @@ function InaccessibleFeature({ label }) {
 // directory/device/resource store of its own: navigation, refresh and the
 // resource rows all come from the typed Files port, while the Workspace owner
 // resolves the one-shot selection back to Composer.
-function ChannelFilePickerModal({ channel, files = {}, onChoose, onClose }) {
+function ChannelFilePickerModal({ channel, files = {}, requestId, onChoose, onClose, onRequestSettled }) {
+  const dialogRef = useRef(null);
   const closeRef = useRef(null);
-  const openerRef = useRef(null);
   const commands = files.commands || {};
   const entries = files.entries || [];
-  useLayoutEffect(() => {
-    const active = document.activeElement;
-    openerRef.current = active && active !== document.body && active.isConnected ? active : null;
-    closeRef.current?.focus({ preventScroll: true });
-    return () => openerRef.current?.isConnected && openerRef.current.focus({ preventScroll: true });
-  }, []);
-  useEffect(() => {
-    const escape = (event) => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      onClose?.();
-    };
-    document.addEventListener('keydown', escape);
-    return () => document.removeEventListener('keydown', escape);
-  }, [onClose]);
+  useModalFocus({ dialogRef, initialFocusRef: closeRef, onClose });
   useEffect(() => {
     if (!channel?.id || !files.deviceId || typeof commands.refresh !== 'function') return;
-    void Promise.resolve(commands.refresh()).catch(() => {});
+    void Promise.resolve()
+      .then(() => commands.refresh())
+      .catch(() => onRequestSettled?.(null, requestId));
     // The Files owner changes its directory/device state; the picker only
     // asks for the initial authoritative page when its channel/device changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channel?.id, files.deviceId]);
+  useEffect(() => {
+    if (files.error) onRequestSettled?.(null, requestId);
+  }, [files.error, onRequestSettled, requestId]);
   return <div
     className="modal-backdrop attachment-picker-backdrop"
     data-modal-layer
     role="presentation"
     onMouseDown={(event) => { if (event.target === event.currentTarget) onClose?.(); }}
   >
-    <section className="attachment-picker-modal" role="dialog" aria-modal="true" aria-labelledby="attachment-picker-title" aria-describedby="attachment-picker-description">
+    <section ref={dialogRef} className="attachment-picker-modal" role="dialog" aria-modal="true" aria-labelledby="attachment-picker-title" aria-describedby="attachment-picker-description">
       <header>
         <div><h2 id="attachment-picker-title">从频道文件选择</h2><p id="attachment-picker-description">选择当前频道挂载目录中 Agent 可以读取的文件。</p></div>
         <button ref={closeRef} type="button" aria-label="关闭频道文件选择" onClick={onClose}>×</button>
@@ -302,8 +294,10 @@ export function WorkspaceFeatureOverlays({ search = {}, filePicker = null }) {
     {filePicker?.open && <ChannelFilePickerModal
       channel={filePicker.channel}
       files={filePicker.files}
+      requestId={filePicker.requestId}
       onChoose={filePicker.onChoose}
       onClose={filePicker.onClose}
+      onRequestSettled={filePicker.onRequestSettled}
     />}
   </>;
 }

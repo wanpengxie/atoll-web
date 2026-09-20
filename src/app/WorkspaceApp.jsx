@@ -341,6 +341,25 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     ? roster.rosters.get(navigation.activeChannelId) || EMPTY_ARRAY
     : EMPTY_ARRAY;
   const selfId = memberVisible ? navigation.selfFor(navigation.activeChannelId) : '';
+  const filterFallbackActorId = filterAgentSelection.channelId === navigation.activeChannelId
+    && filterAgentSelection.actorId
+    && channelRoster.some((row) => row.id === filterAgentSelection.actorId && row.kind === 'agent')
+    ? filterAgentSelection.actorId
+    : '';
+  useEffect(() => {
+    setFilterAgentSelection((current) => {
+      if (!current.actorId) {
+        return current.channelId === navigation.activeChannelId
+          ? current
+          : { channelId: navigation.activeChannelId, actorId: '' };
+      }
+      if (current.channelId !== navigation.activeChannelId
+        || !channelRoster.some((row) => row.id === current.actorId && row.kind === 'agent')) {
+        return { channelId: navigation.activeChannelId, actorId: '' };
+      }
+      return current;
+    });
+  }, [channelRoster, navigation.activeChannelId]);
   const probes = useAgentProbes({
     activeChannelId: navigation.activeChannelId,
     activeChannelRef: navigation.activeChannelRef,
@@ -355,6 +374,13 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     wireState: wire.state,
   });
   const capabilities = probes.capabilitiesFor(navigation.activeChannelId);
+  const filterFallbackActive = Boolean(filterFallbackActorId && probes.composerAgentSource !== 'manual');
+  const selectedComposerAgentId = filterFallbackActive
+    ? filterFallbackActorId
+    : probes.composerAgent?.actorId || '';
+  const selectedComposerAgentSource = filterFallbackActive
+    ? 'filter'
+    : probes.composerAgentSource || '';
   const composer = useComposerCommands({
     activeChannelId: navigation.activeChannelId,
     principalId,
@@ -379,12 +405,8 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       transportOpen: wire.state === 'open',
     } : access,
     agentSelection: {
-      selectedAgentId: probes.composerAgent?.actorId || '',
-      ...(filterAgentSelection.channelId === navigation.activeChannelId
-        && filterAgentSelection.actorId
-        && filterAgentSelection.actorId === probes.composerAgent?.actorId
-        ? { fallbackSource: 'filter' }
-        : {}),
+      selectedAgentId: selectedComposerAgentId,
+      ...(selectedComposerAgentSource ? { fallbackSource: selectedComposerAgentSource } : {}),
     },
     capabilityIndex: capabilities,
     onRequestCapability: probes.requestCapability,
@@ -449,15 +471,29 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     size: Number(resource?.size || 0),
     ...(Number.isSafeInteger(Number(resource?.line)) ? { line: Number(resource.line) } : {}),
   }), []);
+  const settleFilePicker = useCallback((value = null, { close = true, requestId = null } = {}) => {
+    const request = filePickerRef.current;
+    if (!request || request.settled || (requestId != null && request.id !== requestId)) return false;
+    request.settled = true;
+    request.resolve(value);
+    if (close) {
+      filePickerRef.current = null;
+      setFilePickerRequest(null);
+    }
+    return true;
+  }, []);
   const cancelFilePicker = useCallback(() => {
     const request = filePickerRef.current;
-    if (!request) return false;
+    if (!request) {
+      setFilePickerRequest(null);
+      return false;
+    }
+    if (!request.settled) {
+      request.settled = true;
+      request.resolve(null);
+    }
     filePickerRef.current = null;
     setFilePickerRequest(null);
-    // Closing the picker is a user cancellation, not a Composer failure. A
-    // null result lets its typed caller leave the draft untouched without
-    // turning an ordinary Escape/backdrop close into a red error rail.
-    request.resolve(null);
     return true;
   }, []);
   const pickChannelFile = useCallback((channelId = navigation.activeChannelId) => {
@@ -473,6 +509,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       const request = {
         id: ++filePickerIDRef.current,
         channelId: requestedChannelId,
+        settled: false,
         resolve,
       };
       filePickerRef.current = request;
@@ -485,11 +522,17 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       cancelFilePicker();
       return false;
     }
+    if (request.settled) return false;
     const resourceId = String(entry?.resourceId || entry?.resource_id || '');
-    if (!resourceId || entry?.kind !== 'file') return false;
-    filePickerRef.current = null;
-    setFilePickerRequest(null);
-    request.resolve({
+    if (!resourceId || entry?.kind !== 'file') {
+      // Files owns the directory projection; an invalid row cannot be
+      // attached and must settle the waiting Composer call without inventing
+      // a resource or leaving its busy state pending forever. Keep the modal
+      // open so a projected Files error/diagnostic remains visible.
+      settleFilePicker(null, { close: false });
+      return false;
+    }
+    settleFilePicker({
       resource_id: resourceId,
       address: resourceId,
       name: String(entry.name || resourceId),
@@ -497,7 +540,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       size: Number(entry.size || 0),
     });
     return true;
-  }, [cancelFilePicker, navigation.activeChannelId]);
+  }, [cancelFilePicker, navigation.activeChannelId, settleFilePicker]);
   useEffect(() => {
     const request = filePickerRef.current;
     if (request && request.channelId !== navigation.activeChannelId) cancelFilePicker();
@@ -505,7 +548,10 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   useEffect(() => () => {
     const request = filePickerRef.current;
     filePickerRef.current = null;
-    request?.resolve(null);
+    if (request && !request.settled) {
+      request.settled = true;
+      request.resolve(null);
+    }
   }, []);
   const composerAttachmentPort = useMemo(() => Object.freeze({
     attach: attachments.attach,
@@ -900,15 +946,9 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
           ? current
           : { channelId, actorId: filterActorId }
       ));
-      // A filter target is only a fallback. Once the draft has an explicit
-      // @ recipient (or reply target), do not feed the fallback back through
-      // the probe owner on every render; doing so would overwrite the draft
-      // handoff and repeatedly re-authorize the same target.
-      const explicitDraftTarget = composer.model.delivery?.source === 'mention'
-        || composer.model.delivery?.source === 'reply';
-      if (actorId && !explicitDraftTarget && actorId !== composer.model.targetAgent?.id) {
-        void composer.commands.selectAgent(actorId).catch(showError);
-      }
+      // This is only a typed filter fact. The Composer model already gives
+      // explicit reply/@ delivery precedence; no filter event may mutate the
+      // probe owner's manual selection or call selectAgent.
     },
     onComposerEditChange: setComposerEditPort,
     onAcknowledgeAgentActivity: (agentId) => feed.acknowledgeAgentActivity(navigation.activeChannelId, agentId),
@@ -1417,8 +1457,10 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       open: Boolean(filePickerRequest),
       channel: navigation.activeChannel,
       files: filesPort,
+      requestId: filePickerRequest?.id,
       onChoose: chooseChannelFile,
       onClose: () => cancelFilePicker(),
+      onRequestSettled: (value, requestId) => settleFilePicker(value, { close: false, requestId }),
     }} />
     {taskCreateSource && canWrite && <TaskCreationDialog
       port={tasksPort}

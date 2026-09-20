@@ -186,7 +186,11 @@ function latestAgentInteraction(state, selfId, agentIds) {
 // The probe owner supplies public-ledger evidence; the Composer selection
 // owner applies the shared manual > recent > sole > none priority.
 function defaultComposerAgentId({ channelId, stateFor, rosters, rosterRef, manualAgentsRef }) {
-  if (!channelId) return '';
+  return defaultComposerAgentSelection({ channelId, stateFor, rosters, rosterRef, manualAgentsRef }).actorId;
+}
+
+function defaultComposerAgentSelection({ channelId, stateFor, rosters, rosterRef, manualAgentsRef }) {
+  if (!channelId) return resolveComposerAgentSelection({ roster: [] });
   const roster = rosters.get(channelId) || [];
   const agentIds = new Set(roster.filter((row) => row.kind === 'agent').map((row) => row.id));
   const manual = manualAgentsRef.current.get(channelId);
@@ -195,7 +199,7 @@ function defaultComposerAgentId({ channelId, stateFor, rosters, rosterRef, manua
     rosterRef.current?.self(channelId) || '',
     agentIds,
   );
-  return resolveComposerAgentSelection({ roster, manualAgentId: manual, recentAgentId: recent }).actorId;
+  return resolveComposerAgentSelection({ roster, manualAgentId: manual, recentAgentId: recent });
 }
 
 export function useAgentProbes({
@@ -454,10 +458,21 @@ export function useAgentProbes({
     (channelId) => capabilityIndex(stateFor(channelId), liveRequestIds, pending),
     [liveRequestIds, pending, stateFor, version],
   );
+  const composerAgentSource = (() => {
+    const channelId = composerAgent.channelId;
+    const actorId = composerAgent.actorId;
+    if (!channelId || !actorId) return '';
+    const roster = rosters.get(channelId) || [];
+    const selection = defaultComposerAgentSelection({ channelId, stateFor, rosters, rosterRef, manualAgentsRef });
+    if (selection.actorId === actorId) return selection.source;
+    if (manualAgentsRef.current.get(channelId) === actorId && roster.some((row) => row.id === actorId && row.kind === 'agent')) return 'manual';
+    return '';
+  })();
 
   return {
     capabilitiesFor,
     composerAgent,
+    composerAgentSource,
     pickAgent,
     requestKeys,
     requestCapability,
