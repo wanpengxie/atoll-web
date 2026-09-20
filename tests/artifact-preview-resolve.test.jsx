@@ -2,7 +2,6 @@
 import React from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { MarkdownFileReferenceProvider } from '../src/ui/MarkdownContent.jsx';
 import { ArtifactPreviewPanel } from '../src/ui/features/files/ArtifactPreviewPanel.jsx';
 import { mountAttachmentTransactions } from './helpers/attachment-transactions-harness.js';
 
@@ -217,28 +216,47 @@ describe('blob 类型 (previewArtifact 内的重打类型)', () => {
   });
 });
 
-describe('预览区里的文件链接（组件层：provider 存在时 MarkdownLink 的行为）', () => {
+describe('预览区里的文件链接（ArtifactPreviewPanel → Files typed preview owner）', () => {
   const MARKDOWN = '见 [设计文档](/home/xiewanpeng/atoll/DESIGN.md:20) 和 [外部](https://example.com/x)';
   it('绝对路径链接交给 provider，在 Atoll 里打开，恒不让浏览器去访问那条路径', async () => {
-    const onOpen = vi.fn();
-    render(<MarkdownFileReferenceProvider onOpen={onOpen}>
-      <ArtifactPreviewPanel port={{ selectedArtifact: { name: 'notes.md', mediaType: 'text/markdown' }, preview: { status: 'ready', text: MARKDOWN } }} onClose={() => {}} />
-    </MarkdownFileReferenceProvider>);
+    const preview = vi.fn();
+    render(<ArtifactPreviewPanel
+      channel={{ id: 'c0' }}
+      port={{
+        selectedArtifact: { channelId: 'c0', name: 'notes.md', mediaType: 'text/markdown' },
+        preview: { status: 'ready', text: MARKDOWN },
+        commands: { preview },
+      }}
+      onClose={() => {}}
+    />);
     const link = await screen.findByRole('link', { name: '设计文档' });
     const event = new MouseEvent('click', { bubbles: true, cancelable: true });
     link.dispatchEvent(event);
-    expect(onOpen).toHaveBeenCalledWith({ path: '/home/xiewanpeng/atoll/DESIGN.md', line: 20 });
+    expect(preview).toHaveBeenCalledWith(expect.objectContaining({
+      channelId: 'c0',
+      resourceId: '/home/xiewanpeng/atoll/DESIGN.md',
+      resource_id: '/home/xiewanpeng/atoll/DESIGN.md',
+      name: 'DESIGN.md',
+      mediaType: 'text/markdown',
+      line: 20,
+    }));
     expect(event.defaultPrevented).toBe(true);
   });
 
   it('外部链接照常是外部链接', async () => {
-    const onOpen = vi.fn();
-    render(<MarkdownFileReferenceProvider onOpen={onOpen}>
-      <ArtifactPreviewPanel port={{ selectedArtifact: { name: 'notes.md', mediaType: 'text/markdown' }, preview: { status: 'ready', text: MARKDOWN } }} onClose={() => {}} />
-    </MarkdownFileReferenceProvider>);
+    const preview = vi.fn();
+    render(<ArtifactPreviewPanel
+      channel={{ id: 'c0' }}
+      port={{
+        selectedArtifact: { channelId: 'c0', name: 'notes.md', mediaType: 'text/markdown' },
+        preview: { status: 'ready', text: MARKDOWN },
+        commands: { preview },
+      }}
+      onClose={() => {}}
+    />);
     const link = await screen.findByRole('link', { name: '外部' });
     link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    expect(onOpen).not.toHaveBeenCalled();
+    expect(preview).not.toHaveBeenCalled();
     expect(link.getAttribute('target')).toBe('_blank');
   });
 });

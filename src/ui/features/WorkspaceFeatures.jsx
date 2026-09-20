@@ -1,9 +1,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Clock3, FileText } from 'lucide-react';
-import { attachmentFromFileReference } from '../../model/file-references.js';
 import { turnProcessAuditFacts } from '../../model/terminal-result.js';
 import { argsOf } from '../../protocol/envelope.js';
-import { MarkdownFileReferenceProvider } from '../MarkdownContent.jsx';
 import { ArtifactPreviewPanel } from './files/ArtifactPreviewPanel.jsx';
 import { FilesFeature } from './files/FilesFeature.jsx';
 import { ChannelAdministrationPanel, ChannelAutomationPanel, ChannelCreateModal, SpaceAdministrationPanel } from './governance/GovernanceFeature.jsx';
@@ -292,28 +290,6 @@ function ContextHost({ type, focusKey, onClose, children }) {
   </div>;
 }
 
-function ArtifactReferenceBoundary({ channel, files, children }) {
-  const channelId = String(channel?.id || '');
-  const selectedChannelId = String(files.selectedArtifact?.channelId || '');
-  const preview = files.commands?.preview;
-  const openFileReference = (reference) => {
-    // A right-panel artifact is owned by the channel that produced it. Keep
-    // the public preview command as the only navigation owner; a stale panel
-    // or a missing command must not guess a target channel or open a host
-    // path in the browser.
-    if (!channelId || selectedChannelId !== channelId || typeof preview !== 'function') return;
-    const attachment = attachmentFromFileReference(reference);
-    preview({
-      ...attachment,
-      key: `resource:${channelId}:${attachment.resource_id}`,
-      channelId,
-      resourceId: attachment.resource_id,
-      mediaType: attachment.media_type,
-    });
-  };
-  return <MarkdownFileReferenceProvider onOpen={openFileReference}>{children}</MarkdownFileReferenceProvider>;
-}
-
 export function WorkspaceRightPanel({ panel, channel, files = {}, tasks = {}, roster = {}, governance = {}, automation = {}, activity = {}, turn = null, onClose }) {
   const kind = typeof panel === 'string' ? panel : panel?.kind || panel?.value || '';
   let content = null;
@@ -330,7 +306,7 @@ export function WorkspaceRightPanel({ panel, channel, files = {}, tasks = {}, ro
       files.commands?.select?.(null);
       onClose?.();
     };
-    content = <ArtifactPreviewPanel port={files} onClose={onClose} />;
+    content = <ArtifactPreviewPanel channel={channel} port={files} onClose={onClose} />;
   }
   else if (kind === WORKSPACE_FEATURE_PANEL.task) {
     focusKey = `${kind}:${tasks.selectedItem?.key || tasks.selectedItem?.id || ''}`;
@@ -357,10 +333,7 @@ export function WorkspaceRightPanel({ panel, channel, files = {}, tasks = {}, ro
   // Keep this feature-owned branch outside ContextHost so the public rail
   // contract has one dialog and no hidden governance panel behind it.
   if (kind === WORKSPACE_FEATURE_PANEL.channelAdministration && typeof panel === 'object' && panel.initialTab === 'overview') return content;
-  const wrappedContent = kind === WORKSPACE_FEATURE_PANEL.artifact
-    ? <ArtifactReferenceBoundary channel={channel} files={files}>{content}</ArtifactReferenceBoundary>
-    : content;
-  return <ContextHost key={focusKey} type={kind === WORKSPACE_FEATURE_PANEL.artifact ? 'artifact' : kind} focusKey={focusKey} onClose={dismiss}>{wrappedContent}</ContextHost>;
+  return <ContextHost key={focusKey} type={kind === WORKSPACE_FEATURE_PANEL.artifact ? 'artifact' : kind} focusKey={focusKey} onClose={dismiss}>{content}</ContextHost>;
 }
 
 export function WorkspaceFeatureOverlays({ search = {}, filePicker = null }) {

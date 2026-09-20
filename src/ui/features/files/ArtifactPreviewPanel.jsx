@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Download } from 'lucide-react';
 import { Highlight, themes } from 'prism-react-renderer';
-import { MarkdownContent } from '../../MarkdownContent.jsx';
+import { attachmentFromFileReference } from '../../../model/file-references.js';
+import { MarkdownContent, MarkdownFileReferenceProvider } from '../../MarkdownContent.jsx';
 import { SidePanel } from '../../primitives/SidePanel.jsx';
 
 const SOURCE_LANGUAGE_BY_EXTENSION = Object.freeze({
@@ -106,9 +107,12 @@ function Preview({ artifact, preview, textMode, onDownload }) {
   return <div className="artifact-no-preview"><strong>尚未读取预览</strong><p>重新打开此文件即可读取内容。</p></div>;
 }
 
-export function ArtifactPreviewPanel({ port = {}, onClose }) {
+export function ArtifactPreviewPanel({ channel, port = {}, onClose }) {
   const artifact = port.selectedArtifact;
   const preview = port.preview || {};
+  const channelId = String(channel?.id || port.channelId || '');
+  const selectedChannelId = String(artifact?.channelId || '');
+  const previewCommand = port.commands?.preview;
   const format = textPreviewFormat(artifact || {});
   const targetLine = Number.isSafeInteger(Number(artifact?.line)) && Number(artifact.line) > 0 ? Number(artifact.line) : 0;
   const [textMode, setTextMode] = useState(format.rich && !targetLine ? 'preview' : 'source');
@@ -118,6 +122,20 @@ export function ArtifactPreviewPanel({ port = {}, onClose }) {
   const copyable = preview.status === 'ready' && typeof preview.text === 'string' ? preview.text : null;
   const canGoBack = port.canGoBack === true || preview.canGoBack === true;
   const back = port.commands?.back || preview.back;
+  const openFileReference = (reference) => {
+    // ArtifactPreviewPanel is the only Markdown file-reference boundary for
+    // the Files owner. A stale panel or unavailable command must consume the
+    // host click without guessing a channel or opening a filesystem path.
+    if (!channelId || selectedChannelId !== channelId || typeof previewCommand !== 'function') return;
+    const attachment = attachmentFromFileReference(reference);
+    previewCommand({
+      ...attachment,
+      key: `resource:${channelId}:${attachment.resource_id}`,
+      channelId,
+      resourceId: attachment.resource_id,
+      mediaType: attachment.media_type,
+    });
+  };
   const close = () => { if (canGoBack && back) back(); else onClose?.(); };
   const headerActions = (canGoBack || format.rich || copyable !== null) ? <div className="artifact-preview-mode artifact-preview-mode-header" role="group" aria-label="文件操作">
     {canGoBack && <button type="button" className="artifact-back" aria-label="返回上一个文件" title="返回上一个文件" onClick={() => back?.()}><ArrowLeft size={15} /></button>}
@@ -127,7 +145,9 @@ export function ArtifactPreviewPanel({ port = {}, onClose }) {
     </>}
     {copyable !== null && <CopyPreviewButton text={copyable} />}
   </div> : null;
-  return <SidePanel className="artifact-context" ariaLabel="文件详情" title={artifact?.name || '文件预览'} closeLabel="关闭文件详情" onClose={close} headerActions={headerActions}>
-    <section className="artifact-context-preview" aria-label="文件预览"><Preview artifact={artifact} preview={preview} textMode={textMode} onDownload={port.commands?.download} /></section>
-  </SidePanel>;
+  return <MarkdownFileReferenceProvider onOpen={openFileReference}>
+    <SidePanel className="artifact-context" ariaLabel="文件详情" title={artifact?.name || '文件预览'} closeLabel="关闭文件详情" onClose={close} headerActions={headerActions}>
+      <section className="artifact-context-preview" aria-label="文件预览"><Preview artifact={artifact} preview={preview} textMode={textMode} onDownload={port.commands?.download} /></section>
+    </SidePanel>
+  </MarkdownFileReferenceProvider>;
 }
