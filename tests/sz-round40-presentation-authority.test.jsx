@@ -118,6 +118,52 @@ describe('S-Z canonical Presentation authority receipt', () => {
     }));
   });
 
+  it('re-enters a hidden following surface only with a newer positive epoch', () => {
+    const initialHistory = historyFor();
+    const { result, rerender, args } = renderProjection(initialHistory);
+    const receiptSink = args.onTailCaughtUp;
+    const activationID = result.current.viewport.activationID;
+
+    act(() => {
+      result.current.viewport.onReadingObservation({
+        activationID,
+        atTail: true,
+        surfaceVisible: true,
+        installedHighSeq: 2,
+      });
+    });
+    expect(receiptSink).toHaveBeenLastCalledWith(expect.objectContaining({
+      caughtUp: true,
+      inputEpoch: 0,
+    }));
+
+    args.surfaceVisible = false;
+    act(() => {
+      result.current.viewport.onSurfaceVisibilityChange(false);
+      rerender();
+    });
+    expect(receiptSink).toHaveBeenLastCalledWith(expect.objectContaining({
+      kind: 'notification-lease-revoke',
+      inputEpoch: 1,
+    }));
+
+    args.surfaceVisible = true;
+    act(() => {
+      result.current.viewport.onSurfaceVisibilityChange(true);
+      rerender();
+      result.current.viewport.onReadingObservation({
+        activationID,
+        atTail: true,
+        surfaceVisible: true,
+        installedHighSeq: 2,
+      });
+    });
+    expect(receiptSink).toHaveBeenLastCalledWith(expect.objectContaining({
+      caughtUp: true,
+      inputEpoch: 1,
+    }));
+  });
+
   it('emits a typed activation-cleanup revoke at a newer input epoch', () => {
     const { result, unmount, args } = renderProjection(historyFor());
     const receiptSink = args.onTailCaughtUp;

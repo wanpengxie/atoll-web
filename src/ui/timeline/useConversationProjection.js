@@ -25,6 +25,7 @@ import {
   createReadingSession,
   observeReading,
   acceptPositionRowLease,
+  advanceReadingInputEpoch,
   consumePositionRowLease,
   persistentReadingSession,
   positionRowLeaseCommand,
@@ -682,6 +683,12 @@ function useProjectionReadingOwner({
       if (visible) return;
       if (observationRef.current.atTail === false
         && observationRef.current.surfaceVisible === false) return;
+      // Hidden is a lease boundary even without native input. Keep the
+      // semantic mode, but mint a newer Reading epoch synchronously so the
+      // first visible tail observation cannot reuse the revoked epoch.
+      if (controller.getSnapshot().session.mode === READING_MODE.following) {
+        controller.update((current) => advanceReadingInputEpoch(current));
+      }
       observationRef.current = Object.freeze({
         ...observationRef.current,
         atTail: false,

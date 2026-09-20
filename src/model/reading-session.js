@@ -285,6 +285,23 @@ export function cancelReadingControl(session, { inputEpoch, gestureID = '' } = {
   return next(session, { tailEvidence: null });
 }
 
+// A surface disappearance is a semantic lease boundary even when no native
+// gesture occurred. Advance the owner epoch without changing following vs
+// browsing; a later visible paint must therefore publish a receipt newer than
+// the typed hidden/cleanup revoke, while any queued geometry command is fenced
+// by the same input epoch.
+export function advanceReadingInputEpoch(session) {
+  return next(session, {
+    inputEpoch: session.inputEpoch + 1,
+    intentRevision: session.intentRevision + 1,
+    bottomIntent: idleBottomIntent(),
+    contentAnchor: idleContentAnchor(),
+    positionRowLease: null,
+    historyAnchor: null,
+    tailEvidence: null,
+  });
+}
+
 export function observeReading(session, observation = {}) {
   if (observation.activationID && observation.activationID !== session.activationID) return session;
   const observedGeometryRevision = Number(observation.geometryRevision) || 0;
