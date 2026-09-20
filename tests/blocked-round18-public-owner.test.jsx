@@ -215,6 +215,7 @@ describe('A-D round 18 public owner evidence: create failure and governance', ()
     // 不变量：失败生命周期不清空用户输入；公共 owner：ChannelAdministrationPanel。
     const submit = vi.fn().mockRejectedValueOnce(new Error('网络不可用')).mockResolvedValueOnce('request-2');
     const { rerender } = governance({ commands: { submit }, operation: null });
+    fireEvent.click(screen.getByRole('tab', { name: '概览' }));
     fireEvent.change(screen.getByLabelText('名称'), { target: { value: 'backend' } });
     fireEvent.change(screen.getByLabelText('用途'), { target: { value: '后端协作' } });
     fireEvent.click(screen.getByRole('button', { name: '创建子频道' }));
@@ -262,7 +263,7 @@ describe('A-D round 18 public owner evidence: create failure and governance', ()
     expect(screen.getByText('Worker')).toBeTruthy();
     expect(screen.queryByText('System')).toBeNull();
     expect(screen.queryByText('Registrar')).toBeNull();
-    fireEvent.click(screen.getByRole('combobox', { name: '待引入成员' }));
+    fireEvent.click(screen.getByRole('combobox', { name: '选择参与者' }));
     expect(screen.getByRole('option', { name: /Worker declaration/ })).toBeTruthy();
     expect(screen.queryByRole('option', { name: /Registrar/ })).toBeNull();
   });
@@ -279,7 +280,7 @@ describe('A-D round 18 public owner evidence: create failure and governance', ()
       ],
     });
     fireEvent.click(screen.getByRole('tab', { name: '成员' }));
-    fireEvent.click(screen.getByRole('combobox', { name: '待引入成员' }));
+    fireEvent.click(screen.getByRole('combobox', { name: '选择参与者' }));
     expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual(expect.arrayContaining(['root · 用户']));
     expect(screen.queryByRole('option', { name: /steward|retired/ })).toBeNull();
   });

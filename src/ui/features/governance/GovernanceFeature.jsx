@@ -48,6 +48,23 @@ function OperationState({ operation }) {
   return <p className={`operation-state state-${operation.state || 'pending'}`} role="status">{operation.message || '命令已提交'}</p>;
 }
 
+function declarationKind(row) {
+  const declaration = row?.declared || row || {};
+  const explicit = declaration.kind || declaration.actor_kind;
+  if (explicit === 'agent' || explicit === 'tool') return explicit;
+  const className = String(declaration.default_class || declaration.class || '').toLowerCase();
+  if (className.includes('agent') || className.includes('codex') || className.includes('claude')) return 'agent';
+  // Directory projections normally carry `kind`; the id fallback keeps a
+  // sparse declaration row observable without inventing a second source of
+  // authority. The command still sends only the declaration id.
+  const id = String(declaration.id || '');
+  return /(^|[:._-])(agent|assistant)([:._-]|$)/i.test(id) ? 'agent' : 'tool';
+}
+
+function participantTypeLabel(kind) {
+  return kind === 'human' ? '用户' : kind === 'agent' ? 'Agent' : '工具';
+}
+
 function ChannelOverview({ channel, port }) {
   const [description, setDescription] = useState(channel?.description || '');
   const [child, setChild] = useState({ name: '', purpose: '', templateId: '' });
@@ -68,14 +85,28 @@ function ChannelMembers({ channel, port }) {
   const [confirm, setConfirm] = useState(null);
   const action = useCommand(port.commands, 'channel');
   const candidates = [
-    ...(port.principals || []).map((row) => ({ value: `principal:${row.id}`, label: `${row.display_name || row.email || row.id} · 用户`, row, kind: 'principal' })),
-    ...(port.declarations || []).filter(isManageableDeclaration).map((row) => ({ value: `declaration:${row.id}`, label: `${row.name || row.id} · 声明`, row, kind: 'declaration' })),
+    ...(port.principals || []).map((entry) => entry?.declared || entry).map((row) => ({ value: `principal:${row.id}`, label: `${row.display_name || row.email || row.id} · 用户`, row, kind: 'principal', participantKind: 'human' })),
+    ...(port.declarations || []).filter(isManageableDeclaration).map((entry) => entry?.declared || entry).map((row) => {
+      const participantKind = declarationKind(row);
+      return { value: `declaration:${row.id}`, label: `${row.name || row.id} · ${participantTypeLabel(participantKind)}`, row, kind: 'declaration', participantKind };
+    }),
   ];
   const selected = candidates.find((row) => row.value === candidate);
   const visibleRoster = (port.roster || []).filter(isVisibleActor);
+  const introduce = (event) => {
+    event.preventDefault();
+    if (!selected) return;
+    action.submit('introduce_actor', { channelId: channel?.id, candidateType: selected.kind, candidateId: selected.row.id });
+  };
   return <>
     {action.error && <p className="governance-error" role="alert">{action.error}</p>}
-    <PanelCard className="governance-form" title="引入成员"><label>用户或声明<SelectMenu ariaLabel="待引入成员" value={candidate} options={candidates} onChange={setCandidate} /></label><button type="button" className="primary-button" disabled={port.disabled || !selected} onClick={() => action.submit('introduce_actor', { channelId: channel?.id, candidateType: selected?.kind, candidateId: selected?.row.id })}>引入</button></PanelCard>
+    <PanelCard as="form" className="governance-form" title="添加参与者" onSubmit={introduce}>
+      <p>先选择业务参与者；系统会根据对象类型显示必要配置。标准 Actor 不会出现在候选项中。</p>
+      <label>参与者<SelectMenu ariaLabel="选择参与者" placeholder="搜索用户、Agent 或工具" value={candidate} options={candidates} onChange={(value) => setCandidate(value)} /></label>
+      {selected && <div className="participant-selection" role="status" data-participant-id={selected.row.id} data-participant-kind={selected.participantKind}><span>{participantTypeLabel(selected.participantKind)}</span><strong>{selected.row.display_name || selected.row.email || selected.row.name || selected.row.id}</strong><small>{selected.row.id}</small></div>}
+      {selected && selected.kind === 'declaration' && <p className="field-hint">Actor 的归属 principal 由声明本身决定；要改归属请编辑声明。</p>}
+      <button className="primary-button" type="submit" disabled={port.disabled || action.busy || !selected}>添加到频道</button>
+    </PanelCard>
     <PanelCard title="频道成员" action={<button type="button" className="text-button" onClick={() => port.commands?.refresh?.('members')}>刷新</button>}>
       {visibleRoster.map((row) => <div className="device-row" key={row.id}><div><strong>{actorDisplayName(row)}</strong><small>{row.id} · {row.kind || 'actor'}</small></div><div><button type="button" onClick={() => port.commands?.selectActor?.(row)}>详情</button><button type="button" className="danger-text" disabled={port.disabled || row.id === port.selfId || row.protected} onClick={() => setConfirm(row)}>移除</button></div></div>)}
     </PanelCard>
@@ -94,12 +125,12 @@ function ChannelDanger({ channel, port }) {
 }
 
 export function ChannelAdministrationPanel({ channel, port = {}, onClose }) {
-  const [tab, setTab] = useState('overview');
+  const [tab, setTab] = useState('members');
   return <SidePanel className="channel-governance" ariaLabel="频道治理" eyebrow="CHANNEL CONTROL" title="频道治理" tabs={[{ id: 'overview', label: '概览' }, { id: 'members', label: '成员' }, { id: 'danger', label: '危险操作' }]} activeTab={tab} onTabChange={setTab} onClose={onClose}>
     <OperationState operation={port.operation} />
-    {tab === 'overview' && <ChannelOverview channel={channel} port={port} />}
-    {tab === 'members' && <ChannelMembers channel={channel} port={port} />}
-    {tab === 'danger' && <ChannelDanger channel={channel} port={port} />}
+    <div hidden={tab !== 'overview'}><ChannelOverview channel={channel} port={port} /></div>
+    <div hidden={tab !== 'members'}><ChannelMembers channel={channel} port={port} /></div>
+    <div hidden={tab !== 'danger'}><ChannelDanger channel={channel} port={port} /></div>
   </SidePanel>;
 }
 

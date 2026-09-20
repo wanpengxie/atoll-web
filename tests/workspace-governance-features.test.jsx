@@ -16,6 +16,7 @@ describe('workspace governance feature ports', () => {
       onClose={() => {}}
     />);
 
+    fireEvent.click(screen.getByRole('tab', { name: '概览' }));
     fireEvent.change(screen.getByLabelText('说明'), { target: { value: 'new' } });
     fireEvent.click(screen.getByRole('button', { name: '保存频道资料' }));
 

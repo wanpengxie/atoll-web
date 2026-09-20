@@ -218,7 +218,7 @@ describe('A-D round 19 public owner evidence: governance convergence', () => {
       ],
     });
     fireEvent.click(screen.getByRole('tab', { name: '成员' }));
-    fireEvent.click(screen.getByRole('combobox', { name: '待引入成员' }));
+    fireEvent.click(screen.getByRole('combobox', { name: '选择参与者' }));
     expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual(['root · 用户']);
   });
 

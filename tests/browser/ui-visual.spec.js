@@ -120,8 +120,8 @@ test('UI-VIS-08 600px 选择用户菜单视觉基线', async ({ page, request })
   await reset(request, 'actor-governance', 906);
   await login(page);
   const panel = await openChannelPanel(page, '成员');
-  await panel.getByRole('combobox', { name: '待引入成员' }).click();
-  await expect(panel.getByRole('listbox', { name: '待引入成员选项' })).toBeVisible();
+  await panel.getByRole('combobox', { name: '选择参与者' }).click();
+  await expect(panel.getByRole('listbox', { name: '选择参与者选项' })).toBeVisible();
   await expect(page).toHaveScreenshot('channel-members-select-600.png', SCREENSHOT_OPTIONS);
 });
 
