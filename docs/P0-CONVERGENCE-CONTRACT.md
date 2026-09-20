@@ -162,6 +162,23 @@ audit interval. A short queue watchdog may drain missed completion events.
 The twenty-minute checkpoint is reserved for architecture drift, throughput,
 blocked time, and duplicate-work review, not ordinary dispatch.
 
+Concurrency never relaxes acceptance. Every candidate, regardless of how many
+worktrees are active, must pass the same gates before integration:
+
+1. one authoritative owner and the approved lifecycle/invariant model;
+2. user-experience parity on the named normal path and an explicit bounded
+   failure path;
+3. independent public-contract verification on the exact candidate commit;
+4. rebase onto the current integration head followed by the same focused tests
+   and production build;
+5. no compatibility layer, second store/writer/owner, private test oracle, or
+   vendor/package/backend/protocol change unless separately authorized.
+
+Parallel work maximizes preparation and discovery time; it does not permit
+multiple truths to be merged. When two accepted-looking candidates disagree on
+an owner or invariant, the later candidate is rejected or redesigned rather
+than joined through an adapter.
+
 ## Current P0 decisions
 
 - **Reading/notification re-entry:** explicit return to tail mints a successor
