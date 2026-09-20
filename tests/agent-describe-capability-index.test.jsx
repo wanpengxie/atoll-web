@@ -46,6 +46,65 @@ function describeTerminal(id, parentId, words) {
 }
 
 describe('actor capabilities（恢复自 tests/capabilities.test.js）', () => {
+  it('[AD-338] 公开 requestCapability owner 的拒绝与提交结果统一为 Promise<ProbeResult>', async () => {
+    // 用户能力：能力刷新不可用时，界面 owner 仍能安全等待结构化结果。
+    // 不变量：offline、目标/权限/名册闸门，以及真实 Describe 提交都不改变
+    // Promise 返回合同；不暴露 lifecycle 私有状态。
+    // 公共 owner：useAgentProbes().requestCapability。
+    const cases = [
+      {
+        name: 'offline',
+        props: probeHarness({ wireState: 'closed' }),
+        args: ['agent', 'c0'],
+        result: { requested: false, error: { code: 'probe_offline' } },
+      },
+      {
+        name: 'target missing',
+        props: probeHarness(),
+        args: ['', 'c0'],
+        result: { requested: false, error: { code: 'probe_target_missing' } },
+      },
+      {
+        name: 'access denied',
+        props: probeHarness({
+          accessRef: { current: { state: () => ({ relationship: 'observer', unavailable: false }) } },
+        }),
+        args: ['agent', 'c0'],
+        result: { requested: false, error: { code: 'probe_access_denied' } },
+      },
+      {
+        name: 'actor unavailable',
+        props: probeHarness({ rosters: new Map([['c0', []]]) }),
+        args: ['agent', 'c0'],
+        result: { requested: false, error: { code: 'probe_actor_unavailable' } },
+      },
+    ];
+
+    for (const scenario of cases) {
+      const { result, unmount } = renderHook((props) => useAgentProbes(props), {
+        initialProps: scenario.props,
+      });
+      await act(async () => {
+        const response = result.current.requestCapability(...scenario.args);
+        expect(typeof response?.then).toBe('function');
+        await expect(response).resolves.toMatchObject(scenario.result);
+      });
+      unmount();
+    }
+
+    const store = createChannelReplicaStore();
+    store.commit({ channel_id: 'c0', seq: 1, envelope: describeRequest('d1') });
+    const handleSend = vi.fn().mockResolvedValue('d1');
+    const { result } = renderHook((props) => useAgentProbes(props), {
+      initialProps: probeHarness({ handleSend, stateFor: () => store.state('c0') }),
+    });
+    await act(async () => {
+      const response = result.current.requestCapability('agent', 'c0');
+      expect(typeof response?.then).toBe('function');
+      await expect(response).resolves.toMatchObject({ requested: true, requestId: 'd1', error: null });
+    });
+  });
+
   it('routes Agent options/context probes through control owner while Describe stays on send', async () => {
     const store = createChannelReplicaStore();
     store.commit({ channel_id: 'c0', seq: 1, envelope: describeRequest('d1') });

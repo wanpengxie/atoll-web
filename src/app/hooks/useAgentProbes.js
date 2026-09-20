@@ -318,7 +318,10 @@ export function useAgentProbes({
   // live Describe before that actor has ever been selected in Composer. Keep
   // the request inside this owner: callers name the actor, while lifecycle,
   // one-minute rate limiting and ledger correlation remain centralized here.
-  const requestCapability = useCallback((actorId, channelId = activeChannelRef.current) => {
+  // This is a public command port.  Refusals and accepted submissions must
+  // have the same Promise<ProbeResult> shape so composition owners can safely
+  // attach rejection handling without knowing which guard fired.
+  const requestCapability = useCallback(async (actorId, channelId = activeChannelRef.current) => {
     const refused = (code, detail) => ({ requested: false, requestId: '', error: { code, detail } });
     if (wireState !== 'open') return refused('probe_offline', '连接尚未就绪，无法读取能力');
     if (!actorId || !channelId) return refused('probe_target_missing', '能力读取缺少目标 Actor');
