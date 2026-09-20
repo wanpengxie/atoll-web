@@ -268,7 +268,7 @@ describe('A-D round 18 public owner evidence: create failure and governance', ()
     expect(screen.queryByRole('option', { name: /Registrar/ })).toBeNull();
   });
 
-  it.fails('[AD-192] accepts only real human principals in the user selector', () => {
+  it('[AD-192] accepts only real human principals in the user selector', () => {
     // 用户能力：用户选择器只显示 registry 中的 human principal。
     // 不变量：agent/retired principal 不能被当作用户；公共 owner：WorkspaceApp governance port。
     governance({
