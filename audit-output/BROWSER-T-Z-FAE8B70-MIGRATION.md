@@ -1559,3 +1559,61 @@ feed）。归属 Feed/Replica/Projection owner 做产品链路修复；本轮不
 | `following-existing-waiting` | **13 pass / 1 red 中的唯一 RED** | 迁移 oracle 在 queued Waiting 阶段错误要求 canonical row；不改产品、不放宽合同 |
 | Waiting case38 显式本人发送 | **PASS** | Composer → Reading tail intent；与 passive arrival 独立 |
 | E passive append | **真实 transport/feed PASS，公开 row RED** | Feed/Replica/Projection materialization 产品缺口；不归因 case38，不改 fixture/断言 |
+
+## 第二十六轮：旧 `fae8b70` 明确排除 queued canonical row
+
+本轮对照旧实现、旧 browser oracle 与当前公开 owner，并在当前候选重跑唯一 RED：
+
+```text
+ATOLL_TEST_WEB_PORT=15610 ATOLL_TEST_MOCK_PORT=19910 \
+  npx playwright test tests/browser/waiting-production-contract.spec.js \
+  --grep 'following-existing-waiting' --workers=1 --reporter=line \
+  --output=test-results-tz-r26-existing-waiting
+1 failed: waitForNewMessageIdentity() line 341, 15s；没有新增 canonical timeline row
+```
+
+### 旧合同的生命周期分流
+
+`fae8b70:src/model/agent-control.js:39-50` 将非终态 `queued` 明确映射为
+`agentMessageStage = 'queued'`，只有 `processing` 或终态才映射为 `timeline`。
+旧 `fae8b70:src/model/conversation-visibility.js:68-72` 再以该 stage 决定
+`timelineTurnVisible`，所以 queued Agent request 本来就不占 conversation row。
+旧 `fae8b70:src/model/waiting-presentation.js:6-8,24-44` 也明确把 Waiting 定义为
+Replica 选择出的唯一生命周期呈现，并写明把本地请求先送进 list 会制造随后又被移除的
+假 tail extent；queued request 应留在 Waiting，不能同时复制成 Timeline row。
+
+旧 browser 合同与此完全一致：
+
+* `fae8b70:tests/browser/waiting-send-transaction.spec.js:563-568` 先等待
+  `agent-wait-item` 出现；
+* `:607-614` 发送后只确认 Waiting item 和 bottom intent；
+* `:628-639` 明确在此之后才 `advance×3`，并等待 Waiting 消失；
+* `:677-680` 只要求稳定 `targetRequestID` 和 **Waiting 可见前不得出现 transient
+  timeline row**，并没有要求 Waiting 可见后、queue 尚未 advance 时出现 row；
+* `:723-728` 的 `waiting→timeline` 高度/尾部断言位于 advance 后的 handoff。
+
+因此旧合同要求的是：queued 阶段精确 Waiting fact 足够；advance 后才要求 canonical
+timeline handoff。它不要求、也不允许 queued Waiting 与 canonical timeline row 并存。
+
+### 当前首断点与裁决
+
+当前公开 owner 保持相同语义：`src/model/conversation-presentation.js:677-679`
+注释说明 Waiting 是 accepted-but-not-processing Agent work 的 sole projection；
+`src/ui/timeline/useWaitingEditingController.jsx:313-330` 仅把最新显式 queued
+position fact 放入 `queuedTurns`。实跑中第三条请求的精确 request id 已在 Waiting
+出现，而 `.timeline-message-list [data-presentation-row-id]` 对该正文保持 0；这正是
+旧合同预期，不是 transport、fixture 或产品 materialization 丢失。
+
+当前迁移 spec 的顺序却是
+`tests/browser/waiting-production-contract.spec.js:337-342`：建立 owner/target
+Waiting 后发送第三条请求，立即调用 `waitForNewMessageIdentity()`，且尚未执行任何
+`advance`。它把旧合同的 **Waiting→timeline handoff** 提前到了 **queued Waiting**
+阶段，故 line 341 是可重复的唯一首断点。
+
+### 最终归类（本轮不改）
+
+**结论：当前 Waiting 事实足够，queued canonical row 不是旧用户合同；该 RED 是迁移
+时序/oracle 错误，不是产品回归。** 本轮不移动 gate、不删除 strict canonical assertion、
+不 skip、不改产品。若后续修正迁移，应先以精确 Waiting request identity 验证 queued
+事实，再显式推进 queue，最后在 Waiting 消失后的 handoff 阶段验证 canonical row；不能
+通过放宽匹配把 queued item 冒充 row。
