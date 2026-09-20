@@ -135,9 +135,10 @@ describe('Round 35 Governance public-owner contracts', () => {
           return result;
         },
       };
-      return <ChannelCreateModal
+      return <WorkspaceRightPanel
+        panel={{ kind: 'channel-administration', initialTab: 'overview' }}
         channel={{ id: 'c0', qualified_name: 'c0' }}
-        port={{ children: [], creation, commands }}
+        governance={{ channel: { children: [], creation, commands } }}
         onClose={vi.fn()}
       />;
     }
@@ -153,5 +154,16 @@ describe('Round 35 Governance public-owner contracts', () => {
     expect(screen.getByRole('button', { name: '重新创建' }).disabled).toBe(false);
     expect(name.disabled).toBe(false);
     expect(screen.queryByRole('button', { name: '进入新频道' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: '重新创建' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '创建频道' })).toBeTruthy());
+    expect(screen.getByLabelText('新频道名称').value).toBe('research');
+    fireEvent.click(screen.getByRole('button', { name: '创建频道' }));
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(2));
+    expect(submit).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      scope: 'channel', action: 'create_child',
+      payload: expect.objectContaining({ name: 'research', parentId: 'c0' }),
+    }));
+    expect(screen.getByLabelText('新频道名称').value).toBe('research');
   });
 });

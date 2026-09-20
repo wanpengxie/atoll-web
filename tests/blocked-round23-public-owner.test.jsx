@@ -311,12 +311,23 @@ describe('A-D round 23 ordinary public-owner product-gap evidence', () => {
     expect(screen.getByRole('alert').textContent).toContain('终态详情不可用，请刷新或重新进入频道');
   });
 
-  it('[AD-153] exposes four-step convergence and enters only after ready', () => {
-    // 用户能力：分别看到 ledger/OBS/membership/serving，ready 后才进入；不变量：receipt 不能宣告 serving ready；公开 owner：GovernanceFeature。
-    governance({ commands: { submit: vi.fn().mockResolvedValue('request-1') } });
-    fireEvent.change(screen.getByLabelText('名称'), { target: { value: 'research' } });
-    fireEvent.click(screen.getByRole('button', { name: '创建子频道' }));
-    expect(screen.getByRole('region', { name: '频道创建进度' })).toBeTruthy();
+  it('[AD-153] exposes four-step convergence and enters only after ready', async () => {
+    // 用户能力：分别看到 ledger/OBS/membership/serving，ready 后才进入；不变量：receipt 不能宣告 serving ready；公开 owner：WorkspaceRightPanel → GovernanceFeature.ChannelCreateModal。
+    const submit = vi.fn().mockResolvedValue('request-1');
+    publicChannelCreate({ commands: { submit } });
+    fireEvent.click(screen.getByRole('button', { name: '打开新建频道' }));
+    fireEvent.change(await screen.findByLabelText('新频道名称'), { target: { value: 'research' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建频道' }));
+    await waitFor(() => expect(submit).toHaveBeenCalledWith(expect.objectContaining({
+      scope: 'channel', action: 'create_child',
+      payload: expect.objectContaining({ name: 'research', parentId: 'c0' }),
+    })));
+    const progress = screen.getByRole('region', { name: '频道创建进度' });
+    expect(progress.textContent).toContain('账本确认');
+    expect(progress.textContent).toContain('频道可观察');
+    expect(progress.textContent).toContain('成员关系');
+    expect(progress.textContent).toContain('服务就绪');
+    expect(screen.queryByRole('button', { name: '进入新频道' })).toBeNull();
   });
 
   it('[AD-155] provides dialog Escape/backdrop/focus-trap and returns focus after close', () => {
