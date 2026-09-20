@@ -1708,7 +1708,11 @@ export function createChannelFeedRuntime(options = {}) {
     );
     if (currentObservation && sameOwner) {
       const previousFence = notificationInputEpoch(currentObservation.revokeInputEpoch) ?? -1;
-      if (previousFence >= 0 && (!hasInputEpoch || receiptInputEpoch < previousFence)) return false;
+      // A revoke is a tombstone for the whole receipt epoch.  A positive
+      // callback issued in that same epoch may be late, but it is not a new
+      // observation and must not re-install the lease.  Only a strictly newer
+      // input epoch can prove a fresh tail observation for this owner.
+      if (previousFence >= 0 && (!hasInputEpoch || receiptInputEpoch <= previousFence)) return false;
     } else if (currentObservation && retiredOwnerKeys.includes(ownerKey)) {
       return false;
     }

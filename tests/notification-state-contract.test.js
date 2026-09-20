@@ -164,6 +164,19 @@ describe('notification confirmation contract', () => {
     // the physical tail. This is a lifecycle transition, not a user leave.
     expect(feed.acknowledgeNotifications({
       ...receipt,
+      kind: 'notification-lease-revoke',
+      reason: 'activation-cleanup',
+      inputEpoch: 0,
+      caughtUp: false,
+      following: false,
+      atTail: true,
+      surfaceVisible: true,
+      boundary: 0,
+      cause: '',
+      captured: { ...receipt.captured, installedHighSeq: 1 },
+    })).toBe(false);
+    expect(feed.acknowledgeNotifications({
+      ...receipt,
       caughtUp: false,
       following: false,
       atTail: true,
@@ -189,6 +202,54 @@ describe('notification confirmation contract', () => {
     })).toBe(false);
     feed.enqueue({ ...relatedRequest(channelId, 'promotion-approval-3', selfId), seq: 3 });
     expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 2, total: 2 });
+  });
+
+  it('tombstones same-epoch hidden cleanup until a strictly newer observation', async () => {
+    const { runtime, channelId, selfId } = await readyRuntime();
+    const feed = runtime.getSnapshot();
+    feed.enqueue({ ...relatedRequest(channelId, 'same-epoch-approval-1', selfId), seq: 1 });
+    const status = feed.historyFor(channelId);
+    const receipt = confirmationFor(channelId, status, 1, { inputEpoch: 0 });
+    expect(feed.acknowledgeNotifications(receipt)).toBe(1);
+
+    const hidden = {
+      ...receipt,
+      kind: 'notification-lease-revoke',
+      reason: 'surface-hidden',
+      inputEpoch: 0,
+      caughtUp: false,
+      following: false,
+      atTail: false,
+      surfaceVisible: false,
+      cause: '',
+      boundary: 0,
+      captured: { ...receipt.captured, installedHighSeq: 1 },
+    };
+    expect(feed.acknowledgeNotifications(hidden)).toBe(false);
+    feed.enqueue({ ...relatedRequest(channelId, 'same-epoch-approval-2', selfId), seq: 2 });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 1, total: 1 });
+
+    // A positive callback captured before the hidden cleanup has the same
+    // input epoch and must not resurrect the short lease.
+    expect(feed.acknowledgeNotifications({
+      ...receipt,
+      inputEpoch: 0,
+      captured: { ...receipt.captured, installedHighSeq: 2 },
+      boundary: 2,
+    })).toBe(false);
+    feed.enqueue({ ...relatedRequest(channelId, 'same-epoch-approval-3', selfId), seq: 3 });
+    expect(feed.historyFor(channelId).notificationHighWater).toBe(1);
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 2, total: 2 });
+
+    // A new DOM observation from the same owner must carry a strictly newer
+    // input epoch before it can reinstall the following lease.
+    expect(feed.acknowledgeNotifications({
+      ...receipt,
+      inputEpoch: 1,
+      captured: { ...receipt.captured, installedHighSeq: 3 },
+      boundary: 3,
+    })).toBe(3);
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, total: 0 });
   });
 
   it('fences a physical-leave revoke against a late positive from an older input epoch', async () => {
@@ -231,11 +292,12 @@ describe('notification confirmation contract', () => {
     expect(feed.historyFor(channelId).notificationHighWater).toBe(1);
     expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 1, total: 1 });
 
-    // Reaching the tail again in the same input epoch is current evidence and
-    // may re-install the lease; only lower epochs are stale.
+    // Reaching the tail again in a strictly newer input epoch is current
+    // evidence and may re-install the lease; the revoke epoch itself remains
+    // tombstoned.
     expect(feed.acknowledgeNotifications({
       ...receipt,
-      inputEpoch: 1,
+      inputEpoch: 2,
       captured: { ...receipt.captured, installedHighSeq: 2 },
       boundary: 2,
     })).toBe(2);
@@ -309,7 +371,7 @@ describe('notification confirmation contract', () => {
 
     const current = {
       ...second,
-      inputEpoch: 1,
+      inputEpoch: 2,
       captured: { ...second.captured, installedHighSeq: 3 },
       boundary: 3,
     };
