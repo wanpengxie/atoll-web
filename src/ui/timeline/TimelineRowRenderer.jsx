@@ -6,6 +6,7 @@ import { argsOf, hasCanonicalBody } from '../../protocol/envelope.js';
 import { DECISIONS, isSystemWord, TYPES } from '../../protocol/vocab.js';
 import { messageTimeLabel } from '../../util/time.js';
 import { MarkdownContent } from '../MarkdownContent.jsx';
+import { useModalFocus } from '../primitives/useModalFocus.js';
 import { FoldableBody } from './FoldableBody.jsx';
 
 const RESULT_META = new Set(['status', 'reason', 'error_code', 'detail', 'cancelled', 'closed_by']);
@@ -550,8 +551,9 @@ function ApprovalCard({ turn, names, state, onResolve }) {
 }
 
 function hasProcessSummary(turn) {
-  return turnProcessObservations(turn).some(({ process }) => process.kind === 'tool'
-    || (process.kind === 'stage' && process.stage !== 'text'));
+  return progressRows(turn).some((row) => !row.stateOnly
+    && typeof row.body === 'string'
+    && row.body.trim());
 }
 function conversationObservations(turn) {
   return turnProcessObservations(turn).filter(({ process }) => process.kind === 'stage' && process.stage === 'text' && typeof process.text === 'string' && process.text.trim());
@@ -559,23 +561,205 @@ function conversationObservations(turn) {
 function progressRows(turn) {
   const rows = []; const tools = new Map();
   for (const { process, seq, envelope } of turnProcessObservations(turn)) {
-    if (process.kind === 'stage' && process.stage !== 'text') { rows.push({ key: `stage:${seq}`, seq, line: process.text || (process.stage === 'thinking' ? '思考中…' : process.stage || '处理中'), ts: envelope.ts }); continue; }
-    if (process.kind !== 'tool') continue;
-    const key = process.tool_call_id || String(seq);
-    if (process.phase === 'started') { const row = { key: `tool:${key}`, seq, line: `tool: ${process.tool || '工具'} …`, ts: envelope.ts }; rows.push(row); tools.set(key, row); }
-    else if (process.phase === 'ended') { const started = tools.get(key); if (started) { started.seq = seq; started.line = `tool: ${process.tool || '工具'} ${process.outcome === 'failed' ? '失败' : '完成'}`; } else rows.push({ key: `tool:${key}`, seq, line: `tool: ${process.tool || '工具'} ${process.outcome === 'failed' ? '失败' : '完成'}`, ts: envelope.ts }); }
+    // Keep the process projection typed and redact any nested sensitive field
+    // before selecting the two public fields this surface owns. In particular,
+    // input/output are never copied into a row or handed to the drawer.
+    const safeProcess = redactSensitive(process);
+    if (safeProcess.kind === 'stage' && safeProcess.stage !== 'text') {
+      const stageText = typeof safeProcess.text === 'string' ? safeProcess.text : '';
+      rows.push({
+        key: `stage:${seq}`,
+        seq,
+        line: stageText || (safeProcess.stage === 'thinking' ? '思考中…' : safeProcess.stage || '处理中'),
+        body: stageText,
+        ts: envelope.ts,
+        kind: 'stage',
+        stateOnly: !stageText.trim(),
+      });
+      continue;
+    }
+    if (safeProcess.kind !== 'tool') continue;
+    const key = safeProcess.tool_call_id || String(seq);
+    const detail = typeof safeProcess.detail === 'string' ? safeProcess.detail : '';
+    if (safeProcess.phase === 'started') {
+      const row = {
+        key: `tool:${key}`,
+        seq,
+        line: `tool: ${safeProcess.tool || '工具'} …`,
+        body: detail,
+        ts: envelope.ts,
+        kind: 'tool',
+        stateOnly: !detail.trim(),
+      };
+      rows.push(row);
+      tools.set(key, row);
+    } else if (safeProcess.phase === 'ended') {
+      const started = tools.get(key);
+      if (started) {
+        const body = detail.trim() ? detail : started.body;
+        started.seq = seq;
+        started.line = `tool: ${safeProcess.tool || '工具'} ${safeProcess.outcome === 'failed' ? '失败' : '完成'}`;
+        started.body = body;
+        started.ts = envelope.ts || started.ts;
+        started.stateOnly = !String(body || '').trim();
+      } else rows.push({
+        key: `tool:${key}`,
+        seq,
+        line: `tool: ${safeProcess.tool || '工具'} ${safeProcess.outcome === 'failed' ? '失败' : '完成'}`,
+        body: detail,
+        ts: envelope.ts,
+        kind: 'tool',
+        stateOnly: !detail.trim(),
+      });
+    }
   }
   return rows.sort((a, b) => a.seq - b.seq);
 }
 
-function ProgressTrail({ turn, title }) {
-  const [open, setOpen] = useState(false);
-  const rows = progressRows(turn); const running = !turn.terminal;
-  if (!rows.length && !running) return null;
-  if (!running) return <div className="progress-trail settled"><button type="button" className="progress-trail-toggle" aria-expanded={open} onClick={() => setOpen((value) => !value)}><span aria-hidden="true">⤷</span><span>{rows.length} 条过程记录</span><span aria-hidden="true">{open ? '⌃' : '⌄'}</span></button>{open && <ol className="progress-trail-list">{rows.map((row) => <li className="progress-row is-state" key={row.key}><span className="progress-row-line">{row.line}</span></li>)}</ol>}</div>;
-  return <div className={`progress-trail running agent-processing-status${open ? ' is-open' : ''}`} role="status" aria-live="polite"><button type="button" className="progress-running-header" aria-expanded={open} onClick={() => setOpen((value) => !value)}><strong><i aria-hidden="true" />处理中: {title || '任务'}</strong><span className="progress-running-time">PROCESSING</span></button>{rows.length > 0 && <ol className="progress-trail-list">{(open ? rows : rows.slice(-2)).map((row) => <li className="progress-row is-state" key={row.key}><span className="progress-row-line">{row.line}</span></li>)}</ol>}</div>;
+const PROCESS_CLOCK = new Intl.DateTimeFormat('zh-CN', {
+  hour12: false,
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+});
+
+function timestampLabel(ts) {
+  const value = new Date(ts);
+  return Number.isFinite(value.getTime()) ? PROCESS_CLOCK.format(value) : '';
 }
 
+function durationLabel(start, now) {
+  const started = new Date(start).getTime();
+  if (!Number.isFinite(started)) return '';
+  const seconds = Math.max(0, Math.floor((now - started) / 1000));
+  return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
+function RowMeta({ row, active = false, now = 0 }) {
+  const timestamp = timestampLabel(row.ts);
+  return <span className="progress-row-meta">
+    {active && <span className="progress-row-duration" aria-label={`已运行 ${durationLabel(row.ts, now)}`}><i aria-hidden="true" />{durationLabel(row.ts, now)}</span>}
+    {timestamp && <time dateTime={new Date(row.ts).toISOString()}>{timestamp}</time>}
+  </span>;
+}
+
+function ProcessDetailDrawer({ row, onClose }) {
+  const dialogRef = useRef(null);
+  const closeRef = useRef(null);
+  useModalFocus({ dialogRef, initialFocusRef: closeRef, onClose });
+  return <div className="progress-drawer-backdrop" data-modal-layer role="presentation" onMouseDown={(event) => {
+    if (event.target === event.currentTarget) onClose?.();
+  }}>
+    <aside ref={dialogRef} tabIndex={-1} className="progress-drawer" role="dialog" aria-modal="true" aria-label={`过程详情：${row.line}`}>
+      <header className="progress-drawer-header">
+        <div><strong>{row.line}</strong>{timestampLabel(row.ts) && <small>{timestampLabel(row.ts)}</small>}</div>
+        <button ref={closeRef} type="button" className="progress-drawer-close" aria-label="关闭详情" onClick={onClose}>×</button>
+      </header>
+      <div className="progress-drawer-body">
+        {row.body ? <MarkdownContent contentKey={`progress-detail:${row.key}:body`} text={row.body} /> : <p className="progress-empty">这次过程没有留下可展示的正文。</p>}
+      </div>
+    </aside>
+  </div>;
+}
+
+function TrailRow({ row, onOpen, active = false, now = 0, showTime = false }) {
+  const meta = showTime ? <RowMeta row={row} active={active} now={now} /> : null;
+  if (row.stateOnly) return <li className="progress-row is-state"><span className="progress-row-line">{row.line}</span>{meta}</li>;
+  return <li className="progress-row"><button type="button" onClick={() => onOpen?.(row)} title="查看完整内容"><span className="progress-row-line">{row.line}</span>{meta}</button></li>;
+}
+
+function PreviewRow({ row, active, now }) {
+  return <li className={`progress-row${row.stateOnly ? ' is-state' : ''}`}><span className="progress-row-line">{row.line}</span><RowMeta row={row} active={active} now={now} /></li>;
+}
+
+function ProgressTrail({ turn, title }) {
+  const [open, setOpen] = useState(false);
+  const [detailRow, setDetailRow] = useState(null);
+  const [now, setNow] = useState(() => Date.now());
+  const rows = progressRows(turn);
+  const running = !turn.terminal;
+
+  // A tool row keeps one stable public key while its started observation is
+  // replaced by the ended observation. If the drawer is already open, keep
+  // the same owner surface on the newest row (key/seq) so late detail becomes
+  // visible without a second host/store or a user reopen.
+  useEffect(() => {
+    if (!detailRow) return;
+    const next = rows.find((row) => row.key === detailRow.key);
+    if (!next || Number(next.seq) === Number(detailRow.seq)) return;
+    setDetailRow(next);
+  }, [detailRow, rows]);
+
+  useEffect(() => {
+    if (!running || rows.length === 0) return undefined;
+    setNow(Date.now());
+    const timer = globalThis.setInterval(() => setNow(Date.now()), 1000);
+    return () => globalThis.clearInterval(timer);
+  }, [running, rows.at(-1)?.key, rows.at(-1)?.seq]);
+
+  if (!rows.length && !running) return null;
+  const latestKey = rows.at(-1)?.key;
+  const started = rows[0]?.ts;
+  let content;
+
+  if (!running) {
+    content = (
+      <div className="progress-trail settled">
+        <button
+          type="button"
+          className="progress-trail-toggle"
+          aria-expanded={open}
+          onClick={() => setOpen((value) => !value)}
+        >
+          <span aria-hidden="true">⤷</span>
+          <span>{rows.length} 条过程记录</span>
+          <span aria-hidden="true">{open ? '⌃' : '⌄'}</span>
+        </button>
+        {open && (
+          <ol className="progress-trail-list">
+            {rows.map((row) => <TrailRow key={row.key} row={row} onOpen={setDetailRow} />)}
+          </ol>
+        )}
+      </div>
+    );
+  } else {
+    const visibleRows = open
+      ? rows.map((row) => (
+        <TrailRow
+          key={row.key}
+          row={row}
+          onOpen={setDetailRow}
+          active={row.key === latestKey}
+          now={now}
+          showTime
+        />
+      ))
+      : rows.slice(-2).map((row) => (
+        <PreviewRow key={row.key} row={row} active={row.key === latestKey} now={now} />
+      ));
+    const runningClassName = 'progress-trail running agent-processing-status' + (open ? ' is-open' : '');
+    content = (
+      <div className={runningClassName} role="status" aria-live="polite">
+        <button
+          type="button"
+          className="progress-running-header"
+          aria-label={(open ? '收起' : '展开') + '过程详情：' + (title || '任务')}
+          aria-expanded={open}
+          onClick={() => setOpen((value) => !value)}
+        >
+          <strong><i aria-hidden="true" />处理中: {title || '任务'}</strong>
+          <span className="progress-running-time">
+            <b>运行 {durationLabel(started, now)}</b>
+            {timestampLabel(started) && <time dateTime={new Date(started).toISOString()}>{timestampLabel(started)}</time>}
+          </span>
+        </button>
+        {rows.length > 0 && <ol className="progress-trail-list">{visibleRows}</ol>}
+      </div>
+    );
+  }
+
+  return <>{content}{detailRow && <ProcessDetailDrawer row={detailRow} onClose={() => setDetailRow(null)} />}</>;
+}
 function finalEchoObservation(observations, terminalText) {
   const answer = String(terminalText || '').trim(); const last = String(observations.at(-1)?.process?.text || '').trim();
   if (!answer || !last) return null;
