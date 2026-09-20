@@ -161,6 +161,75 @@ describe('current Composer command owner', () => {
     });
   });
 
+  it('projects request-allowed describe words into slash entries and typed payloads', () => {
+    const capabilityIndex = new Map([[AGENT.id, {
+      describe: { types: new Map([
+        ['agent.custom-control', {
+          description: '自定义控制',
+          inputSchema: {
+            type: 'object',
+            properties: { count: { type: 'integer' }, enabled: { type: 'boolean' } },
+            required: ['count'],
+          },
+        }],
+      ]) },
+    }]]);
+    const menu = model('/', { capabilityIndex });
+    expect(menu.commandMenu.rows.map((row) => row.command)).toContain('custom-control');
+
+    const ready = model('/custom-control {"count":3,"enabled":true}', { capabilityIndex });
+    expect(createComposerCommandRequest(ready)).toEqual({
+      channelId: 'c0',
+      text: '',
+      msgType: 'agent.custom-control',
+      audience: [AGENT.id],
+      targetLabel: AGENT.name,
+      payload: { count: 3, enabled: true },
+    });
+  });
+
+  it('fails closed for unknown, non-request, and schema-less describe words', () => {
+    const capabilityIndex = new Map([[AGENT.id, {
+      describe: { types: new Map([
+        ['agent.response-only', {
+          inputSchema: { type: 'object' },
+          raw: { allowed_kinds: ['response'] },
+        }],
+        ['agent.empty-kinds', {
+          inputSchema: { type: 'object' },
+          raw: { allowed_kinds: [] },
+        }],
+        ['agent.no-schema', { raw: { allowed_kinds: ['request'] } }],
+      ]) },
+    }]]);
+    const cases = ['/unknown {"ok":true}', '/response-only {}', '/empty-kinds {}', '/no-schema {}'];
+    for (const text of cases) {
+      const current = model(text, { capabilityIndex });
+      expect(current.commandMenu).toBeNull();
+      expect(() => createComposerCommandRequest(current)).toThrowError(
+        expect.objectContaining({ code: 'composer_command_unknown' }),
+      );
+    }
+  });
+
+  it('rejects non-typed dynamic payloads without evaluating the schema', () => {
+    const capabilityIndex = new Map([[AGENT.id, {
+      describe: { types: new Map([['agent.custom-control', {
+        inputSchema: {
+          type: 'object',
+          properties: { count: { type: 'integer' } },
+          required: ['count'],
+        },
+      }]]) },
+    }]]);
+    expect(() => createComposerCommandRequest(model('/custom-control {"count":"3"}', { capabilityIndex }))).toThrowError(
+      expect.objectContaining({ code: 'composer_command_payload_invalid' }),
+    );
+    expect(() => parseComposerCommand('/custom-control (() => true)', model('/', { capabilityIndex }).commandDefinitions)).toThrowError(
+      expect.objectContaining({ code: 'composer_command_payload_invalid' }),
+    );
+  });
+
   it('rejects command transport while reply or attachment ownership is active', () => {
     expect(() => createComposerCommandRequest(model('/restart', {
       draft: { text: '/restart', replyTarget: { sourceId: 'm1', senderId: AGENT.id } },

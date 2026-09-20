@@ -85,7 +85,7 @@ function commandOwner(config, model) {
     const effectiveModel = draftSnapshot
       ? { ...model, draft: normalizeComposerDraft({ ...model.draft, ...draftSnapshot }) }
       : model;
-    const slash = parseComposerCommand(effectiveModel.draft.text);
+    const slash = parseComposerCommand(effectiveModel.draft.text, effectiveModel.commandDefinitions);
     if (slash?.kind === 'command') return performSlashCommand(slash, { readingIntent, draft: effectiveModel.draft });
     if (!model.permissions.canDurablyAccept) throw new TypeError(model.permissions.reason || '当前频道不能保存发送');
     if (typeof submission.send !== 'function') throw new TypeError('发送 owner 未连接');
@@ -199,7 +199,7 @@ function commandOwner(config, model) {
       return operation;
     },
     executeCommand(options = {}) {
-      const parsed = parseComposerCommand(options.draft?.text ?? model.draft.text);
+      const parsed = parseComposerCommand(options.draft?.text ?? model.draft.text, model.commandDefinitions);
       if (!parsed || parsed.kind !== 'command') throw new TypeError('当前草稿不是可执行命令');
       const key = `${model.channelId}:${options.draft?.editorRevision ?? model.draft.editorRevision}`;
       const existing = config.sendIntentRef.current.get(key);

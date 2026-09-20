@@ -2,6 +2,8 @@ import { SYSTEM_ACTOR_ID, TYPES } from '../../protocol/vocab.js';
 
 const SENDABLE_KINDS = new Set(['agent', 'human']);
 const RETRYABLE_STATES = new Set(['rejected', 'uncertain']);
+const AGENT_COMMAND_PREFIX = 'agent.';
+const COMMAND_NAME_PATTERN = /^[a-z][a-z0-9._-]*$/u;
 const DELIVERY_SOURCE_LABELS = Object.freeze({
   reply: '回复',
   mention: '由 @ 指定',
@@ -27,6 +29,161 @@ export const COMPOSER_SLASH_COMMANDS = Object.freeze([
 ]);
 const SLASH_COMMAND_BY_NAME = new Map(COMPOSER_SLASH_COMMANDS.map((row) => [row.command, row]));
 
+function isRecord(value) {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function allowedKindsOf(word) {
+  if (!word || typeof word !== 'object') return undefined;
+  if (Object.prototype.hasOwnProperty.call(word, 'allowedKinds')) return word.allowedKinds;
+  const raw = word.raw;
+  if (!raw || typeof raw !== 'object') return undefined;
+  if (Object.prototype.hasOwnProperty.call(raw, 'allowedKinds')) return raw.allowedKinds;
+  if (Object.prototype.hasOwnProperty.call(raw, 'allowed_kinds')) return raw.allowed_kinds;
+  return undefined;
+}
+
+function requestAllowed(word) {
+  const kinds = allowedKindsOf(word);
+  // The canonical actor.describe `words` map contains request words by
+  // default. An explicit malformed or non-request declaration fails closed.
+  if (kinds === undefined) return true;
+  if (!Array.isArray(kinds)) return false;
+  return kinds.includes('request');
+}
+
+function inputSchemaOf(word) {
+  return isRecord(word?.inputSchema) ? word.inputSchema : null;
+}
+
+function dynamicCommandName(type) {
+  if (typeof type !== 'string' || !type.startsWith(AGENT_COMMAND_PREFIX)) return '';
+  const command = type.slice(AGENT_COMMAND_PREFIX.length);
+  return COMMAND_NAME_PATTERN.test(command) ? command : '';
+}
+
+function dynamicSlashCommands(capability) {
+  const types = capability?.describe?.types;
+  if (typeof types?.entries !== 'function') return [];
+  const rows = [];
+  for (const [type, word] of types.entries()) {
+    const command = dynamicCommandName(type);
+    const schema = inputSchemaOf(word);
+    if (!command || !schema || !requestAllowed(word) || SLASH_COMMAND_BY_NAME.has(command)) continue;
+    const description = text(word?.description);
+    rows.push(Object.freeze({
+      command,
+      type,
+      scope: 'agent',
+      label: description || command,
+      description: description || `向目标 Agent 发送 ${type}`,
+      usage: `/${command} <JSON payload>`,
+      minArgs: 0,
+      maxArgs: 0,
+      dynamic: true,
+      inputSchema: schema,
+    }));
+  }
+  return rows.sort((left, right) => left.command.localeCompare(right.command));
+}
+
+function commandRegistry(capability) {
+  return Object.freeze([...COMPOSER_SLASH_COMMANDS, ...dynamicSlashCommands(capability)]);
+}
+
+function schemaError(detail) {
+  return { code: 'composer_command_payload_invalid', detail };
+}
+
+function sameJSON(left, right) {
+  if (Object.is(left, right)) return true;
+  if (!isRecord(left) && !Array.isArray(left)) return false;
+  try { return JSON.stringify(left) === JSON.stringify(right); } catch { return false; }
+}
+
+function validateSchemaValue(value, schema, path = 'payload') {
+  if (!isRecord(schema)) return schemaError(`${path} 缺少有效 inputSchema`);
+  if (Array.isArray(schema.oneOf) && !schema.oneOf.some((branch) => !validateSchemaValue(value, branch, path))) {
+    return schemaError(`${path} 不匹配 inputSchema.oneOf`);
+  }
+  if (Array.isArray(schema.anyOf) && !schema.anyOf.some((branch) => !validateSchemaValue(value, branch, path))) {
+    return schemaError(`${path} 不匹配 inputSchema.anyOf`);
+  }
+  if (Array.isArray(schema.allOf)) {
+    for (const branch of schema.allOf) {
+      const failure = validateSchemaValue(value, branch, path);
+      if (failure) return failure;
+    }
+  }
+  if (Array.isArray(schema.enum) && !schema.enum.some((candidate) => sameJSON(candidate, value))) {
+    return schemaError(`${path} 不在 inputSchema.enum 中`);
+  }
+  if (Object.prototype.hasOwnProperty.call(schema, 'const') && !sameJSON(schema.const, value)) {
+    return schemaError(`${path} 不符合 inputSchema.const`);
+  }
+
+  const type = typeof schema.type === 'string' ? schema.type : '';
+  if (type === 'object') {
+    if (!isRecord(value)) return schemaError(`${path} 必须是对象`);
+    if (Array.isArray(schema.required)) {
+      for (const key of schema.required) {
+        if (typeof key !== 'string' || !Object.prototype.hasOwnProperty.call(value, key)) {
+          return schemaError(`${path}.${String(key)} 是必填字段`);
+        }
+      }
+    } else if (Object.prototype.hasOwnProperty.call(schema, 'required')) {
+      return schemaError(`${path}.required 不是有效字段列表`);
+    }
+    const properties = schema.properties === undefined ? {} : schema.properties;
+    if (!isRecord(properties)) return schemaError(`${path}.properties 不是有效对象`);
+    for (const [key, childSchema] of Object.entries(properties)) {
+      if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+      const failure = validateSchemaValue(value[key], childSchema, `${path}.${key}`);
+      if (failure) return failure;
+    }
+    if (schema.additionalProperties === false) {
+      const known = new Set(Object.keys(properties));
+      const extra = Object.keys(value).find((key) => !known.has(key));
+      if (extra) return schemaError(`${path}.${extra} 不是 inputSchema 声明字段`);
+    }
+  } else if (type === 'array') {
+    if (!Array.isArray(value)) return schemaError(`${path} 必须是数组`);
+    if (schema.items !== undefined) {
+      for (let index = 0; index < value.length; index += 1) {
+        const failure = validateSchemaValue(value[index], schema.items, `${path}[${index}]`);
+        if (failure) return failure;
+      }
+    }
+  } else if (type === 'string') {
+    if (typeof value !== 'string') return schemaError(`${path} 必须是字符串`);
+  } else if (type === 'integer') {
+    if (!Number.isSafeInteger(value)) return schemaError(`${path} 必须是整数`);
+  } else if (type === 'number') {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return schemaError(`${path} 必须是数字`);
+  } else if (type === 'boolean') {
+    if (typeof value !== 'boolean') return schemaError(`${path} 必须是布尔值`);
+  } else if (type === 'null') {
+    if (value !== null) return schemaError(`${path} 必须为 null`);
+  } else if (type && !['object', 'array', 'string', 'integer', 'number', 'boolean', 'null'].includes(type)) {
+    return schemaError(`${path} 使用了不支持的 inputSchema 类型 ${type}`);
+  }
+  if (typeof value === 'string') {
+    if (Number.isInteger(schema.minLength) && value.length < schema.minLength) return schemaError(`${path} 短于 inputSchema.minLength`);
+    if (Number.isInteger(schema.maxLength) && value.length > schema.maxLength) return schemaError(`${path} 长于 inputSchema.maxLength`);
+  }
+  if (typeof value === 'number') {
+    if (Number.isFinite(schema.minimum) && value < schema.minimum) return schemaError(`${path} 小于 inputSchema.minimum`);
+    if (Number.isFinite(schema.maximum) && value > schema.maximum) return schemaError(`${path} 大于 inputSchema.maximum`);
+  }
+  return null;
+}
+
+function validateCommandPayload(definition, payload) {
+  if (!definition?.dynamic || !isRecord(definition.inputSchema)) return null;
+  if (!isRecord(payload)) return schemaError('命令 payload 必须是对象');
+  return validateSchemaValue(payload, definition.inputSchema);
+}
+
 function text(value) {
   return typeof value === 'string' ? value : '';
 }
@@ -43,15 +200,28 @@ function commandError(message, code) {
 
 // A leading slash is never silently downgraded to an ordinary message.
 // `//literal` is the explicit escape and is sent as `/literal`.
-export function parseComposerCommand(value) {
+export function parseComposerCommand(value, definitions = COMPOSER_SLASH_COMMANDS) {
   const source = text(value).trim();
   if (!source.startsWith('/')) return null;
   if (source.startsWith('//')) return Object.freeze({ kind: 'escaped', text: source.slice(1) });
   const [verb, ...args] = source.split(/\s+/u);
   const command = verb.slice(1);
-  const definition = SLASH_COMMAND_BY_NAME.get(command);
+  const definition = new Map(definitions.map((row) => [row.command, row])).get(command);
   if (!definition) {
     throw commandError(`未知命令 ${verb || '/'}；普通正文以 / 开头时请写成 /${source}`, 'composer_command_unknown');
+  }
+  if (definition.dynamic) {
+    const payloadText = source.slice(verb.length).trim();
+    let payload = {};
+    if (payloadText) {
+      try {
+        payload = JSON.parse(payloadText);
+      } catch {
+        throw commandError(`命令 /${command} 的 payload 必须是 JSON 对象`, 'composer_command_payload_invalid');
+      }
+    }
+    if (!isRecord(payload)) throw commandError(`命令 /${command} 的 payload 必须是 JSON 对象`, 'composer_command_payload_invalid');
+    return Object.freeze({ kind: 'command', ...definition, payload: Object.freeze(payload) });
   }
   if (args.length < definition.minArgs || args.length > definition.maxArgs) {
     throw commandError(`用法：${definition.usage}`, 'composer_command_usage');
@@ -268,14 +438,18 @@ function commandAvailability(definition, capability, targetAgent, permissions) {
   if (definition.scope === 'system') return Object.freeze({ state: 'supported', enabled: true, reason: '' });
   if (!targetAgent) return Object.freeze({ state: 'no-target', enabled: false, reason: '请先选择目标 Agent' });
   if (definition.scope === 'system-target') return Object.freeze({ state: 'supported', enabled: true, reason: '' });
+  const word = capability?.describe?.types?.get?.(definition.type);
+  if (word && !requestAllowed(word)) {
+    return Object.freeze({ state: 'unsupported', enabled: false, reason: `Agent 不支持请求 ${definition.type}` });
+  }
   return controlAvailability(capability, definition.type, targetAgent, permissions);
 }
 
-function slashCommandMenu(value, controls) {
+function slashCommandMenu(value, controls, definitions) {
   const match = /^\/([^\s/]*)$/u.exec(text(value));
   if (!match) return null;
   const query = match[1].toLocaleLowerCase();
-  const matching = COMPOSER_SLASH_COMMANDS.filter((row) => row.menu !== false && (
+  const matching = definitions.filter((row) => row.menu !== false && (
     `${row.command} ${row.label}`.toLocaleLowerCase().includes(query)
   ));
   const rows = matching.filter((row) => controls[row.command]?.enabled).map((row) => Object.freeze({
@@ -350,7 +524,8 @@ export function buildComposerModel({
     : agentSelection?.pending || null;
   const editOwner = edit || normalizedDraft.edit || null;
   const targetCapability = targetAgent ? capabilityIndex.get(targetAgent.id) : null;
-  const commandControls = Object.freeze(Object.fromEntries(COMPOSER_SLASH_COMMANDS.map((definition) => [
+  const commandDefinitions = commandRegistry(targetCapability);
+  const commandControls = Object.freeze(Object.fromEntries(commandDefinitions.map((definition) => [
     definition.command,
     commandAvailability(definition, targetCapability, targetAgent, permissions),
   ])));
@@ -383,7 +558,8 @@ export function buildComposerModel({
     parameters: parameterView,
     parameterPending,
     controls,
-    commandMenu: editOwner ? null : slashCommandMenu(normalizedDraft.text, commandControls),
+    commandDefinitions,
+    commandMenu: editOwner ? null : slashCommandMenu(normalizedDraft.text, commandControls, commandDefinitions),
     pending: Object.freeze(channelPending),
     failures: Object.freeze(failures),
     failure: failures.at(-1) || null,
@@ -407,7 +583,7 @@ function ensureSendableDelivery(delivery) {
 export function createMessageRequest(model, persistedDraft) {
   ensureSendableDelivery(model.delivery);
   if (!model.draft.text.trim() && !model.draft.attachments.length) throw new TypeError('消息内容不能为空');
-  const slash = parseComposerCommand(model.draft.text);
+  const slash = parseComposerCommand(model.draft.text, model.commandDefinitions);
   if (slash?.kind === 'command') {
     throw commandError(`命令 /${slash.command} 必须通过命令端口发送`, 'composer_command_route_required');
   }
@@ -434,27 +610,37 @@ export function createMessageRequest(model, persistedDraft) {
   });
 }
 
-export function createComposerCommandRequest(model, parsed = parseComposerCommand(model?.draft?.text)) {
-  if (!parsed || parsed.kind !== 'command') throw commandError('没有可执行的 Composer 命令', 'composer_command_missing');
+export function createComposerCommandRequest(model, parsed) {
+  const definitions = model?.commandDefinitions || COMPOSER_SLASH_COMMANDS;
+  const command = parsed === undefined
+    ? parseComposerCommand(model?.draft?.text, definitions)
+    : parsed;
+  if (!command || command.kind !== 'command') throw commandError('没有可执行的 Composer 命令', 'composer_command_missing');
+  const definition = definitions.find((row) => row.command === command?.command);
+  if (!definition || command.type !== definition.type || command.scope !== definition.scope) {
+    throw commandError(`命令 /${command?.command || ''} 当前未被目标 Agent 声明`, 'composer_command_unknown');
+  }
   if (model.draft.replyTarget) throw commandError('回复模式下不能使用斜杠命令，请先取消回复', 'composer_command_reply');
   if (model.draft.attachments.length) throw commandError('斜杠命令不能携带附件，请先移除附件', 'composer_command_attachments');
-  const availability = model.controls.commands?.[parsed.command];
+  const payloadFailure = validateCommandPayload(definition, command.payload);
+  if (payloadFailure) throw commandError(payloadFailure.detail, payloadFailure.code);
+  const availability = model.controls.commands?.[command.command];
   if (!availability?.enabled) {
-    throw commandError(availability?.reason || `命令 /${parsed.command} 当前不可用`, `composer_command_${availability?.state || 'unavailable'}`);
+    throw commandError(availability?.reason || `命令 /${command.command} 当前不可用`, `composer_command_${availability?.state || 'unavailable'}`);
   }
-  if (parsed.scope === 'system' || parsed.scope === 'system-target') {
+  if (command.scope === 'system' || command.scope === 'system-target') {
     return Object.freeze({
       channelId: model.channelId,
       text: '',
-      msgType: parsed.type,
+      msgType: command.type,
       audience: [SYSTEM_ACTOR_ID],
       targetLabel: SYSTEM_ACTOR_ID,
-      payload: parsed.scope === 'system-target'
-        ? Object.freeze({ ...parsed.payload, member: model.targetAgent.id })
-        : parsed.payload,
+      payload: command.scope === 'system-target'
+        ? Object.freeze({ ...command.payload, member: model.targetAgent.id })
+        : command.payload,
     });
   }
-  return createControlRequest(model, parsed.type, parsed.payload, model.targetAgent.id);
+  return createControlRequest(model, command.type, command.payload, model.targetAgent.id);
 }
 
 export function createControlRequest(model, type, payload, actorId = '') {
