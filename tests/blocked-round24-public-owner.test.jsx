@@ -548,6 +548,18 @@ describe('A-D round 24 public-owner evidence', () => {
     await waitFor(() => expect(first.result.current.controlStates).toEqual({}));
     await act(async () => { await expect(first.result.current.cancel('c0', 'request-2')).rejects.toThrow('连接关闭'); });
     expect(first.result.current.controlStates['c0:request-2:cancel'].error).toEqual({ code: 'closed', detail: '连接关闭' });
+    const persistedFailure = harness.store.putMany.mock.calls
+      .flatMap(([, rows]) => rows)
+      .find((row) => row.controlKey === 'c0:request-2:cancel' && row.state === 'uncertain');
+    expect(persistedFailure).toMatchObject({
+      kind: 'control',
+      state: 'uncertain',
+      error: { code: 'closed', detail: '连接关闭' },
+    });
+    expect(persistedFailure.error).not.toBeInstanceOf(Error);
+    expect(JSON.parse(JSON.stringify(persistedFailure)).error).toEqual({
+      code: 'closed', detail: '连接关闭',
+    });
     first.unmount();
     const restored = renderHook(() => useComposerSubmissionRuntime(harness));
     await waitFor(() => expect(restored.result.current.controlStates['c0:request-2:cancel']).toMatchObject({
