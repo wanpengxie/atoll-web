@@ -244,7 +244,7 @@ describe('A-D round 19 public owner evidence: governance convergence', () => {
     expect(screen.getByText('成员已就绪')).toBeTruthy();
   });
 
-  it.fails('[AD-195] preserves compact closure lifecycle without declaring missing business result ready', () => {
+  it('[AD-195] preserves compact closure lifecycle without declaring missing business result ready', () => {
     // 用户能力：compact closure 保留 ledger lifecycle，但缺业务结果不能 ready。
     // 不变量：unavailable result 不能冒充完成；公开 owner：GovernanceFeature。
     governance({ operation: { state: 'submitted', message: '账本已完成，结果待确认' } });
@@ -261,7 +261,7 @@ describe('A-D round 19 public owner evidence: governance convergence', () => {
     await waitFor(() => expect(screen.getByRole('status').textContent).toContain('终态详情不可用，请刷新或重新进入频道'));
   });
 
-  it.fails('[AD-197] exposes missing compact result as a stable unavailable terminal state', () => {
+  it('[AD-197] exposes missing compact result as a stable unavailable terminal state', () => {
     // 用户能力：compact result 缺失显示稳定 unavailable 终态。
     // 不变量：缺失 result 不能进入 ready；公开 owner：GovernanceFeature。
     governance({ operation: { state: 'completed', message: '已完成' } });

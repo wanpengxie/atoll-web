@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { actorDisplayName } from '../../../model/actor-display.js';
 import { isManageableDeclaration, isVisibleActor } from '../../../model/actor-visibility.js';
+import { TERMINAL_RESULT_UNAVAILABLE } from '../../../model/terminal-result.js';
 import { InlineConfirmation } from '../../primitives/InlineConfirmation.jsx';
 import { PanelCard } from '../../primitives/PanelCard.jsx';
 import { SelectMenu } from '../../primitives/SelectMenu.jsx';
@@ -44,9 +45,35 @@ function useCommand(commands, scope) {
   return { busy: operation?.state === 'pending', error, operation, submit };
 }
 
-function OperationState({ operation }) {
+const TERMINAL_OPERATION_STATES = new Set(['submitted', 'completed', 'uncertain']);
+
+function terminalResultPhase(operation, terminal) {
+  if (!terminal || !operation) return '';
+  if (operation.resultPhase === 'unavailable' || operation.resultUnavailable === true) return 'unavailable';
+  if (operation.resultPhase === 'available') return 'available';
+  // A terminal projection without a result phase is the compact receipt shape:
+  // its ledger state is observable, but no business-result body is available.
+  // Keep this classification at the public terminal boundary; local command
+  // operations do not use this path and remain ordinary submitted/failed UI.
+  const hasResultBody = operation.result != null || operation.resultBody != null;
+  if (TERMINAL_OPERATION_STATES.has(operation.state) && !hasResultBody) return 'unavailable';
+  return '';
+}
+
+function OperationState({ operation, terminal = false, onRefresh, onReenter }) {
   if (!operation) return null;
-  return <p className={`operation-state state-${operation.state || 'pending'}`} role="status">{operation.message || '命令已提交'}</p>;
+  const resultPhase = terminalResultPhase(operation, terminal);
+  const unavailable = resultPhase === 'unavailable';
+  const state = unavailable ? 'unavailable' : operation.state || 'pending';
+  return <>
+    <p className={`operation-state state-${state}`} role="status">
+      {unavailable ? TERMINAL_RESULT_UNAVAILABLE : operation.message || '命令已提交'}
+    </p>
+    {unavailable && (onRefresh || onReenter) && <div className="operation-recovery" aria-label="终态恢复">
+      {onRefresh && <button type="button" className="secondary-button" onClick={onRefresh}>刷新结果</button>}
+      {onReenter && <button type="button" className="text-button" onClick={onReenter}>重新进入频道</button>}
+    </div>}
+  </>;
 }
 
 function declarationKind(row) {
@@ -438,8 +465,14 @@ export function ChannelAdministrationPanel({ channel, port = {}, initialTab = 'm
   const resolvedInitialTab = ['overview', 'info'].includes(initialTab) ? 'overview' : ['members', 'danger'].includes(initialTab) ? initialTab : 'members';
   const [tab, setTab] = useState(resolvedInitialTab);
   useEffect(() => setTab(resolvedInitialTab), [resolvedInitialTab]);
+  const refreshOperation = typeof port.commands?.refresh === 'function'
+    ? () => port.commands.refresh('operation')
+    : undefined;
+  const reenterChannel = typeof port.commands?.enterChannel === 'function' && channel?.id
+    ? () => port.commands.enterChannel({ channelId: channel.id, view: 'conversation' })
+    : undefined;
   return <SidePanel className="channel-governance" ariaLabel="频道治理" eyebrow="CHANNEL CONTEXT" title="频道详情" tabs={[{ id: 'members', label: '成员' }, { id: 'overview', label: '概览' }, { id: 'danger', label: '危险操作' }]} activeTab={tab} onTabChange={setTab} onClose={onClose}>
-    <OperationState operation={port.operation} />
+    <OperationState operation={port.operation} terminal onRefresh={refreshOperation} onReenter={reenterChannel} />
     <div hidden={tab !== 'overview'}><ChannelOverview channel={channel} port={port} /></div>
     <div hidden={tab !== 'members'}><ChannelMembers channel={channel} port={port} /></div>
     <div hidden={tab !== 'danger'}><ChannelDanger channel={channel} port={port} /></div>

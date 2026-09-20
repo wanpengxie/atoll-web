@@ -305,7 +305,7 @@ describe('A-D round 18 public owner evidence: create failure and governance', ()
     expect(refresh).toHaveBeenCalledWith('members');
   });
 
-  it.fails('[AD-195] preserves compact closure lifecycle without declaring missing business result ready', () => {
+  it('[AD-195] preserves compact closure lifecycle without declaring missing business result ready', () => {
     // 用户能力：compact closure 保留 lifecycle，但缺业务结果不 ready。
     // 不变量：缺详情不能伪造 channel/member result；公共 owner：GovernanceFeature。
     governance({ operation: { state: 'submitted', message: '命令已进入提交队列' } });
