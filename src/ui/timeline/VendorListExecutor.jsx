@@ -125,6 +125,30 @@ const POSITION_RESTORE_MAX_MOUNT_ATTEMPTS = 120;
 const POSITION_RESTORE_STABLE_FRAMES = 6;
 const POSITION_RESTORE_TOLERANCE_PX = 2;
 
+function currentBottomIntent(session) {
+  const intent = session?.bottomIntent;
+  return intent?.id && Number(intent.inputEpoch) === Number(session?.inputEpoch)
+    ? intent
+    : null;
+}
+
+function isComposerSendIntent(intent) {
+  return String(intent?.id || '').startsWith('composer:send-start:');
+}
+
+// A send-start intent is a join between the explicit user action and the
+// committed destination rows. A role-only height callback must not stand in
+// for that join, and an unaccepted intent (with no durable target IDs yet)
+// must not consume itself against the old tail.
+function composerSendTargetsCommitted(intent, rows = []) {
+  if (!isComposerSendIntent(intent)) return true;
+  const targets = Array.isArray(intent.targetMessageIDs)
+    ? intent.targetMessageIDs.map(String).filter(Boolean)
+    : [];
+  return targets.length > 0
+    && targets.every((targetID) => rows.some((row) => String(row?.id || '') === targetID));
+}
+
 function observationIdentity(owner, data) {
   const session = owner?.getSession?.() || {};
   return Object.freeze({
@@ -236,6 +260,11 @@ export function VendorListExecutor({
   // never consume or execute a later fold command from the same activation.
   const contentAnchorFrameRef = useRef(null);
   const contentAnchorRetryRef = useRef(null);
+  // A Virtuoso height callback can precede the root's published geometry by
+  // one microtask. Keep only the latest bounded recheck; the root/session
+  // identity fence prevents a late callback from writing after takeover or
+  // remount.
+  const followingHeightRetryRef = useRef(null);
   // Virtuoso may publish its first measured extent after the initial
   // position-row command. Keep that one typed command alive until the actual
   // painted row reaches its semantic offset; otherwise the first layout
@@ -424,9 +453,14 @@ export function VendorListExecutor({
   const enforceFollowingTail = useCallback((source = 'layout') => {
     const root = rootRef.current;
     const current = readingRef.current.getSession();
+    const intent = currentBottomIntent(current);
     const input = navigationPolicy.currentInput();
     if (!root
       || current.mode !== READING_MODE.following
+      // A composer send owns the first committed destination join. Until its
+      // typed intent is consumed, a role-only/list-height callback is not an
+      // independent tail authorization.
+      || (intent && isComposerSendIntent(intent))
       // A newer-direction native gesture that has already reached the physical
       // tail is the same reading intent as following. Keep that intent alive if
       // an append lands before the coordinator's quiet deadline; older input
@@ -446,6 +480,54 @@ export function VendorListExecutor({
     if (executed) scheduleObserve(source, true);
     return executed;
   }, [navigationPolicy, scheduleObserve]);
+
+  const issueBottomIntent = useCallback(() => {
+    const root = rootRef.current;
+    const owner = readingRef.current;
+    const data = snapshotRef.current;
+    const current = owner?.getSession?.();
+    const intent = currentBottomIntent(current);
+    if (!root || !current || current.mode !== READING_MODE.following || !data?.rows?.length || !intent
+      || (isComposerSendIntent(intent) && !composerSendTargetsCommitted(intent, data.rows))
+      || Number(root.clientHeight) <= 0 || Number(root.scrollHeight) <= 0) return false;
+    const key = `tail:${current.activationID}:${intent.id}`;
+    if (consumedCommandRef.current === key) return false;
+    const executed = executeReadingDOMCommand(
+      Object.freeze({ type: 'scroll-tail' }),
+      { virtuoso: virtuosoRef.current, root },
+    );
+    if (!executed) return false;
+    consumedCommandRef.current = key;
+    owner.consumeBottomIntent(intent);
+    scheduleObserve('layout', true);
+    return true;
+  }, [scheduleObserve]);
+
+  const scheduleFollowingHeightRetry = useCallback(() => {
+    const owner = readingRef.current;
+    const current = owner?.getSession?.();
+    const root = rootRef.current;
+    if (!current || !root || typeof globalThis.queueMicrotask !== 'function') return;
+    const token = Object.freeze({
+      activationID: String(current.activationID || owner.activationID || ''),
+      inputEpoch: Number(current.inputEpoch || 0),
+      intentRevision: Number(current.intentRevision || 0),
+      root,
+    });
+    followingHeightRetryRef.current = token;
+    globalThis.queueMicrotask(() => {
+      if (followingHeightRetryRef.current !== token) return;
+      followingHeightRetryRef.current = null;
+      const liveOwner = readingRef.current;
+      const live = liveOwner?.getSession?.();
+      if (!live || rootRef.current !== token.root
+        || String(live.activationID || liveOwner.activationID || '') !== token.activationID
+        || Number(live.inputEpoch || 0) !== token.inputEpoch
+        || Number(live.intentRevision || 0) !== token.intentRevision) return;
+      if (issueBottomIntent()) return;
+      enforceFollowingTail('layout-commit');
+    });
+  }, [enforceFollowingTail, issueBottomIntent]);
 
   const restoreContentAnchor = useCallback((source = 'layout') => {
     const root = rootRef.current;
@@ -1000,15 +1082,7 @@ export function VendorListExecutor({
     restoreContentAnchor('layout');
     const intent = current.bottomIntent;
     if (intent.id && intent.inputEpoch === current.inputEpoch) {
-      const key = `tail:${current.activationID}:${intent.id}`;
-      if (consumedCommandRef.current !== key && executeReadingDOMCommand(
-        Object.freeze({ type: 'scroll-tail' }),
-        { virtuoso: virtuosoRef.current, root },
-      )) {
-        consumedCommandRef.current = key;
-        reading.consumeBottomIntent(intent);
-        scheduleObserve('layout', true);
-      }
+      issueBottomIntent();
       return;
     }
     if (current.mode === READING_MODE.following) {
@@ -1089,7 +1163,7 @@ export function VendorListExecutor({
       consumedCommandRef.current = key;
       scheduleObserve('layout');
     }
-  }, [enforceFollowingTail, navigationPolicy, reading, restoreContentAnchor, restoreReadingPosition, scheduleObserve, snapshot]);
+  }, [enforceFollowingTail, issueBottomIntent, navigationPolicy, reading, restoreContentAnchor, restoreReadingPosition, scheduleObserve, snapshot]);
 
   useLayoutEffect(() => {
     if (focusOnMount && rootNode) executeReadingDOMCommand({ type: 'claim-focus' }, { root: rootNode });
@@ -1106,6 +1180,7 @@ export function VendorListExecutor({
     if (positionRestoreRef.current?.frameID) {
       globalThis.cancelAnimationFrame?.(positionRestoreRef.current.frameID);
     }
+    followingHeightRetryRef.current = null;
     const owner = readingRef.current;
     const lease = owner?.getSession?.().positionRowLease;
     if (lease) owner.revokeHistoryPositionLease?.(lease, { clearHistoryAnchor: true });
@@ -1194,7 +1269,9 @@ export function VendorListExecutor({
     totalListHeightChanged={() => {
       geometryRevisionRef.current += 1;
       restoreContentAnchor('layout');
+      issueBottomIntent();
       enforceFollowingTail('layout');
+      scheduleFollowingHeightRetry();
       scheduleObserve('layout');
     }}
     atBottomStateChange={() => {
