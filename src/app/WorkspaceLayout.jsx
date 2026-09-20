@@ -90,7 +90,7 @@ function WorkspaceRail({ session, navigation, onClose, closeButtonRef, onSelect 
         {navigation.openActivity && <button type="button" onClick={() => { onClose?.('none'); navigation.openActivity(); }} aria-label="打开活动中心" title="活动中心"><span aria-hidden="true">◷</span> 活动</button>}
       </div>
       <p className="rail-caption">我的频道 <span>{memberChannels.length}</span></p>
-      {navigation.openChannelAdministration && <button type="button" className="rail-create-button" onClick={() => { onClose?.('none'); navigation.openChannelAdministration(); }} aria-label="新建频道" title="在当前频道下新建子频道"><span aria-hidden="true">＋</span> 新建频道</button>}
+      {navigation.openChannelAdministration && <button type="button" className="rail-create-button" onClick={() => { onClose?.('none'); navigation.openChannelAdministration('overview'); }} aria-label="新建频道" title="在当前频道下新建子频道"><span aria-hidden="true">＋</span> 新建频道</button>}
       {renderRows(memberChannels, '还没有加入频道')}
       <p className="rail-caption space-caption">空间 <span>{otherChannels.length}</span></p>
       {renderRows(otherChannels, '没有可发现频道')}

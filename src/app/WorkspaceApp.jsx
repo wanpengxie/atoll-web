@@ -1354,7 +1354,11 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       openRoster: memberVisible ? () => setPanel('roster') : undefined,
       openSearch: () => setPanel('search'),
       openActivity: () => setPanel('activity'),
-      openChannelAdministration: memberVisible ? () => setPanel('channel-administration') : undefined,
+      openChannelAdministration: memberVisible
+        ? (initialTab = 'members') => setPanel(initialTab === 'overview'
+          ? { kind: 'channel-administration', initialTab: 'overview' }
+          : 'channel-administration')
+        : undefined,
       openSpaceAdministration: () => setPanel('space-administration'),
     }}
     notices={{

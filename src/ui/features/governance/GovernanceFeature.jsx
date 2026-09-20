@@ -124,8 +124,10 @@ function ChannelDanger({ channel, port }) {
   </PanelCard>;
 }
 
-export function ChannelAdministrationPanel({ channel, port = {}, onClose }) {
-  const [tab, setTab] = useState('members');
+export function ChannelAdministrationPanel({ channel, port = {}, initialTab = 'members', onClose }) {
+  const resolvedInitialTab = ['overview', 'members', 'danger'].includes(initialTab) ? initialTab : 'members';
+  const [tab, setTab] = useState(resolvedInitialTab);
+  useEffect(() => setTab(resolvedInitialTab), [resolvedInitialTab]);
   return <SidePanel className="channel-governance" ariaLabel="频道治理" eyebrow="CHANNEL CONTROL" title="频道治理" tabs={[{ id: 'overview', label: '概览' }, { id: 'members', label: '成员' }, { id: 'danger', label: '危险操作' }]} activeTab={tab} onTabChange={setTab} onClose={onClose}>
     <OperationState operation={port.operation} />
     <div hidden={tab !== 'overview'}><ChannelOverview channel={channel} port={port} /></div>

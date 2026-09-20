@@ -181,7 +181,11 @@ export function WorkspaceRightPanel({ panel, channel, files = {}, tasks = {}, ro
     content = <TaskDetailPanel port={tasks} onClose={onClose} />;
   }
   else if (kind === WORKSPACE_FEATURE_PANEL.automation) content = <ChannelAutomationPanel channel={channel} port={automation} onClose={onClose} />;
-  else if (kind === WORKSPACE_FEATURE_PANEL.channelAdministration) content = <ChannelAdministrationPanel channel={channel} port={governance.channel || governance} onClose={onClose} />;
+  else if (kind === WORKSPACE_FEATURE_PANEL.channelAdministration) {
+    const initialTab = typeof panel === 'object' ? panel.initialTab : undefined;
+    focusKey = `${kind}:${initialTab || 'members'}`;
+    content = <ChannelAdministrationPanel channel={channel} port={governance.channel || governance} initialTab={initialTab} onClose={onClose} />;
+  }
   else if (kind === WORKSPACE_FEATURE_PANEL.spaceAdministration) content = <SpaceAdministrationPanel channel={channel} port={governance.space || governance} onClose={onClose} />;
   else if (kind === WORKSPACE_FEATURE_PANEL.activity) content = <ActivityFeature port={activity} onClose={onClose} />;
   if (!content) return null;

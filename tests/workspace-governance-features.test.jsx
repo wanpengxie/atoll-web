@@ -7,6 +7,20 @@ import { ChannelAdministrationPanel, ChannelAutomationPanel } from '../src/ui/fe
 afterEach(cleanup);
 
 describe('workspace governance feature ports', () => {
+  it('opens the create entry on the overview tab', () => {
+    render(<ChannelAdministrationPanel
+      channel={{ id: 'c1' }}
+      initialTab="overview"
+      port={{ commands: {}, children: [] }}
+      onClose={() => {}}
+    />);
+
+    expect(screen.getByRole('tab', { name: '概览' }).getAttribute('aria-selected')).toBe('true');
+    const heading = screen.getByRole('heading', { name: '创建子频道' });
+    expect(heading).toBeTruthy();
+    expect(heading.closest('[hidden]')).toBeNull();
+  });
+
   it('reports a queued profile command and requests a directory refresh', async () => {
     const submit = vi.fn().mockResolvedValue('message-1');
     const refresh = vi.fn().mockResolvedValue(undefined);
