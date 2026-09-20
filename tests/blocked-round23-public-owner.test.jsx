@@ -191,8 +191,13 @@ describe('A-D round 23 ordinary public-owner product-gap evidence', () => {
 
   it('[AD-093] provides a recent-reading drawer at the right edge', () => {
     // 用户能力：从终端/频道边缘打开最近阅读；不变量：Reading owner 提供入口与返回焦点；公开 owner：WorkspaceLayout。
-    renderWorkspace(navigation());
-    expect(screen.queryByRole('button', { name: '打开最近阅读' })).toBeTruthy();
+    const nav = navigation();
+    nav.openReadingHistory = vi.fn();
+    renderWorkspace(nav);
+    const opener = screen.queryByRole('button', { name: '打开最近阅读' });
+    expect(opener).toBeTruthy();
+    fireEvent.click(opener);
+    expect(nav.openReadingHistory).toHaveBeenCalledOnce();
   });
 
   it('[AD-097] lets a fast reselect of the committed channel cancel the pending target', () => {

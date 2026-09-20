@@ -519,10 +519,7 @@ describe('A-D round 25 public-owner evidence', () => {
     // 用户能力：从终端/频道边缘打开最近阅读；不变量：Reading owner 提供入口与返回焦点。
     // 公开 owner contract：WorkspaceApp panel state → WorkspaceLayout edge
     // entry → WorkspaceRightPanel reading-history route；本fixture落在首个
-    // WorkspaceLayout边界，确认该公开入口未被当前组合提供。
-    // Shell handoff contract (proposed public port): the edge control invokes
-    // navigation.openReadingHistory once; the current shell does not expose
-    // this port yet, so the first assertion remains the product-gap evidence.
+    // WorkspaceLayout边界，验证当前 typed navigation port。
     const nav = navigation();
     nav.openReadingHistory = vi.fn();
     renderWorkspace(nav);

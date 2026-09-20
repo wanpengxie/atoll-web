@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ArtifactPreviewPanel } from '../src/ui/features/files/ArtifactPreviewPanel.jsx';
 import { FilesFeature } from '../src/ui/features/files/FilesFeature.jsx';
@@ -13,8 +13,9 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 // The current composition root owns the only navigation command:
 // files.commands.preview (WorkspaceApp.filesPort). The panel-level provider
 // must pass parsed references into that public command, and must fail closed
-// when the command or source channel is unavailable. Its reading-history mode
-// moved inside FilesFeature (`port.recent`, wired from attachments.recentFiles).
+// when the command or source channel is unavailable. The Reading context also
+// consumes that same `port.recent` projection; it does not create a bookmark
+// or history store of its own.
 const MARKDOWN = '见 [设计文档](/home/xiewanpeng/atoll/DESIGN.md:20) 和 [外部](https://example.com/x)';
 
 function rightPanelProps({ channelId = 'c0', selectedChannelId = channelId, previewCommand, commands } = {}) {
@@ -135,5 +136,23 @@ describe('右侧文件详情面板里的文件链接', () => {
     />);
     fireEvent.click(screen.getByRole('button', { name: /a\.md/ }));
     expect(onPreview).toHaveBeenCalledWith(recent);
+  });
+
+  it('右侧最近阅读上下文复用现有 recent/preview port', () => {
+    const onPreview = vi.fn();
+    const onClose = vi.fn();
+    const recent = { key: 'recent:c0:r1', channelId: 'c0', resourceId: '/tmp/a.md', name: 'a.md', lastOpenedAt: 1 };
+    render(<WorkspaceRightPanel
+      panel="reading-history"
+      channel={{ id: 'c0' }}
+      files={{ recent: [recent], commands: { preview: onPreview } }}
+      onClose={onClose}
+    />);
+    const context = screen.getByRole('complementary', { name: '最近阅读' });
+    expect(context.textContent).toContain('a.md');
+    fireEvent.click(within(context).getByRole('button', { name: /a\.md/ }));
+    expect(onPreview).toHaveBeenCalledWith(recent);
+    fireEvent.click(within(context).getByRole('button', { name: '关闭最近阅读' }));
+    expect(onClose).toHaveBeenCalledOnce();
   });
 });

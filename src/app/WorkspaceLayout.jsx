@@ -32,6 +32,11 @@ function accessLabel(access) {
   })[access] || '';
 }
 
+function canReadChannel(channel) {
+  return ['member_active', 'member_stale', 'member_unavailable', 'observer_active', 'observer_stale']
+    .includes(String(channel?.access || ''));
+}
+
 function WorkspaceRail({ session, navigation, onClose, closeButtonRef, railRef, onSelect }) {
   const memberChannels = navigation.channels.filter((channel) => String(channel.access || '').startsWith('member_'));
   const otherChannels = navigation.channels.filter((channel) => !String(channel.access || '').startsWith('member_'));
@@ -120,6 +125,8 @@ export function WorkspaceLayout({
   const [channelMenuOpen, setChannelMenuOpen] = useState(false);
   const channel = navigation.channel;
   const filesOpen = navigation.activeView === 'files';
+  const readingHistoryAvailable = typeof navigation.openReadingHistory === 'function'
+    && canReadChannel(channel);
   const mobileChannelToggleRef = useRef(null);
   const mobileRailRef = useRef(null);
   const inactiveMobileDialogRef = useRef(null);
@@ -384,6 +391,13 @@ export function WorkspaceLayout({
         {features}
       </div>
     </main>
+    {readingHistoryAvailable && <button
+      type="button"
+      className="reading-history-edge-tab"
+      aria-label="打开最近阅读"
+      title="最近阅读"
+      onClick={navigation.openReadingHistory}
+    >最近</button>}
     {rightPanel}
     {overlays}
   </SurfaceShell>;

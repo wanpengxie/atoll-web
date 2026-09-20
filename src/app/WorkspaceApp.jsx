@@ -1897,6 +1897,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       openRoster: memberVisible ? () => setPanel('roster') : undefined,
       openSearch: () => setPanel('search'),
       openActivity: () => setPanel('activity'),
+      openReadingHistory: contentVisible ? () => setPanel('reading-history') : undefined,
       openChannelAdministration: memberVisible
         ? (initialTab = 'members') => setPanel(initialTab === 'overview'
           ? { kind: 'channel-administration', initialTab: 'overview' }

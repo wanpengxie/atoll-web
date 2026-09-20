@@ -1,4 +1,5 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Clock3, FileText } from 'lucide-react';
 import { attachmentFromFileReference } from '../../model/file-references.js';
 import { argsOf } from '../../protocol/envelope.js';
 import { MarkdownFileReferenceProvider } from '../MarkdownContent.jsx';
@@ -22,6 +23,7 @@ export const WORKSPACE_FEATURE_PANEL = Object.freeze({
   channelAdministration: 'channel-administration',
   spaceAdministration: 'space-administration',
   activity: 'activity',
+  readingHistory: 'reading-history',
 });
 
 const ACTIVITY_TABS = Object.freeze([
@@ -184,6 +186,39 @@ function ActivityFeature({ port = {}, onClose }) {
   </SidePanel>;
 }
 
+function openedLabel(value) {
+  const date = new Date(Number(value));
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('zh-CN', {
+    month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(date);
+}
+
+function ReadingHistoryFeature({ files = {}, onClose }) {
+  const recent = Array.isArray(files.recent) ? files.recent : [];
+  const open = files.commands?.preview;
+  return <SidePanel
+    className="recent-files-context"
+    ariaLabel="最近阅读"
+    title="最近阅读"
+    closeLabel="关闭最近阅读"
+    onClose={onClose}
+  >
+    {recent.length === 0
+      ? <div className="recent-files-empty"><Clock3 size={24} /><strong>还没有阅读记录</strong><p>从消息或文件区打开的文件会出现在这里。</p></div>
+      : <div className="recent-files-list">{recent.map((file) => <button
+        type="button"
+        key={file.key || `${file.channelId}:${file.resourceId}`}
+        title={file.resourceId}
+        disabled={typeof open !== 'function'}
+        onClick={() => open?.(file)}
+      >
+        <FileText size={16} aria-hidden="true" />
+        <span><strong>{file.name}</strong><small>{openedLabel(file.lastOpenedAt)}{file.line ? ` · 第 ${file.line} 行` : ''}</small></span>
+      </button>)}</div>}
+  </SidePanel>;
+}
+
 // Product surfaces consume only domain projections and command callbacks.
 // The composition root remains the owner of session, feed, and reading state.
 export function WorkspaceFeatures({
@@ -308,6 +343,7 @@ export function WorkspaceRightPanel({ panel, channel, files = {}, tasks = {}, ro
   }
   else if (kind === WORKSPACE_FEATURE_PANEL.spaceAdministration) content = <SpaceAdministrationPanel channel={channel} port={governance.space || governance} onClose={onClose} />;
   else if (kind === WORKSPACE_FEATURE_PANEL.activity) content = <ActivityFeature port={activity} onClose={onClose} />;
+  else if (kind === WORKSPACE_FEATURE_PANEL.readingHistory) content = <ReadingHistoryFeature files={files} onClose={onClose} />;
   if (!content) return null;
   // A new-channel request is an app-level modal, not a context side panel.
   // Keep this feature-owned branch outside ContextHost so the public rail
