@@ -541,6 +541,8 @@ presentation pending gate. No rollback helper, second store, direct hash write,
 or product source was added. The focused combined run at shared HEAD
 `9cb258d` kept AD-093 as its existing red and AD-099 green: **AD-099 1 passed,
 AD-093 1 failed, 18 other tests skipped**.
+The post-commit AD-099-only sanity at shared HEAD `3b273c8` is also **1
+passed / 19 focused-out skips**.
 
 AD-099 is promoted to PASS. The ledger is now **330 PASS / 0 REGRESSION / 35
 BLOCKED**. The case-level contract and evidence are in

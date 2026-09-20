@@ -36,6 +36,10 @@ Test Files  1 passed (1)
 Tests       1 passed | 19 skipped (20)
 ```
 
+Post-commit sanity at shared HEAD `3b273c8` repeats the same focused command
+with **1 passed, 19 skipped** (the jsdom canvas warning is unrelated to this
+shell contract).
+
 The existing Round 18 `it.fails` declaration remains historical evidence only
 and is not counted as completion. The ordinary Round 25 declaration is the
 single executable AD-099 source; it was corrected to preserve the baseline
