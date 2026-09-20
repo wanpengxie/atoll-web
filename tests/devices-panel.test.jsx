@@ -69,11 +69,11 @@ describe('device administration (SpaceDevices)', () => {
     expect(detachButtons[1].disabled).toBe(true);
   });
 
-  it('[AD-316] 设备命令 terminal 后刷新权威投影（当前 owner 缺少 refresh 连接）', async () => {
+  it('[AD-316] 设备命令 terminal 后刷新权威投影', async () => {
     // 用户能力：创建设备完成后，设备列表应重新读取权威 projection，而不是停留在旧清单。
     // 不变量：terminal 事实是命令完成边界；UI 不能把本地 submit 回执冒充设备已落地。
     // 公共 owner：SpaceAdministrationPanel → SpaceDevices 的 space.commands port。
-    // 当前结果：submit 可完成但 SpaceDevices 不调用 refresh，故保留为产品缺口复现。
+    // 当前 owner 在 terminal 后通过同一 space.commands port 请求 devices refresh。
     const submit = vi.fn().mockResolvedValue('request-1');
     const refresh = vi.fn().mockResolvedValue(undefined);
     render(<SpaceAdministrationPanel

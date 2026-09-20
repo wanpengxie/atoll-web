@@ -65,41 +65,136 @@ function participantTypeLabel(kind) {
   return kind === 'human' ? '用户' : kind === 'agent' ? 'Agent' : '工具';
 }
 
+function displayChannelName(channel = {}) {
+  return channel.qualified_name || channel.name || channel.id || '当前频道';
+}
+
+function channelStatusLabel(channel = {}) {
+  if (channel.open === true || channel.serving === true) return '服务中';
+  if (channel.open === false || channel.serving === false) return '未服务';
+  return channel.status || '状态未知';
+}
+
+function actorRuntime(row = {}) {
+  if (row.deviceOnline === true) return ['online', '在线'];
+  if (row.bound === true) return ['bound', '已绑定'];
+  if (row.bound === false) return ['waiting', '未绑定'];
+  return ['waiting', '等待状态'];
+}
+
+function eligiblePrincipal(row = {}) {
+  // WorkspaceApp already narrows the directory projection. Keep the feature
+  // boundary defensive for direct public ports and fixtures: an explicit
+  // non-human or retired row is never presented as a human admission target.
+  return (!row.kind || row.kind === 'human')
+    && (!row.status || row.status === 'present')
+    && Boolean(row.id);
+}
+
 function ChannelOverview({ channel, port }) {
   const [description, setDescription] = useState(channel?.description || '');
   const [child, setChild] = useState({ name: '', purpose: '', templateId: '' });
   const action = useCommand(port.commands, 'channel');
   useEffect(() => setDescription(channel?.description || ''), [channel?.description, channel?.id]);
+  const children = port.children || [];
+  const templates = port.channelTemplates || port.space?.channelTemplates || [];
+  const refreshDirectory = typeof port.commands?.refresh === 'function'
+    ? () => port.commands.refresh('directory')
+    : undefined;
   return <>
     {action.error && <p className="governance-error" role="alert">{action.error}</p>}
     <OperationState operation={action.operation} />
     {port.candidatesUnavailable && <p className="governance-error" role="status">成员候选目录当前不可用；已有名册仍可查看和刷新。</p>}
-    <PanelCard className="governance-form" title="频道资料"><label>频道 ID<input readOnly value={channel?.id || ''} /></label><label>说明<textarea rows="3" value={description} onChange={(event) => setDescription(event.target.value)} /></label><button type="button" className="primary-button" disabled={port.disabled || action.busy} onClick={() => action.submit('update_profile', { channelId: channel?.id, description }, { refresh: 'directory', submitted: '频道资料已进入提交队列，并已请求目录刷新；最终以账本与目录投影为准。' })}>保存频道资料</button></PanelCard>
-    <PanelCard className="governance-form" title="创建子频道"><label>名称<input value={child.name} onChange={(event) => setChild({ ...child, name: event.target.value })} /></label><label>用途<textarea rows="3" value={child.purpose} onChange={(event) => setChild({ ...child, purpose: event.target.value })} /></label><label>频道模板<SelectMenu ariaLabel="频道模板" value={child.templateId} options={(port.space?.channelTemplates || []).map((row) => ({ value: row.id, label: row.name || row.id }))} onChange={(templateId) => setChild({ ...child, templateId })} /></label><button type="button" className="primary-button" disabled={port.disabled || action.busy || !child.name.trim()} onClick={() => action.submit('create_child', { ...child, parentId: channel?.id }, { refresh: 'directory', submitted: '子频道创建已进入提交队列，并已请求目录刷新；最终以账本与目录投影为准。' })}>创建子频道</button></PanelCard>
-    <PanelCard title="子频道" action={<button type="button" className="text-button" disabled={action.busy} onClick={() => port.commands?.refresh?.('directory')}>刷新</button>}>{(port.children || []).map((row) => <div className="device-row" key={row.id}><div><strong>{row.name || row.id}</strong><small>{row.id} · {row.status || 'present'}</small></div></div>)}{!port.children?.length && <p className="governance-empty">没有子频道。</p>}</PanelCard>
+    <PanelCard className="channel-facts">
+      <header><h3>{displayChannelName(channel)}</h3><span className={channel.open === true || channel.serving === true ? 'fact-ok' : 'fact-warn'}>{channelStatusLabel(channel)}</span></header>
+      <dl>
+        <dt>ID</dt><dd>{channel?.id || '—'}</dd>
+        <dt>父级</dt><dd>{channel?.parent_id || '无（空间根）'}</dd>
+        <dt>Owner</dt><dd>{channel?.owner_principal || '—'}</dd>
+        <dt>状态</dt><dd>{channelStatusLabel(channel)}</dd>
+        <dt>说明</dt><dd>{channel?.description || '—'}</dd>
+      </dl>
+      {refreshDirectory && <button type="button" className="secondary-button" disabled={action.busy} onClick={refreshDirectory}>刷新目录事实</button>}
+    </PanelCard>
+    <PanelCard title="子频道" titleMeta={String(children.length)} action={refreshDirectory && <button type="button" className="text-button" disabled={action.busy} onClick={refreshDirectory}>刷新</button>}>
+      {children.map((row) => <div className="child-channel" key={row.id}><span># {row.name || row.qualified_name || row.id}</span><small>{row.open === true ? '服务中' : row.status || '等待服务'}</small></div>)}
+      {!children.length && <p className="governance-empty">还没有子频道。</p>}
+    </PanelCard>
+    <PanelCard className="governance-form" title="编辑频道说明"><label>说明<textarea rows="3" value={description} onChange={(event) => setDescription(event.target.value)} /></label><button type="button" className="primary-button" disabled={port.disabled || action.busy} onClick={() => action.submit('update_profile', { channelId: channel?.id, description }, { refresh: 'directory', submitted: '频道资料已进入提交队列，并已请求目录刷新；最终以账本与目录投影为准。' })}>保存频道资料</button></PanelCard>
+    <PanelCard className="governance-form" title="创建子频道"><p>在 {displayChannelName(channel)} 下创建；提交后最终状态以账本和目录投影为准。</p><label>名称<input value={child.name} onChange={(event) => setChild({ ...child, name: event.target.value })} /></label><label>用途<textarea rows="3" value={child.purpose} onChange={(event) => setChild({ ...child, purpose: event.target.value })} /></label><label>频道模板<SelectMenu ariaLabel="频道模板" value={child.templateId} options={templates.map((row) => ({ value: row.id, label: row.name || row.id }))} onChange={(templateId) => setChild({ ...child, templateId })} /></label>{!templates.length && <p className="field-hint">当前目录没有可用的频道模板；创建仍可使用空配方。</p>}<button type="button" className="primary-button" disabled={port.disabled || action.busy || !child.name.trim()} onClick={() => action.submit('create_child', { ...child, parentId: channel?.id }, { refresh: 'directory', submitted: '子频道创建已进入提交队列，并已请求目录刷新；最终以账本与目录投影为准。' })}>创建子频道</button></PanelCard>
   </>;
 }
 
 function ChannelMembers({ channel, port }) {
   const [candidate, setCandidate] = useState('');
   const [confirm, setConfirm] = useState(null);
+  const [directOperation, setDirectOperation] = useState(null);
   const action = useCommand(port.commands, 'channel');
+  const commandPort = port.commands || {};
+  const roster = (port.roster || []).filter(isVisibleActor);
+  const currentPrincipals = new Set(roster.map((row) => row.principal).filter(Boolean));
   const candidates = [
-    ...(port.principals || []).map((entry) => entry?.declared || entry).map((row) => ({ value: `principal:${row.id}`, label: `${row.display_name || row.email || row.id} · 用户`, row, kind: 'principal', participantKind: 'human' })),
+    ...(port.principals || []).map((entry) => entry?.declared || entry).filter((row) => eligiblePrincipal(row) && !currentPrincipals.has(row.id)).map((row) => ({ value: `principal:${row.id}`, label: `${row.display_name || row.email || row.id} · 用户`, row, kind: 'principal', participantKind: 'human' })),
     ...(port.declarations || []).filter(isManageableDeclaration).map((entry) => entry?.declared || entry).map((row) => {
       const participantKind = declarationKind(row);
       return { value: `declaration:${row.id}`, label: `${row.name || row.id} · ${participantTypeLabel(participantKind)}`, row, kind: 'declaration', participantKind };
     }),
   ];
   const selected = candidates.find((row) => row.value === candidate);
-  const visibleRoster = (port.roster || []).filter(isVisibleActor);
+  const restartCommand = commandPort.restartActor || commandPort.restart;
+  const bindCommand = commandPort.bindActor || commandPort.bind;
+  const unbindCommand = commandPort.unbindActor || commandPort.unbind;
+  const hasLifecycleCommands = typeof restartCommand === 'function' || typeof bindCommand === 'function' || typeof unbindCommand === 'function';
+  const runDirectCommand = async (label, command, row, payload = {}) => {
+    if (typeof command !== 'function') return;
+    setDirectOperation({ state: 'pending', message: `正在${label}…` });
+    try {
+      await command({ channelId: channel?.id, actorId: row.id, ...payload });
+      if (typeof commandPort.refresh === 'function') await commandPort.refresh('members');
+      setDirectOperation({ state: 'submitted', message: `${label}已提交；最终状态以账本和名册投影为准。` });
+    } catch (failure) {
+      setDirectOperation({ state: 'failed', message: errorMessage(failure) });
+    }
+  };
   const introduce = (event) => {
     event.preventDefault();
     if (!selected) return;
     action.submit('introduce_actor', { channelId: channel?.id, candidateType: selected.kind, candidateId: selected.row.id });
   };
+  const confirmActor = () => {
+    if (!confirm) return;
+    const { row, kind } = confirm;
+    setConfirm(null);
+    if (kind === 'restart') {
+      runDirectCommand('重启', restartCommand, row, { reason: 'governance' });
+      return;
+    }
+    action.submit('remove_actor', { channelId: channel?.id, actorId: row.id });
+  };
   return <>
     {action.error && <p className="governance-error" role="alert">{action.error}</p>}
+    <OperationState operation={action.operation || directOperation} />
+    <PanelCard title="当前成员与 Actor" action={<button type="button" className="text-button" onClick={() => commandPort.refresh?.('members')}>刷新</button>}>
+      {roster.map((row) => {
+        const [runtimeState, runtimeLabel] = actorRuntime(row);
+        const ownerActor = row.principal && row.principal === channel?.owner_principal;
+        const canRestart = typeof restartCommand === 'function' && row.kind !== 'human' && !ownerActor;
+        const canBind = typeof bindCommand === 'function' && row.bound === false;
+        const canUnbind = typeof unbindCommand === 'function' && row.bound === true;
+        return <div className="managed-actor" key={row.id}>
+          <div><strong>{actorDisplayName(row)}{row.id === port.selfId && <em>我</em>}</strong><small>{row.kind || 'actor'}{row.principal ? ` · principal ${row.principal}` : ''} · {row.id}</small></div>
+          <span className={`actor-runtime ${runtimeState}`}>{runtimeLabel}</span>
+          <button type="button" disabled={typeof commandPort.selectActor !== 'function'} onClick={() => commandPort.selectActor?.(row)} aria-label={`查看 ${actorDisplayName(row)}`}>查看</button>
+          {canBind || canUnbind ? <button type="button" disabled={port.disabled || directOperation?.state === 'pending'} onClick={() => runDirectCommand(row.bound ? '解绑' : '绑定', row.bound ? unbindCommand : bindCommand, row)}>{row.bound ? '解绑' : '绑定'}</button> : <button type="button" disabled title="当前治理端口未提供绑定命令">绑定</button>}
+          {canRestart ? <button type="button" disabled={port.disabled || directOperation?.state === 'pending'} onClick={() => setConfirm({ kind: 'restart', row })}>重启</button> : <button type="button" disabled title={row.kind === 'human' ? '用户成员不支持 Agent 重启' : '当前治理端口未提供重启命令'}>重启</button>}
+          <button type="button" className="danger-text" disabled={port.disabled || row.id === port.selfId || ownerActor || row.protected} onClick={() => setConfirm({ kind: 'remove', row })}>{ownerActor ? 'Owner' : '移除'}</button>
+        </div>;
+      })}
+      {!roster.length && <p className="governance-empty">暂无可管理的业务 Actor</p>}
+      {port.identityPending && <p className="roster-identity-pending" role="status">正在确认你在本频道中的 Actor 身份</p>}
+      <p className="protected-note">标准系统 Actor 与维持频道关系的 foundation Actor 已隐藏并受后端保护。</p>
+      {!hasLifecycleCommands && <p className="protected-note">当前治理端口未提供绑定或重启命令；这里仅展示目录事实、查看与已有移除入口。</p>}
+    </PanelCard>
     <PanelCard as="form" className="governance-form" title="添加参与者" onSubmit={introduce}>
       <p>先选择业务参与者；系统会根据对象类型显示必要配置。标准 Actor 不会出现在候选项中。</p>
       <label>参与者<SelectMenu ariaLabel="选择参与者" placeholder="搜索用户、Agent 或工具" value={candidate} options={candidates} onChange={(value) => setCandidate(value)} /></label>
@@ -107,28 +202,26 @@ function ChannelMembers({ channel, port }) {
       {selected && selected.kind === 'declaration' && <p className="field-hint">Actor 的归属 principal 由声明本身决定；要改归属请编辑声明。</p>}
       <button className="primary-button" type="submit" disabled={port.disabled || action.busy || !selected}>添加到频道</button>
     </PanelCard>
-    <PanelCard title="频道成员" action={<button type="button" className="text-button" onClick={() => port.commands?.refresh?.('members')}>刷新</button>}>
-      {visibleRoster.map((row) => <div className="device-row" key={row.id}><div><strong>{actorDisplayName(row)}</strong><small>{row.id} · {row.kind || 'actor'}</small></div><div><button type="button" onClick={() => port.commands?.selectActor?.(row)}>详情</button><button type="button" className="danger-text" disabled={port.disabled || row.id === port.selfId || row.protected} onClick={() => setConfirm(row)}>移除</button></div></div>)}
-    </PanelCard>
-    {confirm && <InlineConfirmation title={`确认移除 ${actorDisplayName(confirm)}？`} description="该操作将通过频道治理命令提交，最终状态以频道事实为准。" tone="danger" onCancel={() => setConfirm(null)} onConfirm={() => { action.submit('remove_actor', { channelId: channel?.id, actorId: confirm.id }); setConfirm(null); }} />}
+    {confirm && <InlineConfirmation title={`确认${confirm.kind === 'restart' ? '重启' : '移除'} ${actorDisplayName(confirm.row)}？`} description={confirm.kind === 'restart' ? '重启结果以账本和 presence 收敛为准；当前页面不会猜测成功。' : '该操作将通过频道治理命令提交，最终状态以频道事实为准。'} tone="danger" onCancel={() => setConfirm(null)} onConfirm={confirmActor} />}
   </>;
 }
 
 function ChannelDanger({ channel, port }) {
   const [confirmation, setConfirmation] = useState('');
   const action = useCommand(port.commands, 'channel');
-  const expected = channel?.qualified_name || channel?.name || channel?.id || '';
+  const expected = displayChannelName(channel);
+  const protectedRoot = channel?.id === 'c0' || channel?.is_root === true || channel?.root === true;
   return <PanelCard className="danger-zone" title="退役频道">
     {action.error && <p className="governance-error" role="alert">{action.error}</p>}
-    {channel?.id === 'c0' ? <p>空间根频道受保护，不能退役。</p> : <><p>退役会停止频道写入；前端不会删除已有账本或文件。</p><label>输入 <strong>{expected}</strong> 确认<input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></label><button type="button" className="danger-button" disabled={port.disabled || confirmation !== expected} onClick={() => action.submit('retire', { channelId: channel?.id })}>退役当前频道</button></>}
+    {protectedRoot ? <p>空间根频道 {channel?.id || 'c0'} 受后端保护，不能退役。</p> : <><p>退役后频道停止写入，但已有账本和文件不会被前端删除；存在活动子频道时由后端拒绝。</p><label>输入 <strong>{expected}</strong> 确认<input aria-label="退役确认" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></label><button type="button" className="danger-button" disabled={port.disabled || confirmation !== expected} onClick={() => action.submit('retire', { channelId: channel?.id })}>退役当前频道</button></>}
   </PanelCard>;
 }
 
 export function ChannelAdministrationPanel({ channel, port = {}, initialTab = 'members', onClose }) {
-  const resolvedInitialTab = ['overview', 'members', 'danger'].includes(initialTab) ? initialTab : 'members';
+  const resolvedInitialTab = ['overview', 'info'].includes(initialTab) ? 'overview' : ['members', 'danger'].includes(initialTab) ? initialTab : 'members';
   const [tab, setTab] = useState(resolvedInitialTab);
   useEffect(() => setTab(resolvedInitialTab), [resolvedInitialTab]);
-  return <SidePanel className="channel-governance" ariaLabel="频道治理" eyebrow="CHANNEL CONTROL" title="频道治理" tabs={[{ id: 'overview', label: '概览' }, { id: 'members', label: '成员' }, { id: 'danger', label: '危险操作' }]} activeTab={tab} onTabChange={setTab} onClose={onClose}>
+  return <SidePanel className="channel-governance" ariaLabel="频道治理" eyebrow="CHANNEL CONTEXT" title="频道详情" tabs={[{ id: 'members', label: '成员' }, { id: 'overview', label: '概览' }, { id: 'danger', label: '危险操作' }]} activeTab={tab} onTabChange={setTab} onClose={onClose}>
     <OperationState operation={port.operation} />
     <div hidden={tab !== 'overview'}><ChannelOverview channel={channel} port={port} /></div>
     <div hidden={tab !== 'members'}><ChannelMembers channel={channel} port={port} /></div>
@@ -246,7 +339,23 @@ function SpaceTemplates({ kind, port }) {
 function SpaceDevices({ channel, port }) {
   const action = useCommand(port.commands, 'space');
   const [name, setName] = useState('');
-  return <>{action.error && <p className="governance-error" role="alert">{action.error}</p>}<PanelCard className="governance-form" title="创建设备身份"><label>设备名称<input value={name} onChange={(event) => setName(event.target.value)} /></label><button type="button" className="primary-button" disabled={port.disabled || !name.trim()} onClick={() => action.submit('create_device', { name })}>创建设备</button></PanelCard><PanelCard title="空间设备列表">{(port.devices || []).map((row) => <div className="device-row" key={row.id}><div><strong>{row.name || row.id}</strong><small>{row.id} · {row.online === true ? '在线' : row.online === false ? '离线' : '未知'} · {row.attached ? '已绑定' : '未绑定'}</small></div><div><button type="button" disabled={port.disabled || row.attached} onClick={() => action.submit('attach_device', { channelId: channel?.id, deviceId: row.id })}>绑定当前频道</button><button type="button" disabled={port.disabled || !row.attached} onClick={() => action.submit('detach_device', { channelId: channel?.id, deviceId: row.id })}>解绑</button><button type="button" className="danger-text" disabled={port.disabled || row.protected} onClick={() => action.submit('retire_device', { deviceId: row.id })}>退役</button></div></div>)}</PanelCard></>;
+  const refreshDevices = typeof port.commands?.refresh === 'function'
+    ? () => port.commands.refresh('devices')
+    : undefined;
+  const refreshAfter = refreshDevices ? { refresh: 'devices' } : {};
+  return <>
+    {action.error && <p className="governance-error" role="alert">{action.error}</p>}
+    <PanelCard className="governance-form" title="创建设备身份">
+      <p>只有当前空间命令端口提供写能力时才会提交创建设备；列表始终只显示已收到的目录事实。</p>
+      <label>设备名称<input value={name} onChange={(event) => setName(event.target.value)} /></label>
+      <button type="button" className="primary-button" disabled={port.disabled || action.busy || !name.trim()} onClick={() => action.submit('create_device', { name }, refreshAfter)}>创建设备</button>
+    </PanelCard>
+    <PanelCard title="空间设备列表" action={refreshDevices && <button type="button" className="text-button" disabled={action.busy} onClick={refreshDevices}>刷新</button>}>
+      <p className="governance-empty">绑定状态来自当前空间目录；它不代表频道已经完成挂载或服务收敛。</p>
+      {(port.devices || []).map((row) => <div className="device-row" key={row.id}><div><strong>{row.name || row.id}</strong><small>{row.id} · {row.online === true ? '在线' : row.online === false ? '离线' : '未知'} · {row.attached ? '已绑定' : '未绑定'}</small></div><div><button type="button" disabled={port.disabled || action.busy || row.attached} onClick={() => action.submit('attach_device', { channelId: channel?.id, deviceId: row.id }, refreshAfter)}>绑定当前频道</button><button type="button" disabled={port.disabled || action.busy || !row.attached} onClick={() => action.submit('detach_device', { channelId: channel?.id, deviceId: row.id }, refreshAfter)}>解绑</button><button type="button" className="danger-text" disabled={port.disabled || action.busy || row.protected} onClick={() => action.submit('retire_device', { deviceId: row.id }, refreshAfter)}>退役</button></div></div>)}
+      {!port.devices?.length && <p className="governance-empty">当前空间目录没有可展示的设备。</p>}
+    </PanelCard>
+  </>;
 }
 
 export function SpaceAdministrationPanel({ channel, port = {}, onClose }) {
