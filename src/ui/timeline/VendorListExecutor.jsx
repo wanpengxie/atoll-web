@@ -149,14 +149,18 @@ function composerSendTargetsCommitted(intent, rows = []) {
     && targets.every((targetID) => rows.some((row) => String(row?.id || '') === targetID));
 }
 
-function observationIdentity(owner, data) {
+function observationIdentity(owner, data, rootIdentity = 0) {
   const session = owner?.getSession?.() || {};
+  const status = owner?.status || {};
   return Object.freeze({
     activationID: String(owner?.activationID || session.activationID || ''),
     inputEpoch: Number(session.inputEpoch || 0),
     intentRevision: Number(session.intentRevision || 0),
     presentationRevision: Number(data?.revision || 0),
     tailID: String(data?.rows?.at(-1)?.id || ''),
+    generation: Number(status.generation || 0),
+    authorityRevision: Number(status.notificationAuthorityRevision || 0),
+    rootIdentity: Number(rootIdentity || 0),
   });
 }
 
@@ -166,7 +170,10 @@ function sameObservationIdentity(left, right) {
     && Number(left.inputEpoch) === Number(right.inputEpoch)
     && Number(left.intentRevision) === Number(right.intentRevision)
     && Number(left.presentationRevision) === Number(right.presentationRevision)
-    && String(left.tailID) === String(right.tailID);
+    && String(left.tailID) === String(right.tailID)
+    && Number(left.generation) === Number(right.generation)
+    && Number(left.authorityRevision) === Number(right.authorityRevision)
+    && Number(left.rootIdentity) === Number(right.rootIdentity);
 }
 
 function contentAnchorIdentity(command) {
@@ -250,7 +257,9 @@ export function VendorListExecutor({
 }) {
   const virtuosoRef = useRef(null);
   const rootRef = useRef(null);
+  const rootIdentityRef = useRef({ node: null, generation: 0 });
   const [rootNode, setRootNode] = useState(null);
+  const [rootIdentity, setRootIdentity] = useState(0);
   const [anchorRetentionExtent, setAnchorRetentionExtent] = useState(0);
   const geometryRevisionRef = useRef(0);
   const observationFrameRef = useRef(0);
@@ -286,7 +295,7 @@ export function VendorListExecutor({
   const coverageEvidenceRef = useRef(null);
   const coverageSourceKeyRef = useRef('');
   const coveragePublishedKeyRef = useRef('');
-  const readingController = useBrowsingReadingController({ reading, snapshot });
+  const readingController = useBrowsingReadingController({ reading, snapshot, rootNode, rootIdentity });
   const { navigationPolicy, reportDomEvidence } = readingController;
   const readingRef = useRef(reading);
   const snapshotRef = useRef(snapshot);
@@ -301,9 +310,28 @@ export function VendorListExecutor({
   const callbackGeneration = Number(reading.status?.generation || 0);
   const callbackRoot = rootNode;
   const bindScroller = useCallback((node) => {
+    // Virtuoso invokes scrollerRef(null) during its internal effect churn as
+    // well as on a real unmount. Do not turn that transient callback into a
+    // state toggle: the next concrete root callback is the replacement fence,
+    // while the existing RAF/event cleanup already retires the old root.
+    if (!node) {
+      rootRef.current = null;
+      return;
+    }
+    if (rootIdentityRef.current.node !== node) {
+      const generation = rootIdentityRef.current.generation + 1;
+      rootIdentityRef.current = {
+        node,
+        generation,
+      };
+      setRootIdentity(node ? generation : 0);
+    }
     rootRef.current = node;
     setRootNode((current) => current === node ? current : node);
   }, []);
+  const currentRootIdentity = useCallback((node) => (
+    rootIdentityRef.current.node === node ? rootIdentityRef.current.generation : 0
+  ), []);
   const listContext = useMemo(() => ({
     historyStartBoundary,
     presentationRevision: Number(snapshot.revision || 0),
@@ -363,7 +391,7 @@ export function VendorListExecutor({
     const data = snapshotRef.current;
     if (!root || !surfaceVisible) return false;
     const currentSession = owner.getSession();
-    const currentIdentity = observationIdentity(owner, data);
+    const currentIdentity = observationIdentity(owner, data, currentRootIdentity(root));
     const fence = request?.fence || null;
     const fenceCurrent = !fence || sameObservationIdentity(fence, currentIdentity);
     const requiresTail = request?.requiresTail === true;
@@ -400,7 +428,7 @@ export function VendorListExecutor({
       && currentVisibleRowIDs.length > 0
       && (!requiresTail || (atTail && tailVisible)),
     );
-    reportDomEvidence(Object.freeze({
+    const accepted = reportDomEvidence(Object.freeze({
       type: 'reading-observation',
       activationID: owner.activationID,
       bookmark: suppressBookmark ? null : topVisibleBookmark(root, data.rows),
@@ -414,16 +442,19 @@ export function VendorListExecutor({
       inputEpoch: currentSession.inputEpoch,
       presentationRevision: currentIdentity.presentationRevision,
       domPresentationRevision,
-      observationIdentity: fence || currentIdentity,
+      observationIdentity: currentIdentity,
+      rootIdentity: currentIdentity.rootIdentity,
+      rootNode: root,
+      tailID: currentIdentity.tailID,
       geometryRevision: geometryRevisionRef.current,
-    }));
-    return !fence || settledReceipt;
-  }, [reportDomEvidence, surfaceVisible]);
+    })) === true;
+    return accepted && (!fence || settledReceipt);
+  }, [currentRootIdentity, reportDomEvidence, surfaceVisible]);
 
   const scheduleObserve = useCallback((source = 'layout', settled = false) => {
     const owner = readingRef.current;
     const data = snapshotRef.current;
-    const currentIdentity = observationIdentity(owner, data);
+    const currentIdentity = observationIdentity(owner, data, currentRootIdentity(rootRef.current));
     const currentSession = owner?.getSession?.() || {};
     const pending = observationRequestRef.current;
     const pendingFence = pending?.fence || null;
@@ -464,7 +495,7 @@ export function VendorListExecutor({
         scheduleObserve(request.source, true);
       }
     }) || 0;
-  }, [observe]);
+  }, [currentRootIdentity, observe]);
 
   const coordinator = useMemo(() => createReadingNavigationCoordinator({
     activationID: reading.activationID,
@@ -1033,7 +1064,7 @@ export function VendorListExecutor({
       // an otherwise-following session to browsing before a live append lands.
       if (input.active && input.direction === 'newer' && atTail) {
         observe('user', {
-          fence: observationIdentity(readingRef.current, snapshotRef.current),
+          fence: observationIdentity(readingRef.current, snapshotRef.current, currentRootIdentity(root)),
           requiresTail: true,
         });
       }
@@ -1144,7 +1175,7 @@ export function VendorListExecutor({
       root.removeEventListener('scrollend', scrollend);
       coordinator.cancel('host-unmounted');
     };
-  }, [cancelPendingPositionRestore, coordinator, navigationPolicy, observe, reading.activationID, reportDomEvidence, rootNode, scheduleObserve]);
+  }, [cancelPendingPositionRestore, coordinator, currentRootIdentity, navigationPolicy, observe, reading.activationID, reportDomEvidence, rootNode, scheduleObserve]);
 
   useLayoutEffect(() => {
     const root = rootRef.current;
@@ -1294,6 +1325,7 @@ export function VendorListExecutor({
     data-reading-container="conversation-list"
     data-reading-mode={reading.session.mode}
     data-reading-presentation-revision={Number(snapshot.revision || 0)}
+    data-reading-root-identity={rootIdentity}
     tabIndex={0}
     data={snapshot.rows}
     firstItemIndex={Number(snapshot.firstItemIndex || 1)}

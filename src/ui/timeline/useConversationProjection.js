@@ -109,7 +109,13 @@ function currentEntryAuthority({ snapshot, historyStatus, bottomReady, availabil
 }
 
 function sameTailEvidence(left, right) {
+  const leftVisibleRowIDs = left.visibleRowIDs || [];
+  const rightVisibleRowIDs = right.visibleRowIDs || [];
+  const leftIdentity = left.observationIdentity || {};
+  const rightIdentity = right.observationIdentity || {};
   return left.activationID === right.activationID
+    && left.inputEpoch === right.inputEpoch
+    && left.rootIdentity === right.rootIdentity
     && left.atTail === right.atTail
     && left.settled === right.settled
     && left.surfaceVisible === right.surfaceVisible
@@ -117,8 +123,24 @@ function sameTailEvidence(left, right) {
     && left.generation === right.generation
     && left.headSeq === right.headSeq
     && left.presentationRevision === right.presentationRevision
+    && left.domPresentationRevision === right.domPresentationRevision
+    && left.observationPresentationRevision === right.observationPresentationRevision
+    && left.authorityVerified === right.authorityVerified
     && left.sourceRevision === right.sourceRevision
-    && left.authorityRevision === right.authorityRevision;
+    && left.authorityRevision === right.authorityRevision
+    && left.tailID === right.tailID
+    && left.rootNode === right.rootNode
+    && left.geometryRevision === right.geometryRevision
+    && leftIdentity.activationID === rightIdentity.activationID
+    && leftIdentity.inputEpoch === rightIdentity.inputEpoch
+    && leftIdentity.intentRevision === rightIdentity.intentRevision
+    && leftIdentity.presentationRevision === rightIdentity.presentationRevision
+    && leftIdentity.tailID === rightIdentity.tailID
+    && leftIdentity.generation === rightIdentity.generation
+    && leftIdentity.authorityRevision === rightIdentity.authorityRevision
+    && leftIdentity.rootIdentity === rightIdentity.rootIdentity
+    && leftVisibleRowIDs.length === rightVisibleRowIDs.length
+    && leftVisibleRowIDs.every((id, index) => id === rightVisibleRowIDs[index]);
 }
 
 function createSessionController({ channelID, viewKey, viewSessions }) {
@@ -192,6 +214,9 @@ function useProjectionReadingOwner({
   const historyStatusRef = useRef(historyStatus);
   const observationRef = useRef(Object.freeze({
     activationID: controller.activationID,
+    inputEpoch: 0,
+    rootIdentity: 0,
+    rootNode: null,
     atTail: false,
     settled: false,
     surfaceVisible: false,
@@ -199,8 +224,15 @@ function useProjectionReadingOwner({
     generation: 0,
     headSeq: 0,
     presentationRevision: 0,
+    domPresentationRevision: 0,
+    observationPresentationRevision: 0,
+    observationIdentity: null,
+    visibleRowIDs: Object.freeze([]),
+    tailID: '',
+    authorityVerified: false,
     sourceRevision: 0,
     authorityRevision: 0,
+    geometryRevision: 0,
   }));
   const [observationRevision, setObservationRevision] = useState(0);
   const [documentVisible, setDocumentVisible] = useState(pageIsVisible);
@@ -247,21 +279,36 @@ function useProjectionReadingOwner({
     // A hidden boundary invalidates the current positive receipt; a visible
     // boundary must mint a successor only after a real prior input epoch.
     if (!nextEffective) {
+      const current = controller.getSnapshot().session;
+      const nextSession = current.mode === READING_MODE.following
+        ? controller.update((active) => advanceReadingInputEpoch(active))
+        : current;
       const cleared = Object.freeze({
-        ...observationRef.current,
         activationID: controller.activationID,
+        inputEpoch: Number(nextSession.inputEpoch || 0),
+        rootIdentity: 0,
+        rootNode: null,
         atTail: false,
         settled: false,
         surfaceVisible: false,
         installedHighSeq: 0,
+        generation: 0,
+        headSeq: 0,
+        presentationRevision: 0,
+        domPresentationRevision: 0,
+        observationPresentationRevision: 0,
+        observationIdentity: null,
+        visibleRowIDs: Object.freeze([]),
+        tailID: '',
+        authorityVerified: false,
+        sourceRevision: 0,
+        authorityRevision: 0,
+        geometryRevision: 0,
       });
       if (!sameTailEvidence(cleared, observationRef.current)) {
         observationRef.current = cleared;
         setObservationRevision((value) => value + 1);
       }
-      const current = controller.getSnapshot().session;
-      if (current.mode !== READING_MODE.following) return true;
-      controller.update((active) => advanceReadingInputEpoch(active));
       return true;
     }
     const current = controller.getSnapshot().session;
@@ -546,6 +593,30 @@ function useProjectionReadingOwner({
     const authorityRevision = Number(historyStatus.notificationAuthorityRevision || 0);
     const sourceRevision = Number(snapshot.sourceRevision || 0);
     const following = session.mode === READING_MODE.following;
+    const currentInputEpoch = Number(session.inputEpoch || 0);
+    const currentTailID = String(snapshot.rows?.at(-1)?.id || '');
+    const identity = evidence.observationIdentity || {};
+    // Vendor's settled receipt is an authority-bearing DOM observation. Keep
+    // every identity component in the consumer fence as well as in the
+    // producer: a late callback must not turn a retired root into following
+    // authority merely because the old rows still happen to be visible.
+    const authorityCurrent = evidence.authorityVerified === true
+      && Number(evidence.inputEpoch) === currentInputEpoch
+      && Number(evidence.rootIdentity) > 0
+      && Number(evidence.domPresentationRevision) === Number(snapshot.revision || 0)
+      && Number(evidence.observationPresentationRevision) === Number(snapshot.revision || 0)
+      && Array.isArray(evidence.visibleRowIDs)
+      && evidence.visibleRowIDs.length > 0
+      && (!evidence.atTail || evidence.visibleRowIDs.includes(currentTailID))
+      && String(evidence.tailID || '') === currentTailID
+      && String(identity.activationID || '') === String(controller.activationID)
+      && Number(identity.inputEpoch) === currentInputEpoch
+      && Number(identity.intentRevision) === Number(session.intentRevision || 0)
+      && Number(identity.presentationRevision) === Number(snapshot.revision || 0)
+      && Number(identity.generation) === generation
+      && Number(identity.authorityRevision) === authorityRevision
+      && String(identity.tailID || '') === currentTailID
+      && Number(identity.rootIdentity) === Number(evidence.rootIdentity);
     const atTail = evidence.atTail === true;
     const surfaceReady = surfaceVisible === true
       && evidence.surfaceVisible === true
@@ -554,7 +625,8 @@ function useProjectionReadingOwner({
       && evidence.activationID === controller.activationID
       && atTail
       && evidence.settled === true
-      && surfaceReady;
+      && surfaceReady
+      && authorityCurrent;
     const current = caughtUp
       && historyStatus.attached === true
       && historyStatus.messageCurrent === true
@@ -566,7 +638,8 @@ function useProjectionReadingOwner({
       && evidence.authorityRevision === authorityRevision
       && sourceRevision >= presentationRevision
       && evidence.installedHighSeq > 0
-      && evidence.installedHighSeq <= headSeq;
+      && evidence.installedHighSeq <= headSeq
+      && authorityCurrent;
     return Object.freeze({
       channelId: channelID,
       viewKey,
@@ -615,7 +688,8 @@ function useProjectionReadingOwner({
     channelID, controller, documentVisible, historyStatus.attached, historyStatus.generation,
     historyStatus.headSeq, historyStatus.messageCurrent, historyStatus.presentationRevision,
     historyStatus.notificationAuthorityRevision, historyViewSpec, observationRevision,
-    session.inputEpoch, session.mode, snapshot.sourceRevision, viewKey,
+    session.inputEpoch, session.intentRevision, session.mode, snapshot.revision,
+    snapshot.sourceRevision, viewKey,
   ]);
 
   useLayoutEffect(() => {
@@ -670,49 +744,149 @@ function useProjectionReadingOwner({
     finishNavigation(input = {}) { return Number(input.inputGeneration) === controller.getSnapshot().session.inputEpoch; },
     cancelNavigation,
     onReadingObservation(observation = {}) {
-      if (observation.activationID && observation.activationID !== controller.activationID) {
-        return controller.getSnapshot().session;
-      }
+      const current = controller.getSnapshot().session;
+      const committedSnapshot = snapshotRef.current;
+      const committedHistory = historyStatusRef.current;
+      const inputEpoch = Number(observation.inputEpoch);
+      const hasInputEpoch = Number.isSafeInteger(inputEpoch);
+      const currentPresentationRevision = Number(committedSnapshot.revision || 0);
+      const observedPresentationRevision = Number(observation.presentationRevision);
+      const observedDomPresentationRevision = Number(observation.domPresentationRevision);
+      const visibleRowIDs = Object.freeze([...new Set((observation.visibleRowIDs || (observation.visibleRows || [])
+        .map((row) => typeof row === 'string' ? row : row?.messageID))
+        .map((id) => String(id || ''))
+        .filter(Boolean))]);
+      const identity = observation.observationIdentity || null;
+      const identityComplete = Boolean(identity)
+        && typeof identity.activationID === 'string'
+        && Number.isSafeInteger(Number(identity.inputEpoch))
+        && Number.isSafeInteger(Number(identity.intentRevision))
+        && Number.isSafeInteger(Number(identity.presentationRevision))
+        && Number.isSafeInteger(Number(identity.generation))
+        && Number.isSafeInteger(Number(identity.authorityRevision))
+        && typeof identity.tailID === 'string'
+        && Number.isSafeInteger(Number(identity.rootIdentity));
+      const identityCurrent = identityComplete
+        && String(identity.activationID || '') === String(controller.activationID)
+        && Number(identity.inputEpoch) === Number(current.inputEpoch)
+        && Number(identity.intentRevision) === Number(current.intentRevision)
+        && Number(identity.presentationRevision) === currentPresentationRevision
+        && Number(identity.generation) === Number(committedHistory.generation || 0)
+        && Number(identity.authorityRevision) === Number(committedHistory.notificationAuthorityRevision || 0)
+        && String(identity.tailID || '') === String(committedSnapshot.rows?.at(-1)?.id || '')
+        && Number(identity.rootIdentity) > 0
+        && Number(observation.rootIdentity) === Number(identity.rootIdentity);
+      const observationRevisionCurrent = Number.isFinite(observedPresentationRevision)
+        && observedPresentationRevision === currentPresentationRevision
+        && Number.isFinite(observedDomPresentationRevision)
+        && observedDomPresentationRevision === currentPresentationRevision;
+      const currentTailID = String(committedSnapshot.rows?.at(-1)?.id || '');
+      const tailFence = !observation.atTail || visibleRowIDs.includes(currentTailID);
+      const highSeq = Number(observation.installedHighSeq);
+      const highSeqFence = !observation.atTail
+        || (Number.isSafeInteger(highSeq) && highSeq > 0
+          && (Number(committedHistory.headSeq || 0) <= 0
+            || highSeq <= Number(committedHistory.headSeq || 0)));
+      const hitTestRows = new Set((observation.visibleRows || [])
+        .map((row) => typeof row === 'string' ? row : row?.messageID || row?.id)
+        .map((id) => String(id || ''))
+        .filter(Boolean) || []);
+      const evidenceComplete = typeof observation.surfaceVisible === 'boolean'
+        && typeof observation.atTail === 'boolean'
+        && typeof observation.settled === 'boolean'
+        && typeof observation.tailID === 'string'
+        && observation.rootNode != null
+        && Number.isSafeInteger(Number(observation.installedHighSeq))
+        && Number.isSafeInteger(Number(observation.rootIdentity))
+        && Array.isArray(observation.visibleRows)
+        && observation.visibleRows.length > 0
+        && visibleRowIDs.length > 0
+        && visibleRowIDs.every((id) => hitTestRows.has(id))
+        && String(observation.tailID) === currentTailID;
+      const evidenceCurrent = evidenceComplete
+        && hasInputEpoch
+        && inputEpoch === Number(current.inputEpoch)
+        && identityCurrent
+        && observationRevisionCurrent;
+      const settledCurrent = observation.settled !== true
+        || (evidenceCurrent
+          && observation.surfaceVisible === true
+          && tailFence
+          && highSeqFence);
+      if ((observation.activationID && observation.activationID !== controller.activationID)
+        || !evidenceCurrent
+        || !settledCurrent) return false;
       // Preserve the exact DOM hit-test handoff for the opt-in Reading trace.
       // The session remains the semantic owner; this is evidence only, so a
       // visible row cannot by itself mint following authority or a scroll.
       readingTrace('reading.observation', {
         activationID: controller.activationID,
-        inputEpoch: Number(observation.inputEpoch || controller.getSnapshot().session.inputEpoch),
+        inputEpoch: hasInputEpoch ? inputEpoch : Number(current.inputEpoch),
         source: String(observation.source || ''),
         settled: observation.settled === true,
         atTail: observation.atTail === true,
         surfaceVisible: observation.surfaceVisible === true,
-        presentationRevision: Number(observation.presentationRevision || 0),
-        domPresentationRevision: Number(observation.domPresentationRevision || 0),
+        presentationRevision: Number.isFinite(observedPresentationRevision)
+          ? observedPresentationRevision : currentPresentationRevision,
+        domPresentationRevision: Number.isFinite(observedDomPresentationRevision)
+          ? observedDomPresentationRevision : currentPresentationRevision,
+        rootIdentity: Number(observation.rootIdentity),
+        tailID: String(observation.tailID || currentTailID),
+        installedHighSeq: Number(observation.installedHighSeq),
+        authorityVerified: true,
         observationIdentity: observation.observationIdentity || null,
-        visibleRowIDs: [...new Set((observation.visibleRowIDs || (observation.visibleRows || [])
-          .map((row) => typeof row === 'string' ? row : row?.messageID))
-          .map((id) => String(id || ''))
-          .filter(Boolean))],
+        visibleRowIDs,
       });
       if (observation.surfaceVisible !== true
         || visibilityBoundaryRef.current.documentVisible !== true
         || visibilityBoundaryRef.current.surfaceVisible !== true) {
         const cleared = Object.freeze({
-          ...observationRef.current,
           activationID: controller.activationID,
+          inputEpoch: Number(current.inputEpoch),
+          rootIdentity: 0,
+          rootNode: null,
           atTail: false,
           settled: false,
           surfaceVisible: false,
           installedHighSeq: 0,
+          generation: 0,
+          headSeq: 0,
+          presentationRevision: 0,
+          domPresentationRevision: 0,
+          observationPresentationRevision: 0,
+          observationIdentity: null,
+          visibleRowIDs: Object.freeze([]),
+          tailID: '',
+          authorityVerified: false,
+          sourceRevision: 0,
+          authorityRevision: 0,
+          geometryRevision: 0,
         });
         if (!sameTailEvidence(cleared, observationRef.current)) {
           observationRef.current = cleared;
           setObservationRevision((value) => value + 1);
         }
-        return controller.getSnapshot().session;
+        return true;
       }
-      controller.update((current) => observeReading(current, { ...observation, activationID: controller.activationID }));
-      const committedSnapshot = snapshotRef.current;
-      const committedHistory = historyStatusRef.current;
+      // The DOM callback may race unmount/suspension in the same task. Do not
+      // install evidence when the session controller no longer accepts the
+      // semantic update; the next mounted paint must establish a new receipt.
+      if (!controller.isStarted()) return false;
+      const committed = controller.update((active) => observeReading(active, {
+        ...observation,
+        activationID: controller.activationID,
+        inputEpoch: hasInputEpoch ? inputEpoch : active.inputEpoch,
+      }));
+      const committedSession = controller.getSnapshot().session;
+      const expectedInputEpoch = hasInputEpoch ? inputEpoch : Number(current.inputEpoch);
+      if (!committed
+        || committedSession.activationID !== controller.activationID
+        || Number(committedSession.inputEpoch) !== expectedInputEpoch) return false;
       const nextEvidence = Object.freeze({
         activationID: controller.activationID,
+        inputEpoch: hasInputEpoch ? inputEpoch : Number(current.inputEpoch),
+        rootIdentity: Number(observation.rootIdentity || identity?.rootIdentity || 0),
+        rootNode: observation.rootNode,
         atTail: observation.atTail === true,
         settled: observation.settled === true,
         surfaceVisible: true,
@@ -720,14 +894,23 @@ function useProjectionReadingOwner({
         generation: Number(committedHistory.generation || 0),
         headSeq: Number(committedHistory.headSeq || 0),
         presentationRevision: Number(committedHistory.presentationRevision || 0),
+        domPresentationRevision: Number.isFinite(observedDomPresentationRevision)
+          ? observedDomPresentationRevision : currentPresentationRevision,
+        observationPresentationRevision: Number.isFinite(observedPresentationRevision)
+          ? observedPresentationRevision : currentPresentationRevision,
+        observationIdentity: identity,
+        visibleRowIDs,
+        tailID: String(observation.tailID || identity?.tailID || currentTailID),
+        authorityVerified: true,
         sourceRevision: Number(committedSnapshot.sourceRevision || 0),
         authorityRevision: Number(committedHistory.notificationAuthorityRevision || 0),
+        geometryRevision: Number(observation.geometryRevision || current.geometryRevision || 0),
       });
       if (!sameTailEvidence(nextEvidence, observationRef.current)) {
         observationRef.current = nextEvidence;
         setObservationRevision((value) => value + 1);
       }
-      return controller.getSnapshot().session;
+      return true;
     },
     onPresentationMaterialized(observation = {}) {
       return observation.activationID === controller.activationID
@@ -736,6 +919,7 @@ function useProjectionReadingOwner({
     onSurfaceVisibilityChange(visible) {
       const nextVisible = visible === true;
       advanceVisibilityEpoch({ surfaceVisible: nextVisible });
+      const currentEpoch = Number(controller.getSnapshot().session.inputEpoch || 0);
       if (visible) {
         const reentering = observationRef.current.surfaceVisible !== true;
         // ReadingContainerHandoff observes the whole reading object. Mark the
@@ -743,12 +927,28 @@ function useProjectionReadingOwner({
         // replay this same re-entry boundary on its next effect pass.
         if (reentering) {
           observationRef.current = Object.freeze({
-            ...observationRef.current,
+            activationID: controller.activationID,
+            inputEpoch: currentEpoch,
+            rootIdentity: 0,
+            rootNode: null,
             atTail: false,
             settled: false,
             surfaceVisible: true,
             installedHighSeq: 0,
+            generation: 0,
+            headSeq: 0,
+            presentationRevision: 0,
+            domPresentationRevision: 0,
+            observationPresentationRevision: 0,
+            observationIdentity: null,
+            visibleRowIDs: Object.freeze([]),
+            tailID: '',
+            authorityVerified: false,
+            sourceRevision: 0,
+            authorityRevision: 0,
+            geometryRevision: 0,
           });
+          setObservationRevision((value) => value + 1);
         }
         // The shared effective-visibility fence above mints this re-entry
         // once. A document edge and this surface edge therefore cannot each
@@ -760,11 +960,26 @@ function useProjectionReadingOwner({
       // Hidden is a lease boundary even without native input. The shared
       // effective-visibility fence minted the epoch synchronously above.
       observationRef.current = Object.freeze({
-        ...observationRef.current,
+        activationID: controller.activationID,
+        inputEpoch: currentEpoch,
+        rootIdentity: 0,
+        rootNode: null,
         atTail: false,
         settled: false,
         surfaceVisible: false,
         installedHighSeq: 0,
+        generation: 0,
+        headSeq: 0,
+        presentationRevision: 0,
+        domPresentationRevision: 0,
+        observationPresentationRevision: 0,
+        observationIdentity: null,
+        visibleRowIDs: Object.freeze([]),
+        tailID: '',
+        authorityVerified: false,
+        sourceRevision: 0,
+        authorityRevision: 0,
+        geometryRevision: 0,
       });
       setObservationRevision((value) => value + 1);
     },

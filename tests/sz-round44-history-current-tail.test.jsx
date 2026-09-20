@@ -18,6 +18,45 @@ const message = (id, seq) => ({
   },
 });
 
+const ROOT_NODE = {};
+
+function observationFor(viewport, overrides = {}) {
+  const status = viewport.status || {};
+  const session = viewport.getSession();
+  const presentationRevision = Number(overrides.presentationRevision || 1);
+  const base = {
+    activationID: viewport.activationID,
+    inputEpoch: Number(session.inputEpoch),
+    source: 'layout',
+    atTail: true,
+    settled: true,
+    surfaceVisible: true,
+    installedHighSeq: 2,
+    presentationRevision,
+    domPresentationRevision: presentationRevision,
+    rootIdentity: 1,
+    rootNode: ROOT_NODE,
+    tailID: 'latest',
+    visibleRows: [{ messageID: 'latest' }],
+    visibleRowIDs: ['latest'],
+    observationIdentity: {
+      activationID: viewport.activationID,
+      inputEpoch: Number(session.inputEpoch),
+      intentRevision: Number(session.intentRevision || 0),
+      presentationRevision,
+      tailID: 'latest',
+      generation: Number(status.generation || 0),
+      authorityRevision: Number(status.notificationAuthorityRevision || 0),
+      rootIdentity: 1,
+    },
+  };
+  return {
+    ...base,
+    ...overrides,
+    observationIdentity: { ...base.observationIdentity, ...(overrides.observationIdentity || {}) },
+  };
+}
+
 function historyFor(presentationRevision, historyDemand) {
   const presentationAdmission = {
     evaluate: (_channelID, items) => ({ items, receipt: null }),
@@ -93,13 +132,7 @@ describe('S-Z SZ152 current history authority', () => {
     const activationID = result.current.viewport.activationID;
 
     act(() => {
-      result.current.viewport.onReadingObservation({
-        activationID,
-        atTail: true,
-        settled: true,
-        surfaceVisible: true,
-        installedHighSeq: 2,
-      });
+      result.current.viewport.onReadingObservation(observationFor(result.current.viewport));
     });
     expect(result.current.viewport.tailCaughtUp).toEqual(expect.objectContaining({
       caughtUp: true,
@@ -133,13 +166,7 @@ describe('S-Z SZ152 current history authority', () => {
     const activationID = result.current.viewport.activationID;
 
     act(() => {
-      result.current.viewport.onReadingObservation({
-        activationID,
-        atTail: true,
-        settled: true,
-        surfaceVisible: true,
-        installedHighSeq: 2,
-      });
+      result.current.viewport.onReadingObservation(observationFor(result.current.viewport));
     });
     rerender({ history: historyFor(2, { revision: 1, phase: 'idle', error: '' }) });
     onTailCaughtUp.mockClear();
@@ -153,13 +180,9 @@ describe('S-Z SZ152 current history authority', () => {
     });
 
     act(() => {
-      result.current.viewport.onReadingObservation({
-        activationID,
-        atTail: true,
-        settled: true,
-        surfaceVisible: true,
-        installedHighSeq: 2,
-      });
+      result.current.viewport.onReadingObservation(observationFor(result.current.viewport, {
+        presentationRevision: Number(result.current.projection.revision || 1),
+      }));
     });
 
     expect(result.current.viewport.tailCaughtUp).toEqual(expect.objectContaining({

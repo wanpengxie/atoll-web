@@ -18,6 +18,45 @@ const message = (id, seq) => ({
   },
 });
 
+const ROOT_NODE = {};
+
+function observationFor(viewport, overrides = {}) {
+  const status = viewport.status || {};
+  const session = viewport.getSession();
+  const presentationRevision = Number(overrides.presentationRevision || 1);
+  const base = {
+    activationID: viewport.activationID,
+    inputEpoch: Number(session.inputEpoch),
+    source: 'layout',
+    atTail: true,
+    settled: true,
+    surfaceVisible: true,
+    installedHighSeq: 2,
+    presentationRevision,
+    domPresentationRevision: presentationRevision,
+    rootIdentity: 1,
+    rootNode: ROOT_NODE,
+    tailID: 'latest',
+    visibleRows: [{ messageID: 'latest' }],
+    visibleRowIDs: ['latest'],
+    observationIdentity: {
+      activationID: viewport.activationID,
+      inputEpoch: Number(session.inputEpoch),
+      intentRevision: Number(session.intentRevision || 0),
+      presentationRevision,
+      tailID: 'latest',
+      generation: Number(status.generation || 0),
+      authorityRevision: Number(status.notificationAuthorityRevision || 0),
+      rootIdentity: 1,
+    },
+  };
+  return {
+    ...base,
+    ...overrides,
+    observationIdentity: { ...base.observationIdentity, ...(overrides.observationIdentity || {}) },
+  };
+}
+
 function historyFor(generation) {
   const presentationAdmission = {
     evaluate: (_channelID, items) => ({ items, receipt: null }),
@@ -95,15 +134,11 @@ function renderProjection() {
   };
 }
 
-function observeTail(result) {
+function observeTail(result, presentationRevision = Number(result.current.projection?.revision || 1)) {
   act(() => {
-    result.current.viewport.onReadingObservation({
-      activationID: result.current.viewport.activationID,
-      atTail: true,
-      settled: true,
-      surfaceVisible: true,
-      installedHighSeq: 2,
-    });
+    result.current.viewport.onReadingObservation(observationFor(result.current.viewport, {
+      presentationRevision,
+    }));
   });
 }
 
@@ -131,7 +166,7 @@ describe('S-Z SZ154 current authority replacement fences', () => {
     });
 
     expect(result.current.viewport.tailCaughtUp).toEqual(expect.objectContaining({
-      caughtUp: true,
+      caughtUp: false,
       activationID,
       generation: 2,
       boundary: 0,
@@ -175,7 +210,7 @@ describe('S-Z SZ154 current authority replacement fences', () => {
     }));
     expect(onTailCaughtUp).not.toHaveBeenCalledWith(expect.objectContaining({ boundary: 2 }));
 
-    observeTail(result);
+    observeTail(result, 2);
     expect(result.current.viewport.tailCaughtUp).toEqual(expect.objectContaining({
       caughtUp: true,
       activationID: replacementActivationID,

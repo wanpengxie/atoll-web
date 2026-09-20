@@ -90,10 +90,24 @@ function projectionHarness() {
   return { ...renderHook(() => useConversationProjection(args)), args };
 }
 
+const ROOT_NODE = {};
+
 function observationTuple(overrides = {}) {
+  const activationID = overrides.activationID || 'active';
+  const observationIdentity = {
+    activationID,
+    inputEpoch: 0,
+    intentRevision: 0,
+    presentationRevision: 1,
+    tailID: 'tail',
+    generation: 1,
+    authorityRevision: 0,
+    rootIdentity: 1,
+    ...overrides.observationIdentity,
+  };
   return {
     type: 'reading-observation',
-    activationID: 'active',
+    activationID,
     inputEpoch: 0,
     source: 'layout',
     atTail: true,
@@ -102,15 +116,45 @@ function observationTuple(overrides = {}) {
     installedHighSeq: 2,
     presentationRevision: 1,
     domPresentationRevision: 1,
+    rootIdentity: 1,
+    rootNode: ROOT_NODE,
+    tailID: 'tail',
+    visibleRows: [{ messageID: 'tail' }],
     visibleRowIDs: ['tail'],
+    observationIdentity,
+    ...overrides,
+  };
+}
+
+function projectionObservation(viewport, overrides = {}) {
+  const status = viewport.status || {};
+  const session = viewport.getSession();
+  const observation = observationTuple({
+    activationID: viewport.activationID,
+    inputEpoch: Number(session.inputEpoch),
+    rootNode: ROOT_NODE,
+    rootIdentity: 1,
+    tailID: 'latest',
+    visibleRows: [{ messageID: 'latest' }],
+    visibleRowIDs: ['latest'],
     observationIdentity: {
-      activationID: 'active',
-      inputEpoch: 0,
-      intentRevision: 0,
+      activationID: viewport.activationID,
+      inputEpoch: Number(session.inputEpoch),
+      intentRevision: Number(session.intentRevision || 0),
       presentationRevision: 1,
-      tailID: 'tail',
+      tailID: 'latest',
+      generation: Number(status.generation || 0),
+      authorityRevision: Number(status.notificationAuthorityRevision || 0),
+      rootIdentity: 1,
     },
     ...overrides,
+  });
+  return {
+    ...observation,
+    observationIdentity: {
+      ...observation.observationIdentity,
+      ...(overrides.observationIdentity || {}),
+    },
   };
 }
 
@@ -120,27 +164,22 @@ function publicVisibilityHarness() {
     const projection = useConversationProjection(args);
     const adapter = useBrowsingReadingController({
       reading: projection.viewport,
-      snapshot: { revision: 1, rows: [{ id: 'tail' }] },
+      snapshot: { revision: 1, rows: [{ id: 'latest' }] },
+      rootNode: ROOT_NODE,
+      rootIdentity: 1,
     });
     return { projection, adapter };
   });
 }
 
 describe('N-R Round 47 visibility observation unit oracle', () => {
-  it.fails('rejects an old inputEpoch before projection installs nextEvidence', () => {
+  it('rejects an old inputEpoch before projection installs nextEvidence', () => {
     const { result } = projectionHarness();
     const viewport = result.current.viewport;
     const activationID = viewport.activationID;
 
     act(() => {
-      viewport.onReadingObservation({
-        activationID,
-        inputEpoch: 0,
-        atTail: true,
-        settled: true,
-        surfaceVisible: true,
-        installedHighSeq: 2,
-      });
+      viewport.onReadingObservation(projectionObservation(viewport));
     });
     expect(result.current.viewport.tailCaughtUp.caughtUp).toBe(true);
 
@@ -152,14 +191,13 @@ describe('N-R Round 47 visibility observation unit oracle', () => {
     expect(currentEpoch).toBeGreaterThan(0);
 
     act(() => {
-      result.current.viewport.onReadingObservation({
-        activationID,
+      result.current.viewport.onReadingObservation(projectionObservation(result.current.viewport, {
         inputEpoch: 0,
-        atTail: true,
-        settled: true,
-        surfaceVisible: true,
-        installedHighSeq: 2,
-      });
+        observationIdentity: {
+          ...projectionObservation(result.current.viewport).observationIdentity,
+          inputEpoch: 0,
+        },
+      }));
     });
 
     expect(result.current.viewport.getSession().inputEpoch).toBe(currentEpoch);
@@ -192,7 +230,7 @@ describe('N-R Round 47 visibility observation unit oracle', () => {
     expect(result.current.projection.viewport.tailCaughtUp.caughtUp).toBe(false);
   });
 
-  it.fails('marks an old observationIdentity as unsettled', () => {
+  it('marks an old observationIdentity as unsettled', () => {
     const { result } = publicVisibilityHarness();
     const activationID = result.current.projection.viewport.activationID;
 
@@ -216,6 +254,14 @@ describe('N-R Round 47 visibility observation unit oracle', () => {
 
     act(() => result.current.adapter.reportDomEvidence(observationTuple({
       activationID: viewport.activationID,
+      tailID: 'latest',
+      visibleRows: [{ messageID: 'latest' }],
+      visibleRowIDs: ['latest'],
+      observationIdentity: {
+        ...observationTuple().observationIdentity,
+        activationID: viewport.activationID,
+        tailID: 'latest',
+      },
     })));
 
     expect(result.current.projection.viewport.tailCaughtUp.caughtUp).toBe(true);

@@ -18,6 +18,44 @@ const message = (id, seq) => ({
   },
 });
 
+const ROOT_NODE = {};
+
+function observationFor(viewport, overrides = {}) {
+  const status = viewport.status || {};
+  const session = viewport.getSession();
+  const base = {
+    activationID: viewport.activationID,
+    inputEpoch: Number(session.inputEpoch),
+    source: 'layout',
+    atTail: true,
+    settled: true,
+    surfaceVisible: true,
+    installedHighSeq: 2,
+    presentationRevision: 1,
+    domPresentationRevision: 1,
+    rootIdentity: 1,
+    rootNode: ROOT_NODE,
+    tailID: 'latest',
+    visibleRows: [{ messageID: 'latest' }],
+    visibleRowIDs: ['latest'],
+    observationIdentity: {
+      activationID: viewport.activationID,
+      inputEpoch: Number(session.inputEpoch),
+      intentRevision: Number(session.intentRevision || 0),
+      presentationRevision: 1,
+      tailID: 'latest',
+      generation: Number(status.generation || 0),
+      authorityRevision: Number(status.notificationAuthorityRevision || 0),
+      rootIdentity: 1,
+    },
+  };
+  return {
+    ...base,
+    ...overrides,
+    observationIdentity: { ...base.observationIdentity, ...(overrides.observationIdentity || {}) },
+  };
+}
+
 function viewSessions() {
   return {
     readView: () => ({}),
@@ -92,13 +130,7 @@ describe('S-Z canonical Presentation authority receipt', () => {
     const activationID = result.current.viewport.activationID;
 
     act(() => {
-      result.current.viewport.onReadingObservation({
-        activationID,
-        atTail: true,
-        settled: true,
-        surfaceVisible: true,
-        installedHighSeq: 2,
-      });
+      result.current.viewport.onReadingObservation(observationFor(result.current.viewport));
     });
     expect(receiptSink).toHaveBeenCalledWith(expect.objectContaining({ caughtUp: true }));
     const positive = receiptSink.mock.calls.at(-1)[0];
@@ -126,13 +158,7 @@ describe('S-Z canonical Presentation authority receipt', () => {
     const activationID = result.current.viewport.activationID;
 
     act(() => {
-      result.current.viewport.onReadingObservation({
-        activationID,
-        atTail: true,
-        settled: true,
-        surfaceVisible: true,
-        installedHighSeq: 2,
-      });
+      result.current.viewport.onReadingObservation(observationFor(result.current.viewport));
     });
     expect(receiptSink).toHaveBeenLastCalledWith(expect.objectContaining({
       caughtUp: true,
@@ -153,13 +179,7 @@ describe('S-Z canonical Presentation authority receipt', () => {
     act(() => {
       result.current.viewport.onSurfaceVisibilityChange(true);
       rerender();
-      result.current.viewport.onReadingObservation({
-        activationID,
-        atTail: true,
-        settled: true,
-        surfaceVisible: true,
-        installedHighSeq: 2,
-      });
+      result.current.viewport.onReadingObservation(observationFor(result.current.viewport));
     });
     expect(receiptSink).toHaveBeenLastCalledWith(expect.objectContaining({
       caughtUp: true,
@@ -182,13 +202,7 @@ describe('S-Z canonical Presentation authority receipt', () => {
 
     try {
       act(() => {
-        result.current.viewport.onReadingObservation({
-          activationID,
-          atTail: true,
-          settled: true,
-          surfaceVisible: true,
-          installedHighSeq: 2,
-        });
+        result.current.viewport.onReadingObservation(observationFor(result.current.viewport));
       });
       expect(result.current.viewport.getSession().inputEpoch).toBe(0);
 
@@ -207,13 +221,9 @@ describe('S-Z canonical Presentation authority receipt', () => {
       expect(result.current.viewport.getSession().inputEpoch).toBe(2);
       act(() => {
         result.current.viewport.onSurfaceVisibilityChange(true);
-        result.current.viewport.onReadingObservation({
-          activationID,
-          atTail: true,
+        result.current.viewport.onReadingObservation(observationFor(result.current.viewport, {
           settled: false,
-          surfaceVisible: true,
-          installedHighSeq: 2,
-        });
+        }));
       });
       expect(result.current.viewport.getSession().inputEpoch).toBe(2);
       expect(result.current.viewport.tailCaughtUp.caughtUp).toBe(false);
@@ -222,13 +232,7 @@ describe('S-Z canonical Presentation authority receipt', () => {
         inputEpoch: 1,
       }));
       act(() => {
-        result.current.viewport.onReadingObservation({
-          activationID,
-          atTail: true,
-          settled: true,
-          surfaceVisible: true,
-          installedHighSeq: 2,
-        });
+        result.current.viewport.onReadingObservation(observationFor(result.current.viewport));
       });
       expect(receiptSink).toHaveBeenLastCalledWith(expect.objectContaining({
         caughtUp: true,
@@ -248,13 +252,7 @@ describe('S-Z canonical Presentation authority receipt', () => {
     const activationID = result.current.viewport.activationID;
 
     act(() => {
-      result.current.viewport.onReadingObservation({
-        activationID,
-        atTail: true,
-        settled: true,
-        surfaceVisible: true,
-        installedHighSeq: 2,
-      });
+      result.current.viewport.onReadingObservation(observationFor(result.current.viewport));
     });
     expect(receiptSink).toHaveBeenCalledWith(expect.objectContaining({ caughtUp: true }));
 

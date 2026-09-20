@@ -18,6 +18,44 @@ const message = (id, seq) => ({
   },
 });
 
+const ROOT_NODE = {};
+
+function observationFor(viewport, overrides = {}) {
+  const status = viewport.status || {};
+  const session = viewport.getSession();
+  const base = {
+    activationID: viewport.activationID,
+    inputEpoch: Number(session.inputEpoch),
+    source: 'layout',
+    atTail: true,
+    settled: true,
+    surfaceVisible: true,
+    installedHighSeq: 2,
+    presentationRevision: 1,
+    domPresentationRevision: 1,
+    rootIdentity: 1,
+    rootNode: ROOT_NODE,
+    tailID: 'latest',
+    visibleRows: [{ messageID: 'latest' }],
+    visibleRowIDs: ['latest'],
+    observationIdentity: {
+      activationID: viewport.activationID,
+      inputEpoch: Number(session.inputEpoch),
+      intentRevision: Number(session.intentRevision || 0),
+      presentationRevision: 1,
+      tailID: 'latest',
+      generation: Number(status.generation || 0),
+      authorityRevision: Number(status.notificationAuthorityRevision || 0),
+      rootIdentity: 1,
+    },
+  };
+  return {
+    ...base,
+    ...overrides,
+    observationIdentity: { ...base.observationIdentity, ...(overrides.observationIdentity || {}) },
+  };
+}
+
 function history() {
   const presentationAdmission = {
     evaluate: (_channelID, items) => ({ items, receipt: null }),
@@ -91,13 +129,7 @@ describe('S-Z SZ151 filtered tail authority', () => {
     const activationID = result.current.viewport.activationID;
 
     act(() => {
-      result.current.viewport.onReadingObservation({
-        activationID,
-        atTail: true,
-        settled: true,
-        surfaceVisible: true,
-        installedHighSeq: 2,
-      });
+      result.current.viewport.onReadingObservation(observationFor(result.current.viewport));
     });
 
     expect(result.current.viewport.tailCaughtUp).toEqual(expect.objectContaining({

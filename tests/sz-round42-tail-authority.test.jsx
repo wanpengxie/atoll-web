@@ -18,6 +18,44 @@ const message = (id, seq) => ({
   },
 });
 
+const ROOT_NODE = {};
+
+function observationFor(viewport, overrides = {}) {
+  const status = viewport.status || {};
+  const session = viewport.getSession();
+  const base = {
+    activationID: viewport.activationID,
+    inputEpoch: Number(session.inputEpoch),
+    source: 'layout',
+    atTail: true,
+    settled: true,
+    surfaceVisible: true,
+    installedHighSeq: 2,
+    presentationRevision: 1,
+    domPresentationRevision: 1,
+    rootIdentity: 1,
+    rootNode: ROOT_NODE,
+    tailID: 'latest',
+    visibleRows: [{ messageID: 'latest' }],
+    visibleRowIDs: ['latest'],
+    observationIdentity: {
+      activationID: viewport.activationID,
+      inputEpoch: Number(session.inputEpoch),
+      intentRevision: Number(session.intentRevision || 0),
+      presentationRevision: 1,
+      tailID: 'latest',
+      generation: Number(status.generation || 0),
+      authorityRevision: Number(status.notificationAuthorityRevision || 0),
+      rootIdentity: 1,
+    },
+  };
+  return {
+    ...base,
+    ...overrides,
+    observationIdentity: { ...base.observationIdentity, ...(overrides.observationIdentity || {}) },
+  };
+}
+
 function viewSessions() {
   return {
     readView: () => ({}),
@@ -95,24 +133,14 @@ describe('S-Z SZ150 production tail read authority', () => {
     expect(receiptSink).not.toHaveBeenCalledWith(expect.objectContaining({ physicalSeq: 2 }));
 
     act(() => {
-      result.current.viewport.onReadingObservation({
-        activationID,
-        atTail: true,
-        settled: true,
-        surfaceVisible: true,
+      result.current.viewport.onReadingObservation(observationFor(result.current.viewport, {
         installedHighSeq: 0,
-      });
+      }));
     });
     expect(result.current.viewport.tailCaughtUp.physicalSeq).toBe(0);
 
     act(() => {
-      result.current.viewport.onReadingObservation({
-        activationID,
-        atTail: true,
-        settled: true,
-        surfaceVisible: true,
-        installedHighSeq: 2,
-      });
+      result.current.viewport.onReadingObservation(observationFor(result.current.viewport));
     });
     expect(result.current.viewport.tailCaughtUp).toEqual(expect.objectContaining({
       caughtUp: true,
@@ -132,17 +160,13 @@ describe('S-Z SZ150 production tail read authority', () => {
     const activationID = result.current.viewport.activationID;
 
     act(() => {
-      result.current.viewport.onReadingObservation({
-        activationID,
-        atTail: true,
-        settled: true,
-        surfaceVisible: true,
+      result.current.viewport.onReadingObservation(observationFor(result.current.viewport, {
         installedHighSeq: 3,
-      });
+      }));
     });
 
     expect(result.current.viewport.tailCaughtUp).toEqual(expect.objectContaining({
-      caughtUp: true,
+      caughtUp: false,
       physicalSeq: 0,
       boundary: 0,
     }));

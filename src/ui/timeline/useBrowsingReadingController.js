@@ -22,7 +22,13 @@ function consumeHistoryConsumerResult(pending, recheck) {
 }
 
 // Owns input attribution, history dedupe, and semantic publication above DOM.
-export function useBrowsingReadingController({ reading, snapshot, handoffPending = false }) {
+export function useBrowsingReadingController({
+  reading,
+  snapshot,
+  rootNode = null,
+  rootIdentity = 0,
+  handoffPending = false,
+}) {
   const readingRef = useRef(reading);
   const snapshotRef = useRef(snapshot);
   const handoffPendingRef = useRef(handoffPending === true);
@@ -39,7 +45,7 @@ export function useBrowsingReadingController({ reading, snapshot, handoffPending
       frontierDemandKeyRef.current = '';
       coverageDemandKeyRef.current = '';
     }
-  }, [handoffPending, reading, reading.activationID, reading.session.inputEpoch, snapshot]);
+  }, [handoffPending, reading, reading.activationID, reading.session.inputEpoch, rootIdentity, rootNode, snapshot]);
 
   const requestHistory = useCallback((evidence, reason) => {
     const owner = readingRef.current;
@@ -67,31 +73,98 @@ export function useBrowsingReadingController({ reading, snapshot, handoffPending
     if (!evidence || evidence.activationID !== current.activationID) return;
 
     if (evidence.type === 'reading-observation') {
+      const status = owner.status || {};
       const presentationRevision = Number(evidence.presentationRevision);
       const domPresentationRevision = Number(evidence.domPresentationRevision);
       const currentPresentationRevision = Number(data.revision || 0);
-      const settled = evidence.settled === true
-        && evidence.visibleRowIDs?.length > 0
+      const visibleRowIDs = [...new Set((evidence.visibleRowIDs || [])
+        .map((id) => String(id || ''))
+        .filter(Boolean))];
+      const currentRowIDs = new Set((data.rows || []).map((row) => String(row?.id || '')));
+      const hitTestRows = new Set((evidence.visibleRows || [])
+        .map((row) => String(row?.messageID || row?.id || ''))
+        .filter(Boolean));
+      const identity = evidence.observationIdentity || {};
+      const inputEpoch = Number(evidence.inputEpoch);
+      const currentTailID = String(data.rows?.at(-1)?.id || '');
+      const identityComplete = identity
+        && typeof identity.activationID === 'string'
+        && Number.isSafeInteger(Number(identity.inputEpoch))
+        && Number.isSafeInteger(Number(identity.intentRevision))
+        && Number.isSafeInteger(Number(identity.presentationRevision))
+        && Number.isSafeInteger(Number(identity.generation))
+        && Number.isSafeInteger(Number(identity.authorityRevision))
+        && typeof identity.tailID === 'string'
+        && Number.isSafeInteger(Number(identity.rootIdentity));
+      const identityCurrent = identityComplete
+        && String(identity.activationID || '') === String(current.activationID || '')
+        && Number(identity.inputEpoch) === Number(current.inputEpoch)
+        && Number(identity.intentRevision) === Number(current.intentRevision)
+        && Number(identity.presentationRevision) === currentPresentationRevision
+        && Number(identity.generation) === Number(status.generation || 0)
+        && Number(identity.authorityRevision) === Number(status.notificationAuthorityRevision || 0)
+        && String(identity.tailID || '') === currentTailID
+        && Number(identity.rootIdentity) === Number(rootIdentity)
+        && Number(rootIdentity) > 0
+        && Number(evidence.rootIdentity) === Number(identity.rootIdentity)
+        && evidence.rootNode === rootNode;
+      const evidenceComplete = typeof evidence.surfaceVisible === 'boolean'
+        && typeof evidence.atTail === 'boolean'
+        && typeof evidence.settled === 'boolean'
+        && typeof evidence.tailID === 'string'
+        && Number.isSafeInteger(Number(evidence.rootIdentity))
+        && Number.isSafeInteger(Number(evidence.installedHighSeq))
+        && visibleRowIDs.length > 0
+        && evidence.visibleRows?.length > 0;
+      const evidenceCurrent = evidenceComplete
+        && Number.isSafeInteger(inputEpoch)
+        && inputEpoch === Number(current.inputEpoch)
         && Number.isFinite(presentationRevision)
         && presentationRevision === currentPresentationRevision
-        && domPresentationRevision === currentPresentationRevision;
-      owner.onReadingObservation?.({
+        && Number.isFinite(domPresentationRevision)
+        && domPresentationRevision === currentPresentationRevision
+        && identityCurrent;
+      const hitTestCurrent = visibleRowIDs.length > 0
+        && visibleRowIDs.every((id) => currentRowIDs.has(id) && hitTestRows.has(id));
+      const tailFence = !evidence.atTail || visibleRowIDs.includes(currentTailID);
+      const highSeq = Number(evidence.installedHighSeq);
+      const highSeqCurrent = !evidence.atTail
+        || (Number.isSafeInteger(highSeq) && highSeq > 0
+          && (Number(status.headSeq || 0) <= 0 || highSeq <= Number(status.headSeq || 0)));
+      const settled = evidence.settled === true
+        && evidence.surfaceVisible === true
+        && evidenceCurrent
+        && hitTestCurrent
+        && tailFence
+        && highSeqCurrent;
+      // A stale callback is not a downgraded layout sample. It is rejected
+      // before Reading sees it, so an old settled callback can never reinstall
+      // positive evidence after a visibility/root/activation boundary.
+      if (!evidenceCurrent || (evidence.settled === true && !settled)) return false;
+      const accepted = owner.onReadingObservation?.({
         bookmark: evidence.bookmark,
         atTail: evidence.atTail,
         surfaceVisible: evidence.surfaceVisible,
         installedHighSeq: evidence.installedHighSeq,
         visibleRows: evidence.visibleRows,
-        visibleRowIDs: evidence.visibleRowIDs,
+        visibleRowIDs,
         source: evidence.source,
         settled,
-        inputEpoch: evidence.inputEpoch,
+        inputEpoch,
         presentationRevision,
         domPresentationRevision,
         observationIdentity: evidence.observationIdentity,
+        rootIdentity: evidence.rootIdentity,
+        rootNode: evidence.rootNode,
+        tailID: evidence.tailID,
         geometryRevision: evidence.geometryRevision,
         activationID: evidence.activationID,
       });
-      return;
+      // Reading is the semantic owner of the observation lease. A controller
+      // rejection (including a same-stack epoch/root replacement) must be
+      // visible to the Vendor so its pending paint request is retried or
+      // retired; it must never be treated as an accepted DOM receipt.
+      return accepted !== false;
     }
 
     if (evidence.type === 'materialized-range') {
@@ -146,7 +219,7 @@ export function useBrowsingReadingController({ reading, snapshot, handoffPending
       evidence.onWake?.();
     });
     return true;
-  }, [requestHistory]);
+  }, [requestHistory, rootIdentity, rootNode]);
 
   const navigationPolicy = useMemo(() => Object.freeze({
     onNavigationUpdate(transaction) {
