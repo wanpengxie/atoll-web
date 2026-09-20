@@ -137,10 +137,13 @@ test('one older gesture stages sparse history and publishes one real prepend', a
 
   // These diagnostics are supporting evidence for the visible contract.  They
   // are intentionally checked after the user-visible prepend/anchor result,
-  // so a missing private event cannot hide the real outcome.
-  const begins = evidence.diagnostics.filter((entry) => entry.event === 'history.admission_begin');
+  // so diagnostic naming/timing cannot hide the real outcome.  The migrated
+  // owner reports the lifecycle as intent_started -> admission_commit ->
+  // intent_satisfied; the pre-migration admission_begin/admission_settle
+  // labels are not part of the current public diagnostic vocabulary.
+  const begins = evidence.diagnostics.filter((entry) => entry.event === 'history.intent_started');
   const commits = evidence.diagnostics.filter((entry) => entry.event === 'history.admission_commit');
-  const settles = evidence.diagnostics.filter((entry) => entry.event === 'history.admission_settle');
+  const settles = evidence.diagnostics.filter((entry) => entry.event === 'history.intent_satisfied');
   expect(begins.length).toBeGreaterThanOrEqual(1);
   expect(commits.length).toBeGreaterThanOrEqual(1);
   expect(commits.length).toBeLessThanOrEqual(begins.length);

@@ -41,6 +41,28 @@ describe('canonical channel roster port', () => {
     expect(rosterRef.current.self('c0')).toBe(rows[0].id);
   });
 
+  it('does not create a second semantic projection for a duplicate attach roster', () => {
+    const { result, rosterRef } = rosterHook();
+    const rows = [{ id: 'human:root:1', kind: 'human', principal: 'root' }];
+    act(() => result.current.seed({ c0: rows }));
+    const firstProjection = result.current.rosters.get('c0');
+    const port = rosterRef.current;
+
+    act(() => result.current.seed({ c0: rows }));
+
+    expect(rosterRef.current).toBe(port);
+    expect(result.current.rosters.get('c0')).toBe(firstProjection);
+    expect(result.current.rosters.get('c0')).toHaveLength(1);
+  });
+
+  it('does not record an identity when the attach event lacks a channel or actor', () => {
+    const { rosterRef } = rosterHook();
+
+    expect(rosterRef.current.noteSelf('', 'human:root:1')).toBe('');
+    expect(rosterRef.current.noteSelf('c0', '')).toBe('');
+    expect(rosterRef.current.self('c0')).toBe('');
+  });
+
   it('clears the canonical facts when the channel is no longer current', () => {
     const { result, rosterRef } = rosterHook();
     const rows = [{ id: 'human:root:1', kind: 'human', principal: 'root' }];

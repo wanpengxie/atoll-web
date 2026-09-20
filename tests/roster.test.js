@@ -66,9 +66,10 @@ function setup({ ownerToken = 'attach-1', generation = 4, roster = {} } = {}) {
 
 describe('public channel roster owner', () => {
   it('publishes a cached roster before network observation is available', () => {
-    const { result } = setup({ roster: { c0: actors } });
+    const { result, rosterRef } = setup({ roster: { c0: actors } });
     expect(result.current.rosters.get('c0')).toEqual(actors);
     expect(result.current.authorities.has('c0')).toBe(false);
+    expect(rosterRef.current.self('c0')).toBe('human:root');
   });
 
   it('marks a complete refresh authoritative for the current principal and channel', async () => {
