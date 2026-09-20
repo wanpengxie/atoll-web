@@ -425,6 +425,22 @@ case-level records are in
 No product source, private export, compatibility API, baseline declaration,
 skip, or expected-fail semantic changed in this round.
 
+## Round 41 — AD-097 public-owner fixture recovery
+
+At latest clean `c777ef2`, the existing public `WorkspaceLayout` contract for
+AD-097 is green: both the Round18 owner contract and the migrated Round25
+fixture pass (**2/2 passed; 38 focused-out skips**). The current behavior is
+that reselecting already-committed `c0` cancels the presentation pending gate,
+re-enables the committed terminal entry, and does not replay c0's canonical
+navigation side effect. The former Round25 `['c1', 'c0']` expectation was a
+stale fixture oracle, not a missing product capability.
+
+AD-097 is promoted to PASS, so the current ledger is **328 PASS / 0
+REGRESSION / 37 BLOCKED**. The case-level record is in
+[`A-D-ROUND41-AD097-FIXTURE-RECOVERY-20260920.md`](./A-D-ROUND41-AD097-FIXTURE-RECOVERY-20260920.md).
+Only the A-D test fixture and audit files changed; no product source or
+private/compatibility API was touched.
+
 ## Public-boundary migration completed in this pass
 
 `tests/channel-access.test.js` and `tests/channel-name-cache.test.js` no longer

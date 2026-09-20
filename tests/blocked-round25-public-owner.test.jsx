@@ -520,7 +520,11 @@ describe('A-D round 25 public-owner evidence', () => {
     renderWorkspace(nav);
     fireEvent.click(screen.getByText('c1'));
     fireEvent.click(within(screen.getByRole('navigation', { name: '频道' })).getByRole('button', { name: /c0/ }));
-    expect(nav.select.mock.calls.map(([id]) => id)).toEqual(['c1', 'c0']);
+    // c0 is already the committed identity: reselecting it cancels the
+    // presentation handoff without replaying c0's canonical navigation side
+    // effect.  The public terminal gate is the observable cancellation fact.
+    expect(nav.select.mock.calls.map(([id]) => id)).toEqual(['c1']);
+    expect(document.getElementById('workspace-terminal-toggle')?.disabled).toBe(false);
   });
 
   it('[AD-099] returns from an invalid target to the original channel and ends old pending handoff', () => {
