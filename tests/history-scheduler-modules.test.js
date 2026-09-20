@@ -31,6 +31,27 @@ describe('history scheduler modules', () => {
     await running;
   });
 
+  it('promotes a queued physical job without exposing a second scheduler', async () => {
+    let releaseFirst;
+    const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+    const started = [];
+    const executor = createHistoryBoundedExecutor({ concurrency: 1, timeoutMs: 1_000 });
+    const first = executor.run(async () => {
+      started.push('first');
+      await firstGate;
+    }, { id: 'first', priority: 0 });
+    const low = executor.run(async () => { started.push('low'); }, { id: 'low', priority: 0 });
+    const foreground = executor.run(async () => { started.push('foreground'); }, {
+      id: 'foreground', priority: 0,
+    });
+
+    await vi.waitFor(() => expect(executor.snapshot()).toEqual({ running: 1, queued: 2 }));
+    expect(foreground.promote(2)).toBe(true);
+    releaseFirst();
+    await Promise.all([first, low, foreground]);
+    expect(started).toEqual(['first', 'foreground', 'low']);
+  });
+
   it('keeps network adaptation to I/O and validation facts', async () => {
     const requestPage = vi.fn(() => {
       const receipt = Promise.resolve({ accepted: true, generation: 7, channel_id: 'c0' });

@@ -142,7 +142,9 @@ describe('ChannelFeedRuntime ownership', () => {
 
     const first = snapshot.loadHistory('c0', { beforeSeq: 5, limit: 4 });
     const second = snapshot.loadHistory('c0', { beforeSeq: 5, limit: 4 });
-    expect(second).toBe(first);
+    // Each caller owns an independent waiter/result even though the Feed
+    // shares one physical page operation.
+    expect(second).not.toBe(first);
     await nextTick();
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({

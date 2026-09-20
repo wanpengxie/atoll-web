@@ -111,6 +111,19 @@ function notificationInputEpoch(value) {
   return Number.isSafeInteger(result) && result >= 0 ? result : null;
 }
 
+function historySchedulerPriority(urgency) {
+  if (urgency === HISTORY_URGENCY.blocking) return 3;
+  if (urgency === HISTORY_URGENCY.interactive) return 2;
+  return 0;
+}
+
+function historyViewSpecSnapshot(viewSpec = {}) {
+  const snapshot = { ...viewSpec };
+  if (viewSpec.actorFilter instanceof Set) snapshot.actorFilter = new Set(viewSpec.actorFilter);
+  if (Array.isArray(viewSpec.localEchoes)) snapshot.localEchoes = [...viewSpec.localEchoes];
+  return Object.freeze(snapshot);
+}
+
 function notificationOwnerKey(owner) {
   return `${owner?.viewKey || ''}\u0000${owner?.activationID || ''}\u0000${historyNumeric(owner?.generation)}`;
 }
@@ -453,7 +466,10 @@ export function createChannelFeedRuntime(options = {}) {
   const backgroundInterests = new Map();
   const executor = createHistoryBoundedExecutor({ concurrency: 2, timeoutMs: HISTORY_BATCH_TIMEOUT_MS });
   const networkBatches = new Map();
-  const historyInFlight = new Map();
+  // One physical owner per admitted range.  The operation contains only raw
+  // source work and its authority fence; every caller is represented by a
+  // separate waiter below and performs its own projection/admission settle.
+  const physicalOperations = new Map();
   const activityEntries = new Map();
   const timerEvents = [];
   // A committed following observation suppresses only the short interval
@@ -464,6 +480,7 @@ export function createChannelFeedRuntime(options = {}) {
   const followingObservations = new Map();
   let generation = 0;
   let principalEpoch = 0;
+  let worldEpoch = 0;
   let attachEpoch = 0;
   let ownerToken = null;
   let principal = '';
@@ -694,6 +711,7 @@ export function createChannelFeedRuntime(options = {}) {
 
   function applyRows(rows, {
     source = 'live', persist = true, publishChange = true, producerToken = ownerToken,
+    coverageRows = null,
   } = {}) {
     if (destroyed || incompatible || (source === 'live' && producerToken !== ownerToken)) return [];
     const accepted = [];
@@ -711,7 +729,8 @@ export function createChannelFeedRuntime(options = {}) {
       discoveredChannels.add(row.channel_id);
       const status = histories.get(row.channel_id);
       if (source !== 'cache' && status?.attached && status.generation === generation
-        && historyNumeric(row.seq) > 0) {
+        && historyNumeric(row.seq) > 0
+        && (!coverageRows || coverageRows.has(historyNumeric(row.seq)))) {
         status.controlCoverage = mergeReplicaCoverage(status.controlCoverage, {
           lowSeq: historyNumeric(row.seq), highSeq: historyNumeric(row.seq),
         });
@@ -908,6 +927,8 @@ export function createChannelFeedRuntime(options = {}) {
       byteLimit: Math.max(1, historyNumeric(request.byteLimit || request.revealBytes) || HISTORY_BATCH_BYTES),
       generation,
       attachEpoch,
+      principalEpoch,
+      worldEpoch,
       purpose: request.intent === 'scroll-history' ? 'user-demand' : 'initial-tail',
       priority: request.urgency === 'anticipatory' ? 'background' : 'foreground',
       intent: request.intent || 'scroll-history',
@@ -916,40 +937,22 @@ export function createChannelFeedRuntime(options = {}) {
     };
   }
 
-  // Physical history ownership is keyed by the admitted range, not by the
-  // caller's semantic intent. A projection-underfill and a replayed top
-  // demand may arrive in the same turn before the first page increments
-  // completedPages; letting both reach the wire would install the same scan
-  // range twice and publish duplicate completion identities. Feed owns this
-  // short-lived join table; it is cleared by lifecycle fences below and never
-  // becomes a second cursor or notification store.
-  function historyOperationKey(channelId, request = {}) {
-    if (destroyed || incompatible || request.signal?.aborted) return '';
-    const status = historyState(channelId);
-    const admitted = generation > 0
-      && grants.has(channelId)
-      && status.attached === true
-      && status.generation === generation
-      && status.messageCurrent === true;
-    if (!admitted) return '';
-    const batch = batchFor(channelId, request);
-    return [
-      batch.generation,
-      batch.attachEpoch,
-      batch.channelId,
-      batch.beforeSeq,
-      batch.limit,
-      batch.byteLimit,
-    ].join('\u0000');
-  }
-
-  async function executeBatch(batch, signal) {
+  async function executeBatch(batch, signal, operation = null) {
     if (signal?.aborted) return { kind: 'cancelled' };
     adapters.prepare(batch);
     const abort = () => { void cancelOwnedBatch(batch, 'history operation aborted'); };
     signal?.addEventListener('abort', abort, { once: true });
     try {
-      const result = await executor.run(() => adapters.execute(batch), { id: batch.id });
+      const resultPromise = executor.run(() => adapters.execute(batch), {
+        id: batch.id,
+        priority: operation?.priority ?? historySchedulerPriority(batch.urgency),
+        signal,
+      });
+      if (operation) {
+        operation.executorHandle = resultPromise;
+        operation.lastBatch = batch;
+      }
+      const result = await resultPromise;
       const rows = result?.rows || [];
       // An empty/missing cache range falls through to the network under the
       // same operation instead of manufacturing cache EOF.
@@ -1018,177 +1021,411 @@ export function createChannelFeedRuntime(options = {}) {
     }
   }
 
-  async function loadHistoryOnce(channelId, request = {}) {
-    if (destroyed) return { kind: 'cancelled', reason: 'runtime-destroyed' };
-    if (incompatible) return { kind: 'cancelled', reason: 'version-incompatible' };
-    if (request.signal?.aborted) return { kind: 'cancelled', reason: 'aborted' };
+  function physicalAuthorityCurrent(operation) {
+    const authority = operation?.authority;
+    const status = authority ? histories.get(authority.channelId) : null;
+    return Boolean(authority
+      && !destroyed
+      && !incompatible
+      && !operation.retired
+      && !operation.abortController.signal.aborted
+      && principalEpoch === authority.principalEpoch
+      && worldEpoch === authority.worldEpoch
+      && generation === authority.generation
+      && attachEpoch === authority.attachEpoch
+      && status?.attached === true
+      && status.messageCurrent === true
+      && status.generation === authority.generation);
+  }
+
+  function physicalOperationKey(channelId, request = {}) {
+    if (destroyed || incompatible || request.signal?.aborted) return '';
     const status = historyState(channelId);
+    const admitted = generation > 0
+      && grants.has(channelId)
+      && status.attached === true
+      && status.generation === generation
+      && status.messageCurrent === true;
+    if (!admitted) return '';
+    const batch = batchFor(channelId, request);
+    return [
+      principalEpoch,
+      worldEpoch,
+      batch.generation,
+      batch.attachEpoch,
+      batch.channelId,
+      batch.beforeSeq,
+      batch.limit,
+      batch.byteLimit,
+    ].join('\u0000');
+  }
+
+  function beginPhysicalDemand(operation, request) {
+    const status = histories.get(operation.channelId);
+    if (!status) return;
     const demandRevision = status.historyDemand.revision + 1;
-    const clearOwnedDemand = () => {
-      if (destroyed || status.historyDemand.revision !== demandRevision) return false;
-      status.historyDemand = Object.freeze({ revision: demandRevision, phase: 'idle', error: '' });
-      Object.assign(status, { loading: false, foregroundLoading: false, backgroundLoading: false });
-      return true;
-    };
+    operation.demandRevision = demandRevision;
     Object.assign(status, {
       loading: true,
-      foregroundLoading: request.urgency !== 'anticipatory',
-      backgroundLoading: request.urgency === 'anticipatory',
+      foregroundLoading: request.urgency !== HISTORY_URGENCY.anticipatory,
+      backgroundLoading: request.urgency === HISTORY_URGENCY.anticipatory,
       error: '', errorCode: '',
       historyDemand: Object.freeze({ revision: demandRevision, phase: 'pending', error: '' }),
     });
+  }
+
+  function clearPhysicalDemand(operation, phase = 'idle', error = '') {
+    const status = histories.get(operation.channelId);
+    if (!status || status.historyDemand.revision !== operation.demandRevision) return false;
+    status.historyDemand = Object.freeze({
+      revision: operation.demandRevision, phase, error,
+    });
+    Object.assign(status, { loading: false, foregroundLoading: false, backgroundLoading: false });
+    return true;
+  }
+
+  function settleWaiter(waiter, value) {
+    if (!waiter || waiter.settled) return false;
+    waiter.settled = true;
+    waiter.signal?.removeEventListener?.('abort', waiter.onAbort);
+    waiter.operation.waiters.delete(waiter);
+    waiter.resolve(value);
+    return true;
+  }
+
+  function releaseWaiter(waiter, reason = 'aborted') {
+    if (!waiter || waiter.settled) return false;
+    const operation = waiter.operation;
+    if (waiter.revealToken) admission.cancel(operation.channelId, waiter.revealToken.operationID);
+    settleWaiter(waiter, { kind: 'cancelled', reason });
+    if (!operation.waiters.size && !operation.settled && !operation.retired) {
+      operation.retired = true;
+      operation.abortController.abort(reason);
+      if (physicalOperations.get(operation.key) === operation) physicalOperations.delete(operation.key);
+    }
+    return true;
+  }
+
+  function cancelPhysicalOperations(reason, waiterReason = 'stale-generation') {
+    for (const operation of physicalOperations.values()) {
+      operation.retired = true;
+      for (const waiter of [...operation.waiters]) {
+        if (waiter.revealToken) admission.cancel(operation.channelId, waiter.revealToken.operationID);
+        settleWaiter(waiter, { kind: 'cancelled', reason: waiterReason });
+      }
+      operation.abortController.abort(reason);
+      if (physicalOperations.get(operation.key) === operation) physicalOperations.delete(operation.key);
+    }
+    physicalOperations.clear();
+  }
+
+  function promotePhysicalOperation(operation, request = {}) {
+    if (!operation || operation.settled || operation.retired) return false;
+    const nextUrgency = request.urgency
+      || (request.intent === HISTORY_INTENT.initialView ? HISTORY_URGENCY.interactive : '');
+    const nextPriority = historySchedulerPriority(nextUrgency);
+    if (nextPriority <= operation.priority) return false;
+    operation.priority = nextPriority;
+    operation.urgency = nextUrgency || operation.urgency;
+    operation.batch = {
+      ...operation.batch,
+      urgency: operation.urgency,
+      priority: operation.urgency === HISTORY_URGENCY.anticipatory ? 'background' : 'foreground',
+    };
+    return operation.executorHandle?.promote?.(nextPriority) === true;
+  }
+
+  function waiterLease(waiter) {
+    const operation = waiter.operation;
+    return Object.freeze({
+      signal: waiter.signal,
+      viewSpec: waiter.viewSpec,
+      reveal: waiter.revealToken,
+      priority: waiter.priority,
+      onOperation: waiter.onOperation,
+      release: (reason = 'released') => releaseWaiter(waiter, reason),
+      promote: (request = {}) => promotePhysicalOperation(operation, request),
+    });
+  }
+
+  function publishPhysicalCompletion(operation, batch, result, rows, acceptedRows) {
+    if (operation.completionPublished || !physicalAuthorityCurrent(operation)) return false;
+    operation.completionPublished = true;
+    diagnostic('info', 'history.batch_complete', historyBatchCompletionDetail(
+      batch,
+      result,
+      rows,
+      histories.get(operation.channelId),
+      acceptedRows,
+      activeChannelRef.current,
+    ));
+    return true;
+  }
+
+  async function runPhysicalOperation(operation) {
+    if (!physicalAuthorityCurrent(operation)) {
+      return { kind: 'cancelled', reason: 'stale-generation' };
+    }
+    let batch = operation.batch;
+    let outcome = await executeBatch(batch, operation.abortController.signal, operation);
+    const rows = [];
+    const networkRows = [];
+    let result = null;
+    let lastSuccessfulBatch = batch;
+    let cacheContinuation = 0;
+    while (outcome.kind === 'page') {
+      if (!physicalAuthorityCurrent(operation)) {
+        return { kind: 'cancelled', reason: 'stale-generation' };
+      }
+      rows.push(...outcome.rows);
+      if (batch.source === 'network') networkRows.push(...outcome.rows);
+      result = outcome.result;
+      lastSuccessfulBatch = batch;
+      if (batch.source !== 'indexeddb' || outcome.result.exhausted || outcome.rows.length >= batch.limit) break;
+      const nextBefore = historyNumeric(outcome.result.next_before_seq
+        ?? outcome.result.nextBeforeSeq ?? batch.beforeSeq);
+      cacheContinuation += 1;
+      batch = {
+        ...batch,
+        id: `${operation.batch.id}:continue:${cacheContinuation}`,
+        beforeSeq: nextBefore,
+        source: historySourceFor(cache.metaSnapshot().get(operation.channelId), nextBefore),
+        urgency: operation.urgency,
+        priority: operation.urgency === HISTORY_URGENCY.anticipatory ? 'background' : 'foreground',
+      };
+      outcome = await executeBatch(batch, operation.abortController.signal, operation);
+    }
+    if (outcome.kind === 'cache-miss') {
+      batch = {
+        ...batch,
+        id: `${operation.batch.id}:network`,
+        source: 'network',
+        priority: operation.urgency === HISTORY_URGENCY.anticipatory ? 'background' : 'foreground',
+      };
+      outcome = await executeBatch(batch, operation.abortController.signal, operation);
+      if (outcome.kind === 'page') {
+        rows.push(...outcome.rows);
+        networkRows.push(...outcome.rows);
+        result = outcome.result;
+      }
+    }
+    if (outcome.kind !== 'page') {
+      // A retained cache prefix remains a valid installed fact even when the
+      // network continuation fails.  Commit that prefix once, then expose the
+      // network failure so the caller can retry without pretending local EOF.
+      if (rows.length && !networkRows.length && physicalAuthorityCurrent(operation)) {
+        const accepted = applyRows(rows, {
+          source: 'cache', persist: false, publishChange: false,
+        });
+        const status = histories.get(operation.channelId);
+        status.beforeSeq = historyNumeric(result?.next_before_seq
+          ?? result?.nextBeforeSeq ?? lastSuccessfulBatch.beforeSeq);
+        status.hasOlder = true;
+        status.lastSource = 'indexeddb';
+        status.coverage = replica.record(operation.channelId)?.materializedCoverage || [];
+        publishPhysicalCompletion(operation, lastSuccessfulBatch, result, rows, accepted.length);
+        return { ...outcome, released: accepted.length };
+      }
+      return outcome;
+    }
+    if (!physicalAuthorityCurrent(operation)) {
+      return { kind: 'cancelled', reason: 'stale-generation' };
+    }
+
+    // The physical operation has one canonical commit and one durable write
+    // boundary.  Cache continuation pages are folded into this raw result;
+    // waiters below project the same installed Replica independently.
+    const source = networkRows.length ? 'history' : 'cache';
+    const coverageRows = networkRows.length
+      ? new Set(networkRows.map((row) => historyNumeric(row?.seq)).filter(Boolean))
+      : null;
+    const accepted = applyRows(rows, {
+      source, persist: false, publishChange: false,
+      coverageRows,
+    });
+    const status = histories.get(operation.channelId);
+    if (networkRows.length) void cache.saveRows(networkRows).catch(cacheError);
+    status.completedPages += 1;
+    status.lastSource = batch.source;
+    status.beforeSeq = historyNumeric(result.next_before_seq ?? result.nextBeforeSeq ?? batch.beforeSeq);
+    status.hasOlder = result.has_older ?? !result.exhausted ?? false;
+    status.coverage = replica.record(operation.channelId)?.materializedCoverage || [];
+    const scanLow = historyNumeric(result.scan_low_seq ?? result.scanLowSeq);
+    const scanHigh = historyNumeric(result.scan_high_seq ?? result.scanHighSeq);
+    if (scanLow && scanHigh >= scanLow) {
+      status.controlCoverage = mergeReplicaCoverage(status.controlCoverage, {
+        lowSeq: scanLow, highSeq: scanHigh,
+      });
+    }
+    refreshControlCurrent(operation.channelId, status);
+    publishPhysicalCompletion(operation, batch, result, rows, accepted.length);
+    operation.rawResult = Object.freeze({
+      kind: 'page', result, rows: Object.freeze([...rows]),
+      released: accepted.length, batch,
+    });
+    operation.committed = true;
+    return operation.rawResult;
+  }
+
+  function settleWaiterFromPhysical(waiter, outcome) {
+    if (waiter.settled) return;
+    const operation = waiter.operation;
+    if (outcome.kind !== 'page') {
+      if (waiter.revealToken) admission.cancel(operation.channelId, waiter.revealToken.operationID);
+      settleWaiter(waiter, outcome);
+      return;
+    }
+    const projection = selectTimelineItems(
+      replica.state(operation.channelId), waiter.viewSpec || {},
+    );
+    const observed = waiter.revealToken ? admission.observe(operation.channelId, projection.items, {
+      operationID: waiter.revealToken.operationID,
+      viewID: waiter.revealToken.viewID,
+      epoch: waiter.revealToken.epoch,
+      sourceRevision: replica.state(operation.channelId)?._timelineRevision || 0,
+    }) : null;
+    if (waiter.revealToken) {
+      admission.settle(operation.channelId, observed?.fulfilled ? 'fulfilled' : 'exhausted');
+    }
+    const status = histories.get(operation.channelId);
+    settleWaiter(waiter, {
+      kind: outcome.released || observed?.fulfilled
+        ? 'satisfied' : status?.hasOlder ? 'segment' : 'exhausted',
+      released: outcome.released,
+      firstVisibleSeq: projection.firstVisibleSeq,
+      projection,
+    });
+  }
+
+  function settlePhysicalOperation(operation, outcome) {
+    if (operation.settled) return;
+    operation.settled = true;
+    const status = histories.get(operation.channelId);
+    let publishNeeded = false;
+    if (outcome.kind === 'failed') {
+      if (status && status.historyDemand.revision === operation.demandRevision) {
+        status.error = outcome.error?.message || '历史加载失败';
+        status.errorCode = String(outcome.error?.code || 'history_failed');
+        publishNeeded = clearPhysicalDemand(operation, 'error', status.error);
+      }
+      const accessProjected = Boolean(operation.lastBatch?.accessFailureCode)
+        || projectAccessFailure(operation.channelId, outcome.error, operation.authority.generation);
+      if (!accessProjected) callback('onError', outcome.error);
+    } else if (outcome.kind === 'page') {
+      publishNeeded = clearPhysicalDemand(operation);
+    } else {
+      publishNeeded = clearPhysicalDemand(operation);
+    }
+    for (const waiter of [...operation.waiters]) settleWaiterFromPhysical(waiter, outcome);
+    if (publishNeeded || outcome.kind === 'page') publish({ index: outcome.kind === 'page' && outcome.released > 0 });
+    if (physicalOperations.get(operation.key) === operation) physicalOperations.delete(operation.key);
+  }
+
+  function createPhysicalOperation(channelId, request, key) {
+    const batch = batchFor(channelId, request);
+    const operation = {
+      key, channelId, batch,
+      authority: Object.freeze({
+        principalEpoch, worldEpoch, generation, attachEpoch,
+        channelId,
+        beforeSeq: batch.beforeSeq,
+        limit: batch.limit,
+        byteLimit: batch.byteLimit,
+      }),
+      abortController: new AbortController(),
+      waiters: new Set(),
+      priority: historySchedulerPriority(batch.urgency),
+      urgency: batch.urgency,
+      demandRevision: 0,
+      executorHandle: null,
+      rawResult: null,
+      committed: false,
+      completionPublished: false,
+      settled: false,
+      retired: false,
+      lastBatch: batch,
+    };
+    beginPhysicalDemand(operation, request);
+    physicalOperations.set(key, operation);
+    operation.promise = Promise.resolve().then(() => runPhysicalOperation(operation)).then(
+      (outcome) => { settlePhysicalOperation(operation, outcome); return outcome; },
+      (error) => {
+        const outcome = { kind: 'failed', error };
+        settlePhysicalOperation(operation, outcome);
+        return outcome;
+      },
+    );
+    void operation.promise.catch(() => {});
+    return operation;
+  }
+
+  function attachHistoryWaiter(operation, request) {
+    let resolve;
+    const promise = new Promise((settle) => { resolve = settle; });
+    const revealToken = request.intent === 'scroll-history' && request.historyRevealIntent
+      ? admission.begin(operation.channelId, request.historyRevealIntent)
+      : null;
+    const waiter = {
+      operation,
+      request,
+      viewSpec: historyViewSpecSnapshot(request.viewSpec || {}),
+      revealToken,
+      signal: request.signal,
+      priority: historySchedulerPriority(request.urgency || operation.urgency),
+      onOperation: request.onOperation,
+      onAbort: null,
+      resolve,
+      settled: false,
+    };
+    waiter.onAbort = () => releaseWaiter(waiter, 'aborted');
+    operation.waiters.add(waiter);
+    request.signal?.addEventListener?.('abort', waiter.onAbort, { once: true });
+    try {
+      request.onOperation?.(waiterLease(waiter));
+    } catch (error) {
+      releaseWaiter(waiter, 'operation-callback-failed');
+      callback('onError', error);
+    }
+    if (request.signal?.aborted) releaseWaiter(waiter, 'aborted');
+    if (!waiter.settled && request.urgency !== HISTORY_URGENCY.anticipatory) {
+      promotePhysicalOperation(operation, request);
+      const status = histories.get(operation.channelId);
+      if (status) status.foregroundLoading = true;
+    }
+    if (operation.rawResult) queueMicrotask(() => settleWaiterFromPhysical(waiter, operation.rawResult));
+    return promise;
+  }
+
+  function loadHistory(channelId, request = {}) {
+    if (destroyed) return Promise.resolve({ kind: 'cancelled', reason: 'runtime-destroyed' });
+    if (incompatible) return Promise.resolve({ kind: 'cancelled', reason: 'version-incompatible' });
+    if (request.signal?.aborted) return Promise.resolve({ kind: 'cancelled', reason: 'aborted' });
+    const status = historyState(channelId);
     const admitted = generation > 0
       && grants.has(channelId)
       && status.attached === true
       && status.generation === generation;
     if (!admitted) {
+      const demandRevision = status.historyDemand.revision + 1;
+      Object.assign(status, {
+        loading: true,
+        foregroundLoading: request.urgency !== HISTORY_URGENCY.anticipatory,
+        backgroundLoading: request.urgency === HISTORY_URGENCY.anticipatory,
+        error: '', errorCode: '',
+        historyDemand: Object.freeze({ revision: demandRevision, phase: 'pending', error: '' }),
+      });
       deferHistoryRequest(channelId, request, demandRevision);
       publish();
-      return { kind: 'waiting', reason: 'history-grant-pending' };
+      return Promise.resolve({ kind: 'waiting', reason: 'history-grant-pending' });
     }
     removeDeferredHistoryRequest(channelId);
-    const revealToken = request.intent === 'scroll-history' && request.historyRevealIntent
-      ? admission.begin(channelId, request.historyRevealIntent)
-      : null;
+    const key = physicalOperationKey(channelId, request);
+    if (!key) return Promise.resolve({ kind: 'cancelled', reason: 'history-not-admitted' });
+    let operation = physicalOperations.get(key);
+    if (!operation || operation.retired) operation = createPhysicalOperation(channelId, request, key);
+    const promise = attachHistoryWaiter(operation, request);
     publish();
-    request.onOperation?.(Object.freeze({ release() {} }));
-    let batch = batchFor(channelId, request);
-    let outcome = await executeBatch(batch, request.signal);
-    let released = 0;
-    let cacheContinuation = 0;
-    const staleBatch = () => destroyed || batch.generation !== generation
-      || batch.attachEpoch !== attachEpoch
-      || status.generation !== generation
-      || !status.attached
-      || status.messageCurrent !== true;
-    const publishBatchComplete = (completedBatch, result, rows, acceptedRows) => {
-      // The physical source has completed, but its public identity belongs to
-      // this attach only after the same generation/attachment/current fence
-      // used by the canonical commit has held. Reading consumers observe this
-      // event; they never publish a second completion for the same page.
-      if (staleBatch()) return false;
-      diagnostic('info', 'history.batch_complete', historyBatchCompletionDetail(
-        completedBatch,
-        result,
-        rows,
-        status,
-        acceptedRows,
-        activeChannelRef.current,
-      ));
-      return true;
-    };
-
-    // A non-empty cache page can still be only the retained physical tail.
-    // Merge/publish that page immediately, then keep walking the cache while
-    // the requested page is still underfilled and its physical coverage
-    // reaches the next cursor. Once the cursor leaves local coverage, continue
-    // the same demand against network; treating any non-empty IndexedDB result
-    // as completion would strand older history.
-    while (outcome.kind === 'page' && batch.source === 'indexeddb'
-      && !outcome.result.exhausted && outcome.rows.length < batch.limit) {
-      if (staleBatch()) {
-        if (revealToken) admission.cancel(channelId, revealToken.operationID);
-        if (clearOwnedDemand()) publish();
-        return { kind: 'cancelled', reason: 'stale-generation' };
-      }
-      const cachedAccepted = applyRows(outcome.rows, {
-        source: 'cache', persist: false, publishChange: false,
-      });
-      released += cachedAccepted.length;
-      status.beforeSeq = historyNumeric(outcome.result.next_before_seq
-        ?? outcome.result.nextBeforeSeq ?? batch.beforeSeq);
-      status.hasOlder = true;
-      status.lastSource = 'indexeddb';
-      status.coverage = replica.record(channelId)?.materializedCoverage || [];
-      if (cachedAccepted.length) publish({ index: true });
-      if (staleBatch()) {
-        if (revealToken) admission.cancel(channelId, revealToken.operationID);
-        if (clearOwnedDemand()) publish();
-        return { kind: 'cancelled', reason: 'stale-generation' };
-      }
-      publishBatchComplete(batch, outcome.result, outcome.rows, cachedAccepted.length);
-      const nextBefore = status.beforeSeq;
-      const nextSource = historySourceFor(cache.metaSnapshot().get(channelId), nextBefore);
-      cacheContinuation += 1;
-      batch = {
-        ...batch,
-        id: `${batch.id}:continue:${cacheContinuation}`,
-        beforeSeq: nextBefore,
-        source: nextSource,
-      };
-      outcome = await executeBatch(batch, request.signal);
-    }
-    if (outcome.kind === 'cache-miss') {
-      batch = { ...batch, id: `${batch.id}:network`, source: 'network' };
-      outcome = await executeBatch(batch, request.signal);
-    }
-    if (staleBatch()) {
-      if (revealToken) admission.cancel(channelId, revealToken.operationID);
-      if (clearOwnedDemand()) publish();
-      return { kind: 'cancelled', reason: 'stale-generation' };
-    }
-    if (outcome.kind === 'page') {
-      const accepted = applyRows(outcome.rows, {
-        source: batch.source === 'network' ? 'history' : 'cache', persist: false, publishChange: false,
-      });
-      released += accepted.length;
-      if (batch.source === 'network') void cache.saveRows(outcome.rows).catch(cacheError);
-      const result = outcome.result;
-      status.completedPages += 1;
-      status.lastSource = batch.source;
-      status.beforeSeq = historyNumeric(result.next_before_seq ?? result.nextBeforeSeq ?? batch.beforeSeq);
-      status.hasOlder = result.has_older ?? !result.exhausted ?? false;
-      status.coverage = replica.record(channelId)?.materializedCoverage || [];
-      const scanLow = historyNumeric(result.scan_low_seq ?? result.scanLowSeq);
-      const scanHigh = historyNumeric(result.scan_high_seq ?? result.scanHighSeq);
-      if (scanLow && scanHigh >= scanLow) {
-        status.controlCoverage = mergeReplicaCoverage(status.controlCoverage, {
-          lowSeq: scanLow, highSeq: scanHigh,
-        });
-      }
-      refreshControlCurrent(channelId, status);
-      publishBatchComplete(batch, result, outcome.rows, accepted.length);
-      const projection = selectTimelineItems(replica.state(channelId), request.viewSpec || {});
-      const observed = revealToken ? admission.observe(channelId, projection.items, {
-        operationID: revealToken.operationID,
-        viewID: revealToken.viewID,
-        epoch: revealToken.epoch,
-        sourceRevision: replica.state(channelId)?._timelineRevision || 0,
-      }) : null;
-      if (revealToken) admission.settle(channelId, observed?.fulfilled ? 'fulfilled' : 'exhausted');
-      status.historyDemand = Object.freeze({ revision: demandRevision, phase: 'idle', error: '' });
-      Object.assign(status, { loading: false, foregroundLoading: false, backgroundLoading: false });
-      publish({ index: accepted.length > 0 });
-      return { kind: released || observed?.fulfilled ? 'satisfied' : status.hasOlder ? 'segment' : 'exhausted',
-        released, firstVisibleSeq: projection.firstVisibleSeq, projection };
-    }
-    if (revealToken) admission.cancel(channelId, revealToken.operationID);
-    Object.assign(status, { loading: false, foregroundLoading: false, backgroundLoading: false });
-    if (outcome.kind === 'failed') {
-      status.error = outcome.error?.message || '历史加载失败';
-      status.errorCode = String(outcome.error?.code || 'history_failed');
-      status.historyDemand = Object.freeze({ revision: demandRevision, phase: 'error', error: status.error });
-      const accessProjected = Boolean(batch.accessFailureCode)
-        || projectAccessFailure(channelId, outcome.error, batch.generation);
-      if (!accessProjected) callback('onError', outcome.error);
-    } else status.historyDemand = Object.freeze({ revision: demandRevision, phase: 'idle', error: '' });
-    publish();
-    return outcome;
-  }
-
-  function loadHistory(channelId, request = {}) {
-    const key = historyOperationKey(channelId, request);
-    if (key) {
-      const existing = historyInFlight.get(key);
-      if (existing) return existing;
-    }
-    const operation = loadHistoryOnce(channelId, request);
-    if (!key) return operation;
-    const shared = operation.finally(() => {
-      if (historyInFlight.get(key) === shared) historyInFlight.delete(key);
-    });
-    historyInFlight.set(key, shared);
-    return shared;
+    return promise;
   }
 
   // Search and other non-reading consumers may need a cold channel's rows,
@@ -1312,6 +1549,12 @@ export function createChannelFeedRuntime(options = {}) {
   async function prepareLocalReplica(nextPrincipal, { focus = activeChannelRef.current || '' } = {}) {
     if (destroyed) return { resume: {} };
     const epoch = ++principalEpoch;
+    // A cache-owner selection is a principal authority boundary even when
+    // the caller re-selects the same principal.  Retire physical work before
+    // the new owner can install rows into Replica.
+    cancelPhysicalOperations('principal authority changed', 'stale-generation');
+    for (const batch of networkBatches.values()) void cancelOwnedBatch(batch, 'principal authority changed');
+    networkBatches.clear();
     const selectedPrincipal = String(nextPrincipal || '');
     if (principal && principal !== selectedPrincipal) {
       for (const channelId of histories.keys()) admission.reset(channelId);
@@ -1363,13 +1606,16 @@ export function createChannelFeedRuntime(options = {}) {
       || !nextGeneration || nextGeneration < generation || incompatible) {
       return { stale: true, meta: cache.metaSnapshot() };
     }
-    generation = nextGeneration;
     const epoch = ++attachEpoch;
+    const nextWorld = String(detail.boot || world);
+    const worldAuthorityChanged = nextWorld !== world;
+    const worldChanged = Boolean(world) && worldAuthorityChanged;
+    if (worldAuthorityChanged) worldEpoch += 1;
+    generation = nextGeneration;
+    // Attach and world fences advance before any replacement cache/meta work.
+    cancelPhysicalOperations('history attach recalibrated', 'stale-generation');
     for (const batch of networkBatches.values()) void cancelOwnedBatch(batch, 'history attach recalibrated');
     networkBatches.clear();
-    historyInFlight.clear();
-    const nextWorld = String(detail.boot || world);
-    const worldChanged = Boolean(world) && nextWorld !== world;
     world = nextWorld;
     if (worldChanged) {
       lifecycleEpoch += 1;
@@ -1573,10 +1819,10 @@ export function createChannelFeedRuntime(options = {}) {
     principalEpoch += 1;
     attachEpoch += 1;
     cancelBackgroundInterests('replica cleared');
+    cancelPhysicalOperations('replica cleared', 'stale-generation');
     executor.clear('replica cleared');
     for (const batch of networkBatches.values()) void cancelOwnedBatch(batch, 'replica cleared');
     networkBatches.clear();
-    historyInFlight.clear();
     for (const channelId of histories.keys()) admission.reset(channelId);
     clearDeferredHistoryRequests();
     histories.clear(); grants.clear();
@@ -1636,11 +1882,11 @@ export function createChannelFeedRuntime(options = {}) {
     }
     followingObservations.clear();
     attachEpoch += 1;
+    cancelPhysicalOperations('history disconnected', 'stale-generation');
     if (activityConnected) { activityConnected = false; activityRevision += 1; }
     generation = 0;
     for (const batch of networkBatches.values()) void cancelOwnedBatch(batch, 'history disconnected');
     networkBatches.clear();
-    historyInFlight.clear();
     publish(); return true;
   }
   function stopIncompatible(requestGeneration = generation) {
@@ -1960,11 +2206,11 @@ export function createChannelFeedRuntime(options = {}) {
     attachEpoch += 1;
     generation = 0;
     cancelBackgroundInterests('feed runtime destroyed');
+    cancelPhysicalOperations('feed runtime destroyed', 'runtime-destroyed');
     releaseRailDiagnostic?.();
     releaseRailDiagnostic = null;
     for (const batch of networkBatches.values()) void cancelOwnedBatch(batch, 'feed runtime destroyed');
     networkBatches.clear();
-    historyInFlight.clear();
     executor.clear('feed runtime destroyed');
     clearDeferredHistoryRequests();
     for (const channelId of histories.keys()) admission.reset(channelId);
