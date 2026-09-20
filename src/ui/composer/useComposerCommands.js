@@ -258,6 +258,23 @@ function commandOwner(config, model) {
       if (typeof owner.attach !== 'function') throw new TypeError('频道附件 owner 未连接');
       return owner.attach(resource, model.channelId);
     },
+    pickChannelFile() {
+      requireDraftEdit();
+      if (model.edit) throw new TypeError('编辑已有消息时不能附加频道文件');
+      const owner = attachment();
+      if (typeof owner.pickChannelFile !== 'function') throw new TypeError('频道文件选择 owner 未连接');
+      return Promise.resolve(owner.pickChannelFile(model.channelId)).then((resource) => {
+        if (!resource) return null;
+        if (typeof owner.attach !== 'function') throw new TypeError('频道附件 owner 未连接');
+        return owner.attach(resource, model.channelId);
+      });
+    },
+    previewAttachment(resource) {
+      requireChannel();
+      const owner = attachment();
+      if (typeof owner.preview !== 'function') throw new TypeError('附件预览 owner 未连接');
+      return owner.preview(resource, model.channelId);
+    },
     upload(files) {
       requireDraftEdit();
       if (model.edit) throw new TypeError('编辑已有消息时不能上传普通草稿附件');

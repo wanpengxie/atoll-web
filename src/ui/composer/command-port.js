@@ -13,6 +13,8 @@ const COMMAND_NAMES = Object.freeze([
   'edit',
   'cancelEdit',
   'attach',
+  'pickChannelFile',
+  'previewAttachment',
   'upload',
   'removeAttachment',
   'clearAttachments',

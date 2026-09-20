@@ -190,3 +190,31 @@ describe('编辑已有消息时禁止上传附件（呼应旧 F6 附件隔离断
     expect(commands.upload).not.toHaveBeenCalled();
   });
 });
+
+describe('频道文件选择的公开 Composer 反馈', () => {
+  it('disables the picker with the typed access reason when transmission is unavailable', () => {
+    const model = buildComposerModel({
+      activeChannelId: 'c0', draft: { text: '', recipients: [] }, roster: ROSTER,
+      access: {
+        relationship: 'member', existence: 'present', runtime: 'open', unavailable: true,
+        canEditDraft: true, canDurablyAccept: true, canTransmit: false,
+        reason: '连接可用后才能附加频道文件', transportOpen: false,
+      },
+    });
+    render(<Composer model={model} commands={{ changeDraft: vi.fn(), pickChannelFile: vi.fn() }} />);
+    const picker = screen.getByRole('button', { name: '从频道文件选择' });
+    expect(picker.disabled).toBe(true);
+    expect(picker.getAttribute('title')).toBe('连接可用后才能附加频道文件');
+  });
+
+  it('renders a picker rejection in the Composer alert rail', async () => {
+    const user = userEvent.setup();
+    const pickChannelFile = vi.fn().mockRejectedValue(new TypeError('频道文件选择已拒绝'));
+    const model = buildComposerModel({
+      activeChannelId: 'c0', draft: { text: '', recipients: [] }, roster: ROSTER, access: 'member_active',
+    });
+    render(<Composer model={model} commands={{ changeDraft: vi.fn(), pickChannelFile }} />);
+    await user.click(screen.getByRole('button', { name: '从频道文件选择' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('频道文件选择已拒绝');
+  });
+});
