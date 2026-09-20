@@ -114,6 +114,37 @@ Tests are necessary evidence, not the definition of the architecture. A test
 whose only failure is frame count, diagnostic timing, or a non-user-visible
 internal arrangement must not force a product-state change.
 
+## Delivery pipeline and WIP limits
+
+Parallelism is organized by stage, not by assigning many writers to the same
+problem. At any time:
+
+- at most two product changes may be in implementation, and they must have
+  disjoint authoritative owners and changed-file boundaries;
+- each product change has exactly one implementer, one architecture reviewer,
+  and one independent public-contract verifier;
+- architecture decides a bounded state/interface contract before the writer
+  starts; it reviews a commit as soon as that commit exists rather than waiting
+  for an entire batch;
+- browser and unit workers that are waiting for a product commit prepare the
+  exact red baseline, verification script, or the next unrelated case instead
+  of remaining idle;
+- the ledger counts only unique baseline contracts on an exact commit; repeat
+  runs establish stability but do not multiply completion credit;
+- the main worktree is an integration train controlled by the root agent.
+  Writers use isolated branches/worktrees and report base, branch, worktree,
+  commit, and diff boundary;
+- after integration, architecture and public-contract verification run against
+  that exact main commit. A rejected candidate leaves the train and does not
+  block unrelated owners.
+
+The queue is pulled in this order: an accepted design with an idle owner,
+review of a submitted commit, exact-commit verification, then discovery of new
+cases. No worker may open a second product change while its first change is
+awaiting review. Conflicting Reading/Vendor, Feed/notification, or
+Workspace/Shell changes are serialized; unrelated evidence and verification
+continue in parallel.
+
 ## Current P0 decisions
 
 - **Reading/notification re-entry:** explicit return to tail mints a successor
