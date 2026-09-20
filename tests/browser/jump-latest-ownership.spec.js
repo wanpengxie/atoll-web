@@ -2,9 +2,11 @@ import { expect, test } from '@playwright/test';
 import { writeFile } from 'node:fs/promises';
 
 // Migrated from the fae8b70 baseline onto the current production timeline.
-// The old test also asserted on retired authorization-typed reading trace
-// events.  The user-visible contract remains observable through the real
-// list's geometry, jump affordance, and current generic scroll writer probe.
+// The old test drove mock.channel.pulse, whose transient payload is explicitly
+// not a person-readable Timeline item.  J therefore uses the canonical
+// q_tail_append fixture: a real request+readable terminal append, while keeping
+// the old user contract (browsing does not follow, a notice appears, and the
+// explicit click paints exactly that appended row).
 
 async function attachJSON(testInfo, name, value) {
   const path = testInfo.outputPath(name);
@@ -46,6 +48,62 @@ async function installProbe(page) {
   });
 }
 
+async function appendCanonicalTail(request, { ask, text }) {
+  const response = await request.post('/mock/control/action', {
+    data: { type: 'q_tail_append', channel_id: 'c0', ask, text },
+  });
+  expect(response.ok()).toBe(true);
+  const body = await response.json();
+  expect(body.request_id).toBeTruthy();
+  return body;
+}
+
+async function timelineSnapshot(page, targetID = '') {
+  return page.evaluate((targetID) => {
+    const viewport = document.querySelector('.timeline-message-list');
+    const viewportRect = viewport?.getBoundingClientRect() || null;
+    const rows = [...(viewport?.querySelectorAll('[data-presentation-row-id]') || [])];
+    const target = targetID
+      ? rows.find((node) => node.dataset.presentationRowId === targetID) || null
+      : null;
+    const targetRect = target?.getBoundingClientRect() || null;
+    let hitTested = false;
+    if (target && targetRect && viewportRect) {
+      const left = Math.max(viewportRect.left, targetRect.left);
+      const right = Math.min(viewportRect.right, targetRect.right);
+      const top = Math.max(viewportRect.top, targetRect.top);
+      const bottom = Math.min(viewportRect.bottom, targetRect.bottom);
+      if (right - left > 1 && bottom - top > 1) {
+        const x = (left + right) / 2;
+        hitTested = [top + 1, (top + bottom) / 2, bottom - 1].some((y) => {
+          const hit = document.elementFromPoint(x, y);
+          return Boolean(hit && (hit === target || target.contains(hit)));
+        });
+      }
+    }
+    const scrollTop = Number(viewport?.scrollTop || 0);
+    const scrollHeight = Number(viewport?.scrollHeight || 0);
+    const clientHeight = Number(viewport?.clientHeight || 0);
+    return {
+      mode: document.querySelector('.timeline')?.dataset.viewportMode || '',
+      gap: scrollHeight - clientHeight - scrollTop,
+      maxScrollTop: scrollHeight - clientHeight,
+      scrollTop,
+      jump: document.querySelector('.timeline-jump-latest')?.textContent || '',
+      rowIDs: rows.map((node) => node.dataset.presentationRowId || ''),
+      target: target ? {
+        rowID: target.dataset.presentationRowId || '',
+        rowCount: rows.filter((node) => node.dataset.presentationRowId === targetID).length,
+        painted: Boolean(target.getClientRects().length),
+        intersectsViewport: Boolean(targetRect && viewportRect
+          && targetRect.bottom > viewportRect.top + 0.5
+          && targetRect.top < viewportRect.bottom - 0.5),
+        hitTested,
+      } : null,
+    };
+  }, targetID);
+}
+
 async function sampleFrames(page, count = 45) {
   return page.evaluate(async (total) => {
     const frames = [];
@@ -85,28 +143,54 @@ test('browsing reader jump-latest writes once, reaches the installed tail, then 
   await page.mouse.wheel(0, -2_000);
   await expect.poll(() => viewport.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeGreaterThan(24);
   await installProbe(page);
-  const pulse = await request.post('/mock/control/action', { data: { type: 'pulse' } });
-  expect(pulse.ok()).toBe(true);
+  const marker = 'J canonical q_tail_append jump target';
+  const appended = await appendCanonicalTail(request, {
+    ask: 'J canonical passive append',
+    text: marker,
+  });
+  const targetID = appended.request_id;
   const jump = page.getByRole('button', { name: /条新动态/ });
-  const jumpVisible = await jump.isVisible().catch(() => false);
-  const before = await viewport.evaluate((node) => ({
-    gap: Math.round(node.scrollHeight - node.clientHeight - node.scrollTop),
-    scrollTop: node.scrollTop,
-    scrollHeight: node.scrollHeight,
-  }));
-  if (jumpVisible) await jump.click();
+  await expect(jump).toBeVisible();
+  const beforeClick = await timelineSnapshot(page, targetID);
+  const writesBeforeClick = await page.evaluate(() => window.__JUMP_LATEST_SCROLL_WRITES__?.length || 0);
+  expect(beforeClick.mode, JSON.stringify(beforeClick)).toBe('browsing');
+  expect(beforeClick.gap, JSON.stringify(beforeClick)).toBeGreaterThan(24);
+  expect(beforeClick.jump, JSON.stringify(beforeClick)).toContain('条新动态');
+  expect(writesBeforeClick, JSON.stringify(beforeClick)).toBe(0);
+
+  await jump.click();
+  await expect(page.locator(`[data-presentation-row-id="${targetID}"]`)).toHaveCount(1);
+  await expect.poll(async () => (await timelineSnapshot(page, targetID)).target?.hitTested || false).toBe(true);
   const frames = await sampleFrames(page);
   const evidence = await page.evaluate(() => ({
     scrollWrites: window.__JUMP_LATEST_SCROLL_WRITES__ || [],
     jumpText: document.querySelector('.timeline-jump-latest')?.textContent || '',
   }));
-  await attachJSON(testInfo, 'jump-latest-browsing.json', { before, frames, jumpVisible, ...evidence });
+  const afterClick = await timelineSnapshot(page, targetID);
+  await attachJSON(testInfo, 'jump-latest-browsing.json', {
+    appended,
+    targetID,
+    beforeClick,
+    afterClick,
+    writesBeforeClick,
+    frames,
+    ...evidence,
+  });
 
-  // Substitutes the deleted issuer-write/authorization instrumentation: the
-  // sole DOM write funnel (executeReadingDOMCommand) should still fire
-  // exactly once for this one jump-latest click, not on every frame.
-  expect(jumpVisible).toBe(true);
+  // The passive append must not authorize a bottom write. Only the explicit
+  // button click may write the current reading owner once.
   expect(evidence.scrollWrites.length).toBe(1);
+  expect(afterClick.mode, JSON.stringify(afterClick)).toBe('following');
+  expect(afterClick.gap, JSON.stringify(afterClick)).toBeLessThanOrEqual(1);
+  expect(Math.abs(afterClick.scrollTop - afterClick.maxScrollTop), JSON.stringify(afterClick)).toBeLessThanOrEqual(1);
+  expect(afterClick.jump, JSON.stringify(afterClick)).toBe('');
+  expect(afterClick.target, JSON.stringify(afterClick)).toMatchObject({
+    rowID: targetID,
+    rowCount: 1,
+    painted: true,
+    intersectsViewport: true,
+    hitTested: true,
+  });
   expect(frames.some((frame) => frame.gap <= 1)).toBe(true);
   expect(frames.at(-1)?.gap).toBeLessThanOrEqual(1);
   expect(Math.abs(frames.at(-1)?.scrollTop - frames.at(-1)?.maxScrollTop)).toBeLessThanOrEqual(1);
@@ -124,15 +208,18 @@ test('a visible reader already at tail acknowledges append and resize without pu
   await expect.poll(() => viewport.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeLessThanOrEqual(24);
   await installProbe(page);
 
-  const pulse = await request.post('/mock/control/action', { data: { type: 'pulse' } });
-  expect(pulse.ok()).toBe(true);
+  const appended = await appendCanonicalTail(request, {
+    ask: 'J canonical following append',
+    text: 'J canonical following tail content',
+  });
   const frames = await sampleFrames(page);
+  await expect(page.locator(`[data-presentation-row-id="${appended.request_id}"]`)).toHaveCount(1);
   const evidence = await page.evaluate(() => ({
     scrollWrites: window.__JUMP_LATEST_SCROLL_WRITES__ || [],
     rows: [...document.querySelectorAll('.timeline-message-list [data-presentation-row-id]')]
       .map((node) => node.dataset.presentationRowId || ''),
   }));
-  await attachJSON(testInfo, 'jump-latest-following.json', { frames, ...evidence });
+  await attachJSON(testInfo, 'jump-latest-following.json', { appended, frames, ...evidence });
 
   // A reader already following the tail must consume the append in place:
   // there is no unseen affordance and the list remains physically at bottom.
