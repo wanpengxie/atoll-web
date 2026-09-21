@@ -55,7 +55,7 @@ describe('ContentPlan semantic boundaries', () => {
     ['raw HTML', '<img src=x onerror="alert(1)">\n\n<script>alert(2)</script>'],
     ['soft and hard breaks', 'soft\nline  \nforced'],
     ['footnotes', 'call[^one]\n\n[^one]: footnote text'],
-  ])('matches react-markdown protection and edge semantics for %s', (_name, source) => {
+  ])('[TC-0526][AD-232] matches react-markdown protection and edge semantics for %s', (_name, source) => {
     expect(preparedHTML(source)).toBe(plannedHTML(source));
   });
 });
