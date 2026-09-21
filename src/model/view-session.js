@@ -356,6 +356,46 @@ export function createViewSessionStore({ principalID = '', storage = globalThis.
       if (changed) persist({ preserveLatestPreferences: true });
       return Object.freeze({ records: Object.freeze([...before]), remaining });
     },
+    acknowledgeActiveUnseenRecords(channelID, recordKeys = [], expectedActivationID = '') {
+      const prefix = `${channelID}\u0000`;
+      const activation = String(expectedActivationID || '');
+      const keys = new Set((Array.isArray(recordKeys) ? recordKeys : [recordKeys])
+        .map((key) => String(key || ''))
+        .filter(Boolean));
+      const before = new Map();
+      let changed = false;
+      let remaining = 0;
+      if (!activation) return Object.freeze({ records: Object.freeze([]), remaining: 0 });
+      for (const [key, activationID] of active) {
+        if (!key.startsWith(prefix) || !activationID || activationID !== activation) continue;
+        const current = readings.get(key) || defaultReading();
+        if (!unseenAcknowledgements.get(key)) {
+          unseenAcknowledgements.set(key, true);
+          remaining = Math.max(remaining, current.unseenRecords.length);
+          continue;
+        }
+        const retained = [];
+        let acknowledged = false;
+        for (const [recordKey, seq] of current.unseenRecords) {
+          if (keys.has(recordKey)) {
+            before.set(recordKey, Math.max(before.get(recordKey) || 0, seq));
+            acknowledged = true;
+          } else {
+            retained.push([recordKey, seq]);
+          }
+        }
+        remaining = Math.max(remaining, retained.length);
+        if (!acknowledged) continue;
+        readings.set(key, copyReading({
+          ...current,
+          revision: current.revision + 1,
+          unseenRecords: retained,
+        }));
+        changed = true;
+      }
+      if (changed) persist({ preserveLatestPreferences: true });
+      return Object.freeze({ records: Object.freeze([...before]), remaining });
+    },
     deactivate(channelID, viewKey, activationID) {
       const key = readingKey(channelID, viewKey);
       if (active.get(key) !== activationID) return false;
@@ -401,6 +441,18 @@ export function acknowledgeActiveReadingUnseen(channelID, throughSeq) {
   let remaining = 0;
   for (const store of viewSessionStores) {
     const result = store.acknowledgeActiveUnseen(channelID, throughSeq);
+    for (const [key, seq] of result.records) records.set(key, Math.max(records.get(key) || 0, seq));
+    remaining = Math.max(remaining, Number(result.remaining || 0));
+  }
+  return Object.freeze({ records: Object.freeze([...records]), remaining });
+}
+
+export function acknowledgeActiveReadingUnseenRecords(channelID, recordKeys, activationID) {
+  if (!activationID) return Object.freeze({ records: Object.freeze([]), remaining: 0 });
+  const records = new Map();
+  let remaining = 0;
+  for (const store of viewSessionStores) {
+    const result = store.acknowledgeActiveUnseenRecords(channelID, recordKeys, activationID);
     for (const [key, seq] of result.records) records.set(key, Math.max(records.get(key) || 0, seq));
     remaining = Math.max(remaining, Number(result.remaining || 0));
   }

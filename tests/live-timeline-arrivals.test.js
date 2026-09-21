@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createChannelReplicaStore } from '../src/model/channel-replica.js';
 import {
+  acknowledgeLiveTimelineRow,
   acknowledgeLiveTimelineArrivals,
   LIVE_ARRIVAL_RECEIPT,
 } from '../src/model/live-arrivals.js';
@@ -156,5 +157,36 @@ describe('live timeline arrival receipts', () => {
       acknowledgedRevision: 2,
       events: [],
     });
+  });
+
+  it('acknowledges one live row only when the typed identity is exact', () => {
+    const replica = createChannelReplicaStore();
+    const state = replica.ensure('c0').state;
+    state.arrivalReceipts.attachTimelineConsumer(Symbol('timeline'));
+
+    replica.commit(liveRow('c0', 33, request('visible')), 'me', (value) => value, { source: 'live' });
+    replica.commit(liveRow('c0', 35, request('hidden')), 'me', (value) => value, { source: 'live' });
+    const [visible, hidden] = state.arrivalReceipts.timeline().events;
+    const command = acknowledgeLiveTimelineRow(visible);
+    expect(command).toEqual({
+      type: LIVE_ARRIVAL_RECEIPT.acknowledgeTimelineRow,
+      key: 'visible',
+      rowID: 'visible',
+      seq: 33,
+      revision: 1,
+    });
+    expect(state.arrivalReceipts.dispatch(command)).toMatchObject({
+      acknowledged: true,
+      event: visible,
+      remaining: 1,
+    });
+    expect(state.arrivalReceipts.timeline().events).toEqual([hidden]);
+
+    // A stale revision or sequence cannot clear a newer journal event.
+    expect(state.arrivalReceipts.dispatch(acknowledgeLiveTimelineRow({
+      ...hidden,
+      revision: hidden.revision - 1,
+    }))).toMatchObject({ acknowledged: false, remaining: 1 });
+    expect(state.arrivalReceipts.timeline().events).toEqual([hidden]);
   });
 });

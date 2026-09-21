@@ -315,13 +315,13 @@ function useProjectionReadingOwner({
     () => createSessionController({ channelID, viewKey, viewSessions }),
     [channelID, viewKey, viewSessions],
   );
-  const arrivals = useTimelineArrivalReceipt(state, controller.activationID);
   const published = useSyncExternalStore(
     controller.subscribe,
     controller.getSnapshot,
     controller.getSnapshot,
   );
   const { session } = published;
+  const currentArrivalAuthorityRef = useRef(null);
   // A cold activation can commit a non-empty Presentation before Virtuoso has
   // published a range for this physical root. Keep that distinction in the
   // Reading owner: rows are readable data, but the first range is the public
@@ -359,6 +359,27 @@ function useProjectionReadingOwner({
     authorityRevision: 0,
     geometryRevision: 0,
   }));
+  const refreshArrivalAuthority = useCallback((evidence = observationRef.current, activeSession = controller.getSnapshot().session) => {
+    currentArrivalAuthorityRef.current = Object.freeze({
+      activationID: controller.activationID,
+      inputEpoch: Number(activeSession.inputEpoch || 0),
+      intentRevision: Number(activeSession.intentRevision || 0),
+      mode: activeSession.mode,
+      rootIdentity: Number(evidence.rootIdentity),
+      rootNode: evidence.rootNode || null,
+      presentationRevision: Number(snapshotRef.current?.revision || 0),
+      domPresentationRevision: Number(evidence.domPresentationRevision),
+      observationIdentity: evidence.observationIdentity || null,
+      visibleRowIDs: Object.freeze([...(evidence.visibleRowIDs || [])]),
+      settled: evidence.settled === true,
+      surfaceVisible: evidence.surfaceVisible === true,
+    });
+  }, [controller]);
+  const arrivals = useTimelineArrivalReceipt(
+    state,
+    controller.activationID,
+    currentArrivalAuthorityRef,
+  );
   const [observationRevision, setObservationRevision] = useState(0);
   const [documentVisible, setDocumentVisible] = useState(pageIsVisible);
   // Document and surface visibility are two observations of one effective
@@ -394,7 +415,8 @@ function useProjectionReadingOwner({
     committedOwnerRef.current = commitOwnerCandidate;
     snapshotRef.current = snapshot;
     historyStatusRef.current = historyStatus;
-  }, [commitOwnerCandidate, historyStatus, session, snapshot]);
+    refreshArrivalAuthority();
+  }, [commitOwnerCandidate, historyStatus, refreshArrivalAuthority, session, snapshot]);
   useLayoutEffect(() => {
     controller.start();
     return () => controller.suspend();
@@ -436,6 +458,7 @@ function useProjectionReadingOwner({
         authorityRevision: 0,
         geometryRevision: 0,
       });
+      currentArrivalAuthorityRef.current = null;
       if (!sameTailEvidence(cleared, observationRef.current)) {
         observationRef.current = cleared;
         setObservationRevision((value) => value + 1);
@@ -1070,6 +1093,7 @@ function useProjectionReadingOwner({
       authorityRevision: 0,
       geometryRevision: 0,
     });
+    currentArrivalAuthorityRef.current = null;
     setObservationRevision((value) => value + 1);
     return nextEpoch > Number(before.inputEpoch);
   }, [controller, onScopeHandoffCancel, onTailLeaseRevoke]);
@@ -1250,6 +1274,7 @@ function useProjectionReadingOwner({
           authorityRevision: 0,
           geometryRevision: 0,
         });
+        currentArrivalAuthorityRef.current = null;
         if (!sameTailEvidence(cleared, observationRef.current)) {
           observationRef.current = cleared;
           setObservationRevision((value) => value + 1);
@@ -1291,8 +1316,40 @@ function useProjectionReadingOwner({
         authorityRevision: Number(committedHistory.notificationAuthorityRevision || 0),
         geometryRevision: Number(observation.geometryRevision),
       });
-      if (!sameTailEvidence(nextEvidence, observationRef.current)) {
-        observationRef.current = nextEvidence;
+      const evidenceChanged = !sameTailEvidence(nextEvidence, observationRef.current);
+      // Install the accepted physical authority before handing its typed
+      // receipt to the Replica bridge. The bridge therefore validates against
+      // the current tuple and cannot mutate on a stale callback.
+      observationRef.current = nextEvidence;
+      refreshArrivalAuthority(nextEvidence, committedSession);
+      // Browsing evidence is a typed per-row receipt. It may acknowledge only
+      // hit-tested identities that still belong to this committed Presentation;
+      // the following/tail sequence receipt remains a separate path and is
+      // never used as a browsing shortcut.
+      if (committedSession.mode === READING_MODE.browsing && observation.atTail !== true) {
+        const currentRowIDs = new Set((committedSnapshot.rows || [])
+          .map((row) => String(row?.id || ''))
+          .filter(Boolean));
+        const visibleReceiptRowIDs = visibleRowIDs.filter((rowID) => currentRowIDs.has(rowID));
+        if (visibleReceiptRowIDs.length) {
+          arrivals?.acknowledgeVisibleRows?.(Object.freeze({
+            kind: 'reading-visible-row-receipt',
+            activationID: controller.activationID,
+            inputEpoch,
+            intentRevision: Number(committedSession.intentRevision || 0),
+            rootIdentity: Number(observation.rootIdentity),
+            rootNode: observation.rootNode,
+            presentationRevision: observedPresentationRevision,
+            domPresentationRevision: observedDomPresentationRevision,
+            observationIdentity: identity,
+            visibleRowIDs: Object.freeze(visibleReceiptRowIDs),
+            atTail: false,
+            settled: true,
+            surfaceVisible: true,
+          }));
+        }
+      }
+      if (evidenceChanged) {
         setObservationRevision((value) => value + 1);
       }
       return true;
@@ -1364,6 +1421,7 @@ function useProjectionReadingOwner({
             authorityRevision: 0,
             geometryRevision: 0,
           });
+          currentArrivalAuthorityRef.current = null;
           setObservationRevision((value) => value + 1);
         }
         // The shared effective-visibility fence above mints this re-entry
@@ -1397,6 +1455,7 @@ function useProjectionReadingOwner({
         authorityRevision: 0,
         geometryRevision: 0,
       });
+      currentArrivalAuthorityRef.current = null;
       setObservationRevision((value) => value + 1);
     },
     consumeBottomIntent(intent) {
@@ -1426,7 +1485,7 @@ function useProjectionReadingOwner({
     isFollowing: () => controller.getSnapshot().session.mode === READING_MODE.following,
     getSession: () => controller.getSnapshot().session,
   }), [
-    advanceVisibilityEpoch, arrivals?.events?.length, authoritativeEmpty, availability, availabilityError, beginNavigation,
+    advanceVisibilityEpoch, arrivals?.acknowledgeVisibleRows, arrivals?.events?.length, authoritativeEmpty, availability, availabilityError, beginNavigation,
     bottomReady, cancelHistoryStart, cancelNavigation, captureBottomIntent, captureContentAnchorForReading, channelID, controller,
     acceptHistoryPositionLease, consumeContentAnchorCommand, consumeHistoryPositionLease,
     acceptScopeHandoff,
@@ -1434,7 +1493,7 @@ function useProjectionReadingOwner({
     revokeHistoryPositionLease,
     history, historyBoundary, historyConsumer, historyStatus,
     failHistoryStart, historyStartCommand, onHistoryStartEvidence, presentationAuthority, presentationInitializing, presentationPending, requestBottom, requestHistory,
-    restorePending, session, syncObservationCurrent, syncStatus.error, tailCaughtUp,
+    refreshArrivalAuthority, restorePending, session, syncObservationCurrent, syncStatus.error, tailCaughtUp,
     onReadingRootActivation, onScopeHandoffCancel,
   ]);
 }

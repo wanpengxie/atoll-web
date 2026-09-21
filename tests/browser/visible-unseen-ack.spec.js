@@ -46,7 +46,14 @@ async function wheelToPhysicalGap(page, desiredGap) {
   const viewport = page.locator('.timeline-message-list');
   await viewport.hover();
   const gap = await viewport.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop);
-  await page.mouse.wheel(0, Math.max(1, gap - desiredGap));
+  let currentGap = gap;
+  // Keep each native wheel bounded so Chromium does not coalesce one large
+  // delta into a tail snap; the contract needs a real non-tail paint.
+  for (let index = 0; index < 20 && currentGap > desiredGap + 80; index += 1) {
+    await page.mouse.wheel(0, Math.min(160, Math.max(1, currentGap - desiredGap)));
+    await page.waitForTimeout(100);
+    currentGap = await viewport.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop);
+  }
   await expect.poll(() => viewport.evaluate((node) => (
     node.scrollHeight - node.clientHeight - node.scrollTop
   ))).toBeGreaterThan(1);

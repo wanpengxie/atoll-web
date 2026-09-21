@@ -663,6 +663,50 @@ function acknowledgeTimelineArrivals(state, throughRevision, throughSeq) {
   return state._liveArrivalAckRevision;
 }
 
+function acknowledgeTimelineRow(state, command = {}) {
+  const key = String(command.key || '');
+  const rowID = String(command.rowID || '');
+  const sequence = numeric(command.seq);
+  const revision = numeric(command.revision);
+  if (!key || !rowID || sequence <= 0 || revision <= 0) {
+    return Object.freeze({ acknowledged: false, event: null, remaining: timelineArrivalSnapshot(state).events.length });
+  }
+  const matches = (event) => String(event?.key || '') === key
+    && (String(event?.rowID || '') === rowID || event?.rowIDs?.includes?.(rowID))
+    && numeric(event?.seq) === sequence
+    && numeric(event?.revision) === revision;
+  let acknowledgedEvent = null;
+  state._liveArrivalLog = state._liveArrivalLog.filter((event) => {
+    if (!matches(event)) return true;
+    acknowledgedEvent = event;
+    return false;
+  });
+  for (const [eventKey, event] of state._liveArrivalOverflow) {
+    if (!matches(event)) continue;
+    acknowledgedEvent = event;
+    state._liveArrivalOverflow.delete(eventKey);
+  }
+  if (!acknowledgedEvent) {
+    return Object.freeze({ acknowledged: false, event: null, remaining: timelineArrivalSnapshot(state).events.length });
+  }
+  const retained = [
+    ...state._liveArrivalLog,
+    ...state._liveArrivalOverflow.values(),
+  ].filter((event) => event.revision > state._liveArrivalAckRevision);
+  const blockingRevision = retained.length
+    ? Math.min(...retained.map((event) => Number(event.revision || 0)))
+    : 0;
+  state._liveArrivalAckRevision = Math.max(
+    state._liveArrivalAckRevision,
+    blockingRevision ? Math.min(state._liveArrivalRevision, blockingRevision - 1) : state._liveArrivalRevision,
+  );
+  return Object.freeze({
+    acknowledged: true,
+    event: acknowledgedEvent,
+    remaining: timelineArrivalSnapshot(state).events.length,
+  });
+}
+
 function acknowledgePresentationArrivals(state, throughRevision) {
   const revision = Math.min(
     state._livePresentationArrivalRevision,
@@ -705,6 +749,9 @@ function arrivalReceiptPort(state) {
     dispatch(command) {
       if (command?.type === LIVE_ARRIVAL_RECEIPT.acknowledgeTimeline) {
         return acknowledgeTimelineArrivals(state, command.throughRevision, command.throughSeq);
+      }
+      if (command?.type === LIVE_ARRIVAL_RECEIPT.acknowledgeTimelineRow) {
+        return acknowledgeTimelineRow(state, command);
       }
       if (command?.type === LIVE_ARRIVAL_RECEIPT.acknowledgePresentation) {
         return acknowledgePresentationArrivals(state, command.throughRevision);

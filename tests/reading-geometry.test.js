@@ -1,11 +1,14 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { topVisibleBookmark } from '../src/ui/timeline/reading-geometry.js';
+import { topVisibleBookmark, visibleRowEvidence } from '../src/ui/timeline/reading-geometry.js';
 
 const previousDocument = globalThis.document;
+const previousComputedStyle = globalThis.getComputedStyle;
 
 afterEach(() => {
   if (previousDocument === undefined) delete globalThis.document;
   else globalThis.document = previousDocument;
+  if (previousComputedStyle === undefined) delete globalThis.getComputedStyle;
+  else globalThis.getComputedStyle = previousComputedStyle;
 });
 
 function node(id, rect) {
@@ -42,5 +45,32 @@ describe('public Reading geometry bookmark', () => {
       predecessorID: 'sliver',
       successorID: '',
     });
+  });
+
+  it('does not report a row whose painted pixels are hit-tested under the waiting dock', () => {
+    const row = node('arrival', {
+      top: 300, bottom: 500, left: 0, right: 800,
+    });
+    const waiting = {
+      getBoundingClientRect: () => ({ top: 450, bottom: 550, left: 0, right: 800, width: 800, height: 100 }),
+      contains: (candidate) => candidate === waiting,
+    };
+    const root = {
+      getBoundingClientRect: () => ({ top: 100, bottom: 600, left: 0, right: 800 }),
+      querySelectorAll: () => [row],
+    };
+    const style = {
+      display: 'block',
+      visibility: 'visible',
+      opacity: '1',
+      getPropertyValue: () => '0',
+    };
+    globalThis.getComputedStyle = () => style;
+    globalThis.document = {
+      querySelectorAll: () => [waiting],
+      elementFromPoint: (_x, y) => y >= 450 ? waiting : row,
+    };
+
+    expect(visibleRowEvidence(root, [{ id: 'arrival', seqHigh: 12 }])).toEqual([]);
   });
 });

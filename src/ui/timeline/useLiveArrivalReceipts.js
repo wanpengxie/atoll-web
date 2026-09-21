@@ -1,7 +1,8 @@
-import { useLayoutEffect, useMemo, useRef } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 import { readingTrace } from '../../model/diagnostics.js';
 import {
   acknowledgeLivePresentationArrivals,
+  acknowledgeLiveTimelineRow,
   acknowledgeLiveTimelineArrivals,
 } from '../../model/live-arrivals.js';
 import {
@@ -9,9 +10,42 @@ import {
   prepareActiveReadingUnseen,
   readActiveReadingUnseen,
   recordActiveReadingArrivals,
+  acknowledgeActiveReadingUnseenRecords,
 } from '../../model/view-session.js';
 
-export function useTimelineArrivalReceipt(state, activationID) {
+function sameObservationIdentity(left, right) {
+  if (!left || !right) return false;
+  return String(left.activationID || '') === String(right.activationID || '')
+    && Number.isSafeInteger(Number(left.inputEpoch))
+    && Number(left.inputEpoch) === Number(right.inputEpoch)
+    && Number.isSafeInteger(Number(left.intentRevision))
+    && Number(left.intentRevision) === Number(right.intentRevision)
+    && Number.isSafeInteger(Number(left.presentationRevision))
+    && Number(left.presentationRevision) === Number(right.presentationRevision)
+    && Number.isSafeInteger(Number(left.generation))
+    && Number(left.generation) === Number(right.generation)
+    && Number.isSafeInteger(Number(left.authorityRevision))
+    && Number(left.authorityRevision) === Number(right.authorityRevision)
+    && typeof left.tailID === 'string'
+    && left.tailID === right.tailID
+    && Number.isSafeInteger(Number(left.rootIdentity))
+    && Number(left.rootIdentity) === Number(right.rootIdentity);
+}
+
+function sameIDs(left = [], right = []) {
+  const a = [...new Set(left.map(String).filter(Boolean))].sort();
+  const b = [...new Set(right.map(String).filter(Boolean))].sort();
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+function rejectedReceipt() {
+  return Object.freeze({
+    records: Object.freeze([]),
+    remaining: 0,
+  });
+}
+
+export function useTimelineArrivalReceipt(state, activationID, currentAuthorityRef = null) {
   const tokenRef = useRef(null);
   const activationBaselineRef = useRef(null);
   if (!tokenRef.current) tokenRef.current = Symbol('timeline-live-arrival-consumer');
@@ -85,6 +119,78 @@ export function useTimelineArrivalReceipt(state, activationID) {
     )));
   }, [activeLiveEvents, durableFingerprint, activeDurableRecords]);
 
+  const acknowledgeVisibleRows = useCallback((receipt = {}) => {
+    const currentAuthority = currentAuthorityRef?.current;
+    if (receipt?.kind !== 'reading-visible-row-receipt'
+      || receipt?.activationID !== activationID
+      || receipt?.settled !== true
+      || receipt?.atTail === true
+      || !currentAuthority
+      || currentAuthority.activationID !== activationID
+      || currentAuthority.mode !== 'browsing'
+      || currentAuthority.settled !== true
+      || currentAuthority.surfaceVisible !== true
+      || currentAuthority.rootIdentity <= 0
+      || !Number.isSafeInteger(currentAuthority.inputEpoch)
+      || !Number.isSafeInteger(currentAuthority.intentRevision)
+      || !Number.isSafeInteger(currentAuthority.rootIdentity)
+      || !Number.isSafeInteger(currentAuthority.presentationRevision)
+      || !Number.isSafeInteger(currentAuthority.domPresentationRevision)
+      || receipt.inputEpoch !== currentAuthority.inputEpoch
+      || receipt.intentRevision !== currentAuthority.intentRevision
+      || receipt.rootIdentity !== currentAuthority.rootIdentity
+      || receipt.presentationRevision !== currentAuthority.presentationRevision
+      || receipt.domPresentationRevision !== currentAuthority.domPresentationRevision
+      || receipt.rootNode !== currentAuthority.rootNode
+      || receipt.surfaceVisible !== true
+      || !sameObservationIdentity(receipt.observationIdentity, currentAuthority.observationIdentity)) {
+      return rejectedReceipt();
+    }
+    const visibleRowIDs = [...new Set((receipt.visibleRowIDs || [])
+      .map((id) => String(id || ''))
+      .filter(Boolean))];
+    if (!visibleRowIDs.length || !sameIDs(visibleRowIDs, currentAuthority.visibleRowIDs)) {
+      return rejectedReceipt();
+    }
+    const visible = new Set(visibleRowIDs);
+    const viewSessionKeys = new Set();
+    for (const event of activeLiveEvents) {
+      const matchingRowID = [event?.rowID, ...(event?.rowIDs || [])]
+        .map((id) => String(id || ''))
+        .find((id) => visible.has(id));
+      if (!matchingRowID) continue;
+      const result = state.arrivalReceipts.dispatch(acknowledgeLiveTimelineRow({
+        key: event.key,
+        rowID: matchingRowID,
+        seq: event.seq,
+        revision: event.revision,
+      }));
+      if (result?.acknowledged === true) viewSessionKeys.add(String(event.key || matchingRowID));
+    }
+    // A DOM row without an exact current Replica event is not an arrival
+    // receipt. It may be an old durable obligation or ordinary history, and
+    // rowID alone is not authority to clear that ViewSession record.
+    if (!viewSessionKeys.size) return Object.freeze({ records: Object.freeze([]), remaining: events.length });
+    const cleared = acknowledgeActiveReadingUnseenRecords(
+      state.channelId,
+      [...viewSessionKeys],
+      activationID,
+    );
+    if (cleared.records.length) {
+      readingTrace('reading.visible-rows-ack', {
+        channelId: state.channelId,
+        kind: receipt.kind,
+        mode: 'browsing',
+        before: {
+          count: cleared.records.length,
+          records: cleared.records.map(([key, seq]) => ({ key, seq })),
+        },
+        remaining: cleared.remaining,
+      });
+    }
+    return cleared;
+  }, [activationID, activeLiveEvents, currentAuthorityRef, events.length, state.arrivalReceipts, state.channelId]);
+
   return {
     ...snapshot,
     events,
@@ -105,6 +211,7 @@ export function useTimelineArrivalReceipt(state, activationID) {
       }
       return acknowledged;
     },
+    acknowledgeVisibleRows,
   };
 }
 

@@ -56,6 +56,16 @@ export function visibleRowEvidence(root, rows) {
   if (!rootRect || rootRect.width <= 0 || rootRect.height <= 0) return Object.freeze([]);
   const reserve = fixedWaitingReserve(root);
   const readableBottom = Math.max(rootRect.top, rootRect.bottom - reserve);
+  const waitingLayers = [...(globalThis.document.querySelectorAll?.('.agent-wait-layer') || [])]
+    .filter((layer) => {
+      const style = globalThis.getComputedStyle?.(layer);
+      const rect = layer.getBoundingClientRect?.();
+      return rect?.width > 0
+        && rect?.height > 0
+        && style?.display !== 'none'
+        && style?.visibility !== 'hidden'
+        && Number.parseFloat(style?.opacity || '1') > 0;
+    });
   const rowByID = new Map(rows.map((row) => [String(row.id), row]));
   const visible = [];
   for (const node of root.querySelectorAll('[data-presentation-row-id]')) {
@@ -83,6 +93,25 @@ export function visibleRowEvidence(root, rows) {
     const top = Math.max(rootRect.top, rect.top);
     const bottom = Math.min(readableBottom, rect.bottom);
     if (right - left <= 1 || bottom - top <= 1) continue;
+    // The waiting dock is outside the reading root but paints above its lower
+    // rows. A row with any actually hit-tested dock coverage is not yet a
+    // readable arrival; keep its obligation until a later paint exposes it.
+    // This is geometry evidence only: the dock remains the existing
+    // Presentation owner and no scroll or acknowledgement is performed here.
+    const waitingCovered = waitingLayers.some((layer) => {
+      const waitingRect = layer.getBoundingClientRect?.();
+      const overlapTop = Math.max(rect.top, waitingRect?.top ?? Number.POSITIVE_INFINITY);
+      const overlapBottom = Math.min(rect.bottom, waitingRect?.bottom ?? Number.NEGATIVE_INFINITY);
+      const overlapLeft = Math.max(left, waitingRect?.left ?? Number.POSITIVE_INFINITY);
+      const overlapRight = Math.min(right, waitingRect?.right ?? Number.NEGATIVE_INFINITY);
+      if (overlapRight - overlapLeft <= 1 || overlapBottom - overlapTop <= 1) return false;
+      const target = globalThis.document.elementFromPoint(
+        (overlapLeft + overlapRight) / 2,
+        (overlapTop + overlapBottom) / 2,
+      );
+      return Boolean(target && (target === layer || layer.contains(target)));
+    });
+    if (waitingCovered) continue;
     const xs = [(left + right) / 2];
     const ys = [top + 1, (top + bottom) / 2, bottom - 1];
     const ownsVisiblePoint = ys.some((y) => xs.some((x) => {
