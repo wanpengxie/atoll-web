@@ -6,7 +6,7 @@ import { ENVELOPE_FIELDS } from '../src/protocol/envelope.js';
 const fixtures = JSON.parse(readFileSync(new URL('./fixtures/atoll-contract-v5.json', import.meta.url), 'utf8'));
 
 describe('atoll contract v5 fixtures', () => {
-  it('parses every authoritative downstream frame shape', () => {
+  it('[TC-0546] parses every authoritative downstream frame shape', () => {
     for (const [name, value] of Object.entries(fixtures.downstream)) {
       const parsed = parseDownstream(JSON.stringify(value));
       expect(parsed.kind, name).not.toBe('invalid');
