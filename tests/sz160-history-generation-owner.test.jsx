@@ -60,7 +60,7 @@ function admission() {
   };
 }
 
-function historyFor({ generation, request, hasOlder = true } = {}) {
+function historyFor({ generation, request } = {}) {
   return {
     request,
     refreshLatest: vi.fn(),
@@ -68,14 +68,16 @@ function historyFor({ generation, request, hasOlder = true } = {}) {
       channelId: 'c0',
       attached: true,
       generation,
-      sourceLease: `sz160-generation-${generation}`,
+      // Keep every authority fact stable across the replacement. The only
+      // semantic world change in this matrix is the generation fence.
+      sourceLease: 'sz160-stable-lease',
       messageCurrent: true,
       headSeq: 1,
       oldestSeq: 1,
       coverage: [{ lowSeq: 1, highSeq: 1 }],
       loaded: true,
       completedPages: 1,
-      hasOlder,
+      hasOlder: true,
       buffered: 0,
       loading: false,
       localReplicaReady: true,
@@ -133,12 +135,19 @@ describe('SZ-160 current history generation owner', () => {
 
     view.rerender(
       <ProjectionHarness
-        history={historyFor({ generation: 2, request: requestB, hasOlder: false })}
+        history={historyFor({ generation: 2, request: requestB })}
         onCommit={onCommit}
       />,
     );
     await waitFor(() => expect(committedPort).not.toBe(ownerA));
-    expect(committedPort.status.generation).toBe(2);
+    expect(committedPort.status).toMatchObject({
+      generation: 2,
+      sourceLease: ownerA.status.sourceLease,
+      hasOlder: ownerA.status.hasOlder,
+      messageCurrent: ownerA.status.messageCurrent,
+      headSeq: ownerA.status.headSeq,
+      oldestSeq: ownerA.status.oldestSeq,
+    });
 
     await act(async () => {
       settleOld({ kind: 'exhausted' });
