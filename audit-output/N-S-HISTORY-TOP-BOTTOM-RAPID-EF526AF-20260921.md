@@ -31,12 +31,12 @@ test and this audit are intentionally separate from the SZ160 work.
 
 | Field | Contract |
 |---|---|
-| Baseline file / exact case | `tests/browser/history-top-bottom-rapid.spec.js:221` — `rapid top->bottom round trip on mixed-height-history keeps history loading and keeps every message reachable` |
+| Baseline file / exact case | `tests/browser/history-top-bottom-rapid.spec.js:156` — `rapid top->bottom round trip on mixed-height-history keeps history loading and keeps every message reachable` |
 | User capability | On a long mixed-height history, rapid wheel input can reach the oldest record, return to the tail, and still reach every message; the user never sees a stuck top, a blank viewport, or lost rows. |
 | Architectural invariant | The committed Reading/history owner must admit and settle older-history supply under changing scroll input without a wedged admission token; virtualized presentation must preserve stable row identity and tail geometry through the round trip. |
 | Setup / action | Real application entry; reset mock scenario `mixed-height-history`, seed `1918`; login as public `root`; rapid native wheel to the physical top, quiet settle, rapid wheel to the tail, then walk back upward while collecting public row IDs. |
-| Public observables | `.timeline-message-list` scroll geometry, `[data-presentation-row-id]` rows, visible row count/identity, public history demand phase, page navigation/errors, and screenshots/evidence JSON. Diagnostics are collected only to localize a wedge and are not used as the product verdict. |
-| Disposition | **ACCEPT / PASS** — focused run 1/1 and independent `--repeat-each=5` run 5/5. |
+| Public observables | `.timeline-message-list` scroll geometry, `[data-presentation-row-id]` rows, visible row count/identity, public history demand phase, reload/environment validity, and screenshots/evidence JSON. No private diagnostics are read or used as a verdict. |
+| Disposition | **ACCEPT / PASS** — original focused/repeat5 provenance plus the public-only current-main repeat3 below. |
 
 ## Exact verification
 
@@ -75,22 +75,39 @@ npx playwright test tests/browser/history-top-bottom-rapid.spec.js \
 5 passed (2.3m)
 ```
 
-The replay is the integration evidence for this commit; its evidence JSON is
-retained under
+This was the `05cb638` integration replay before the public-only oracle
+rework; its private-diagnostics fields are historical evidence only, not a
+current verdict. Its evidence JSON is retained under
 `test-results-ns-history-top-bottom-aa99e90-repeat5/*/top-bottom-rapid-evidence.json`.
 
-Every valid repeat reported the same user-facing contract:
+## Public-only revision
+
+The reworked spec removes all `__ATOLL_DIAGNOSTICS__` reads and assertions.
+The default gate fixes the ordinary `mixed-height-history` 120-turn scenario,
+removes injected transport delay and huge-history overrides, and uses a 90s
+normal-case timeout. Huge/slow variants are outside this default contract.
+
+Fresh Chromium repeat3 on the same exact `aa99e90` worktree:
+
+```text
+ATOLL_TEST_WEB_PORT=25856 ATOLL_TEST_MOCK_PORT=25857 \
+npx playwright test tests/browser/history-top-bottom-rapid.spec.js \
+  --workers=1 --repeat-each=3 --reporter=line \
+  --output=test-results-ns-history-top-bottom-aa99e90-public-repeat3
+3 passed (1.4m)
+```
+
+Every public-only repeat reported:
 
 - `oldestReached=1`, `seenTurnCount=120`, `walkSteps=68`;
-- `missingTurns=[]`, `stuck=[]`, `blank=[]`, `wedgedCommitChecks=[]`;
-- `reloadsDuringRun=0`, `missingRootFrames=0`, no page errors or dynamic-load
-  failures;
+- `missingTurns=[]`, `stuck=[]`, `blank=[]`;
+- `reloadsDuringRun=0`, `missingRootFrames=0`;
 - quiet top ended with public history demand `idle`, oldest turn `1`;
 - settled tail had newest turn `120`, visible rows `3`, `maxGap=48`, and
   demand `idle`.
 
-The repeat evidence JSON is retained in the detached worktree under
-`test-results-ns-history-top-bottom-ef526af-repeat5/*/top-bottom-rapid-evidence.json`.
+The public-only evidence JSON is retained in the detached worktree under
+`test-results-ns-history-top-bottom-aa99e90-public-repeat3/*/top-bottom-rapid-evidence.json`.
 
 ## Boundary and non-changes
 
