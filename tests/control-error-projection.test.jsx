@@ -170,6 +170,30 @@ describe('Composer public control error projection', () => {
     config.store.close();
   });
 
+  it('[TC0659/AD-365] keeps resolve payloads in the backend field-closed forms', async () => {
+    const resolve = vi.fn().mockResolvedValue({ request_id: 'request-1' });
+    const config = harness({ resolve });
+    const { result, unmount } = renderHook(() => useComposerSubmissionRuntime(config));
+    await waitFor(() => expect(result.current.pending).toEqual([]));
+
+    await act(async () => {
+      await result.current.resolve('c0', 'ask-1', '', { text: '需要确认的回答' });
+    });
+    expect(resolve).toHaveBeenNthCalledWith(1, {
+      channel_id: 'c0', req_id: 'ask-1', text: '需要确认的回答',
+    });
+
+    await act(async () => {
+      await result.current.resolve('c0', 'approve-1', 'approve', { note: '已核对' });
+    });
+    expect(resolve).toHaveBeenNthCalledWith(2, {
+      channel_id: 'c0', req_id: 'approve-1', decision: 'approve', note: '已核对',
+    });
+
+    unmount();
+    config.store.close();
+  });
+
   it('projects world reset of an in-flight control submission as a bounded durable error', async () => {
     let resolveReceipt;
     const receipt = new Promise((resolve) => { resolveReceipt = resolve; });
