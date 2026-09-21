@@ -64,6 +64,52 @@ afterEach(() => {
 });
 
 describe('current submission owner: outbox-store + composer runtime', () => {
+  it('restores an in-flight row as uncertain across a same-principal remount', async () => {
+    const principalId = `remount-root-${databaseSerial + 1}`;
+    const database = databaseName();
+    const firstStore = createOutboxStore({ databaseName: database });
+    await firstStore.putMany(principalId, [
+      { ...row('remount-transmitting', 'transmitting'), leaseOwner: 'old-runtime', leaseUntil: Date.now() + 10_000 },
+      { ...row('remount-rejected', 'rejected'), error: { code: 'forbidden', detail: '权限已撤销' } },
+    ]);
+    const base = {
+      activeChannelId: 'c0',
+      principalId,
+      producerOwnerToken: `owner-${principalId}`,
+      wireState: 'closed',
+      wireRef: { current: null },
+      accessRef: { current: { state: () => memberAccess() } },
+      onError: vi.fn(),
+      onNotice: vi.fn(),
+      onFeedChanged: vi.fn(),
+      onAccessChanged: vi.fn(),
+    };
+    const first = renderHook(() => useComposerSubmissionRuntime({
+      ...base,
+      outboxFactory: () => firstStore,
+    }));
+    await waitFor(() => expect(first.result.current.pending).toEqual(expect.arrayContaining([
+      expect.objectContaining({ messageId: 'remount-transmitting', state: 'uncertain' }),
+      expect.objectContaining({ messageId: 'remount-rejected', state: 'rejected', error: expect.objectContaining({ code: 'forbidden' }) }),
+    ])));
+    first.unmount();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    const secondStore = createOutboxStore({ databaseName: database });
+    const second = renderHook(() => useComposerSubmissionRuntime({
+      ...base,
+      outboxFactory: () => secondStore,
+    }));
+    await waitFor(() => expect(second.result.current.pending).toEqual(expect.arrayContaining([
+      expect.objectContaining({ messageId: 'remount-transmitting', state: 'uncertain' }),
+      expect.objectContaining({ messageId: 'remount-rejected', state: 'rejected', error: expect.objectContaining({ code: 'forbidden' }) }),
+    ])));
+    expect(second.result.current.pending.find((item) => item.messageId === 'remount-transmitting')).not.toHaveProperty('state', 'accepted');
+    expect((await secondStore.restore(principalId)).find((item) => item.messageId === 'remount-transmitting')).toMatchObject({ state: 'transmitting' });
+    second.unmount();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+  });
+
   it('does not publish transport authority from a suspended Composer candidate render', async () => {
     const submit = vi.fn().mockResolvedValue({ message_id: 'candidate-world-message' });
     const harness = runtimeHarness({ wireState: 'open', submit });
