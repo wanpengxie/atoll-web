@@ -1,10 +1,10 @@
 # SZ-177 CAS re-verification — A1 → B → A2
 
-Date: 2026-09-21  
-Base: `f370a874e0d9740eda4a7850877212c1f8ea94d2`  
-Prior candidate: `7c56421ee8a61d6ad5d25c99122a36b9275c0ca9`  
+Date: 2026-09-21
+Base: `f370a874e0d9740eda4a7850877212c1f8ea94d2`
+Prior candidate: `7c56421ee8a61d6ad5d25c99122a36b9275c0ca9`
 Owner: `useConversationProjection` public viewport plus the canonical
-`createViewSessionStore` activation/save/deactivate owner.  
+`createViewSessionStore` activation/save/deactivate owner.
 Test: `tests/sz177-channel-replacement-bottom-cas.test.jsx`
 
 ## Contract
