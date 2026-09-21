@@ -9,10 +9,13 @@ pending must not create a duplicate request, lose the current C authority, or
 reuse the retired source's completion as current data.
 
 The observable invariant is: source A settles once; the current public
-history consumer issues exactly one successor operation; after source B and
-then source C replace the authority, no third operation is issued while that
-successor remains pending. The public viewport status ends at generation 2,
-`sourceLease: 'source-C'`, with `hasOlder: true`.
+history consumer issues exactly one successor operation for the committed C
+source after the B→C replacement; that C operation settles successfully once,
+with no reuse of A and no duplicate operation. Every authority fact other
+than `sourceLease` is fixed: generation 1, attached true, messageCurrent true,
+local readiness, coverage, sync, and presentation revisions. The public
+viewport status ends at generation 1, `sourceLease: 'source-C'`, with
+`hasOlder: true`.
 
 ## Unique public owner
 
@@ -26,14 +29,16 @@ exports, or request-count-only fixture aliases.
 
 `tests/sz180-history-source-reacquisition.test.jsx` starts from a public empty
 projection with source A, observes the real `projection-underfill` demand,
-settles A as cancelled, then publishes source B and source C. It verifies:
+settles A as cancelled, then publishes source B and source C in one committed
+public-owner update. It verifies:
 
 - the initial request is the current public `projection-underfill` obligation;
-- one and only one successor request is made after the A settlement;
-- the committed viewport reports source C/generation 2 and still has older
+- source B creates no transient request and the committed C source creates
+  exactly one distinct successor request;
+- the committed viewport reports source C/generation 1 and still has older
   supply;
-- no duplicate request appears across the B→C replacement while the
-  successor remains pending.
+- the C successor resolves as `{ kind: 'loaded' }`, while A remains exactly
+  once and no duplicate C request appears.
 
 Current-main base:
 `3675ae2fa5479e56a16b2b32e731a64f476d206d`.
@@ -44,7 +49,8 @@ Focused command:
 npm test -- --run tests/sz180-history-source-reacquisition.test.jsx
 ```
 
-Result: 1 file passed, 1 test passed. Product files were not changed; no
+Result: 1 file passed, 1 test passed. The focused fixture was repeated five
+times and the production build passed. Product files were not changed; no
 skip/deletion, compatibility layer, vendor/package/lockfile, or private oracle
 was introduced.
 

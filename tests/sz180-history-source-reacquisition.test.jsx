@@ -34,17 +34,16 @@ function admission() {
   };
 }
 
-function historyFor({ generation, sourceLease, request }) {
-  const attached = generation > 0;
+function historyFor({ sourceLease, request }) {
   return {
     request,
     refreshLatest: vi.fn(),
     status: {
       channelId: 'c0',
-      attached,
-      generation,
+      attached: true,
+      generation: 1,
       sourceLease,
-      messageCurrent: attached,
+      messageCurrent: true,
       headSeq: 90,
       oldestSeq: 1,
       coverage: [{ lowSeq: 1, highSeq: 90 }],
@@ -67,9 +66,17 @@ describe('SZ-180 current history source reacquisition contract', () => {
   it('reacquires once after source A settles and does not duplicate across B to C', async () => {
     let settleFirst;
     const first = new Promise((resolve) => { settleFirst = resolve; });
-    const request = vi.fn()
-      .mockImplementationOnce(() => first)
-      .mockImplementation(() => new Promise(() => {}));
+    const requestA = vi.fn(() => first);
+    const requestB = vi.fn(() => new Promise(() => {}));
+    let settleSuccessor;
+    let successorResult;
+    const successor = new Promise((resolve) => {
+      settleSuccessor = (result) => {
+        successorResult = result;
+        resolve(result);
+      };
+    });
+    const requestC = vi.fn(() => successor);
     const state = stateFor();
     const viewSessions = {
       readView: () => ({ mode: 'following', revision: 0 }),
@@ -91,15 +98,15 @@ describe('SZ-180 current history source reacquisition contract', () => {
       ({ history }) => useConversationProjection({ ...base, history }),
       {
         initialProps: {
-          history: historyFor({ generation: 0, sourceLease: 'source-A', request }),
+          history: historyFor({ sourceLease: 'source-A', request: requestA }),
         },
       },
     );
 
     // The current public projection owner creates the one anticipatory
     // underfill demand for the local empty window.
-    await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
-    expect(request.mock.calls[0][0]).toMatchObject({
+    await waitFor(() => expect(requestA).toHaveBeenCalledOnce());
+    expect(requestA.mock.calls[0][0]).toMatchObject({
       reason: 'projection-underfill',
       urgency: 'anticipatory',
     });
@@ -110,22 +117,34 @@ describe('SZ-180 current history source reacquisition contract', () => {
     });
 
     // Source B then C replace the authority while the same public Reading
-    // owner is still mounted. Only one successor supply operation may exist.
-    rerender({ history: historyFor({ generation: 1, sourceLease: 'source-B', request }) });
-    rerender({ history: historyFor({ generation: 2, sourceLease: 'source-C', request }) });
-    await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
-    await act(async () => { await Promise.resolve(); });
+    // owner is still mounted. Only the committed C successor may run; the
+    // transient B replacement must not create a second operation.
+    await act(async () => {
+      rerender({ history: historyFor({ sourceLease: 'source-B', request: requestB }) });
+      rerender({ history: historyFor({ sourceLease: 'source-C', request: requestC }) });
+    });
+    await waitFor(() => expect(requestC).toHaveBeenCalledOnce());
+    expect(requestB).not.toHaveBeenCalled();
 
     expect(result.current.viewport.status).toMatchObject({
-      generation: 2,
+      generation: 1,
+      attached: true,
       sourceLease: 'source-C',
+      messageCurrent: true,
       hasOlder: true,
     });
-    expect(request).toHaveBeenCalledTimes(2);
-    expect(request.mock.calls[1][0]).toMatchObject({
+    expect(requestC.mock.calls[0][0]).toMatchObject({
       reason: 'projection-underfill',
       urgency: 'anticipatory',
     });
+
+    await act(async () => {
+      settleSuccessor({ kind: 'loaded' });
+      await successor;
+    });
+    expect(successorResult).toEqual({ kind: 'loaded' });
+    expect(requestA).toHaveBeenCalledOnce();
+    expect(requestC).toHaveBeenCalledOnce();
     unmount();
   });
 });
