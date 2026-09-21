@@ -704,7 +704,7 @@ describe('A-D round 24 public-owner evidence', () => {
     })).not.toThrow();
   });
 
-  it('[AD-364] sends standard control payloads for an Agent word advertised by describe', () => {
+  it('[TC0658/AD-364] sends standard control payloads for an Agent word advertised by describe', () => {
     // 用户能力：base advertise 的标准控制词仍能携带其声明 payload。
     // 不变量：控制 payload 的字段闭集来自 describe，而不是固定 slash-command 表。
     // 公开 owner：buildComposerModel/createComposerCommandRequest。
@@ -719,9 +719,19 @@ describe('A-D round 24 public-owner evidence', () => {
         inputSchema: { type: 'object', properties: { expected_hold_id: { type: 'string' } }, required: ['expected_hold_id'] },
       }]]) } }]]),
     });
-    expect(() => createComposerCommandRequest(model, {
+    expect(createComposerCommandRequest(model, {
       kind: 'command', command: 'replace', type, scope: 'agent', payload: { expected_hold_id: 'hold-1' },
-    })).not.toThrow();
+    })).toEqual({
+      channelId: 'c0',
+      text: '',
+      msgType: type,
+      audience: [AGENT.id],
+      targetLabel: AGENT.name,
+      payload: { expected_hold_id: 'hold-1' },
+    });
+    expect(() => createComposerCommandRequest(model, {
+      kind: 'command', command: 'replace', type, scope: 'agent', payload: { expected_hold_id: 7 },
+    })).toThrowError(expect.objectContaining({ code: 'composer_command_payload_invalid' }));
   });
 });
 
