@@ -29,7 +29,7 @@ function parserProjection(contentPlan) {
 }
 
 describe('ContentPlan', () => {
-  it('keeps unique surviving block ids and never duplicates ids for repeated content', () => {
+  it('[TC-0527][AD-233] keeps unique surviving block ids and never duplicates ids for repeated content', () => {
     const first = plan({ contentKey: 'message:m1:body', source: 'alpha\n\nrepeat\n\nrepeat\n\nomega' });
     expect(new Set(first.blocks.map((block) => block.blockID)).size).toBe(first.blocks.length);
 
