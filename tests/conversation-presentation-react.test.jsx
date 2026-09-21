@@ -23,7 +23,7 @@ function committedProjection(projector, entries, options) {
 }
 
 describe('conversation presentation React ownership', () => {
-  it('does not rebase the committed view after a different view suspends', () => {
+  it('[TC-0554][AD-260] does not rebase the committed view after a different view suspends', () => {
     const projector = createConversationPresentation();
     const a = message('a', 1);
     const initial = committedProjection(projector, [a], {

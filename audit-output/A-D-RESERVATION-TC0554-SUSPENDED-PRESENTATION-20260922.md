@@ -58,3 +58,29 @@ untracked test infrastructure and must not be committed.
 This is an atomic claim: this reservation report is committed before changing
 the test declaration. Closeout will append focused, adjacent, and build
 evidence plus the final PASS or bounded regression disposition.
+
+## Closeout — 2026-09-22
+
+- **Reservation commit:** `e8812e6` (`claim TC0554 suspended presentation
+  baseline`).
+- **Migration:** the existing declaration is tagged
+  `[TC-0554][AD-260]`; its Suspense fallback, candidate evaluation,
+  committed-snapshot identity, entity identity, and revision assertions remain
+  unchanged. No test was deleted/skipped and no private oracle, alternate
+  store, or compatibility path was introduced.
+- **Focused:**
+  `npm test -- tests/conversation-presentation-react.test.jsx --run -t 'TC-0554' --reporter=verbose`
+  — **1 passed**.
+- **Adjacent owner suite:**
+  `npm test -- tests/conversation-presentation-react.test.jsx --run --reporter=verbose`
+  — **1 passed, 0 failed**.
+- **Adjacent reading/presentation suites:**
+  `npm test -- tests/conversation-behavior-fuzz.test.js tests/reading-session-ports.test.js tests/view-session.test.js --run --reporter=dot`
+  — **15 passed, 0 failed**.
+- **Build:** `npm run build` — **passed**; Vite emitted only the existing
+  large-chunk advisory.
+- **Disposition:** **PASS / MIGRATED**, credit `1`. A suspended candidate for
+  another view cannot rebase the committed presentation; the original view
+  resumes with stable snapshot, entity, and revision identity. No product
+  change or semantic weakening was required.
+- **Final commit:** recorded below after this closeout and test-only tag.
