@@ -208,6 +208,10 @@ export function useComposerSubmissionRuntime({
   const retryPrincipalRef = useRef(principalId);
   const acceptingRef = useRef(new Map());
   const landedRef = useRef(new Set());
+  // The channel notice is a projection of one concrete submission attempt.
+  // Keep its durable identity and correlation so a late settlement cannot
+  // clear a newer notice for the same message id.
+  const submissionNoticeRef = useRef(null);
   const submissionCorrelationPortRef = useRef(null);
   // SendLease is the sole in-memory CAS owner for a submission attempt. Its
   // authority and correlation facts never enter the durable outbox row.
@@ -406,6 +410,30 @@ export function useComposerSubmissionRuntime({
     if (currentSendLease(lease)) sendLeaseRef.current.delete(lease.entryID);
     return forgotten;
   }, [currentSendLease]);
+
+  const publishUncertainNotice = useCallback((lease, submission) => {
+    if (!currentSendLease(lease)) return false;
+    const notice = Object.freeze({
+      channelId: submission.channelId,
+      messageId: submission.messageId,
+      correlationID: lease.correlationID,
+    });
+    submissionNoticeRef.current = notice;
+    onNotice('发送结果待确认，正在通过重连账本核对。');
+    return true;
+  }, [currentSendLease, onNotice]);
+
+  const clearSubmissionNotice = useCallback((lease, submission) => {
+    if (!currentSendLease(lease)) return false;
+    const notice = submissionNoticeRef.current;
+    if (!notice
+      || notice.channelId !== submission.channelId
+      || notice.messageId !== submission.messageId
+      || notice.correlationID !== lease.correlationID) return false;
+    submissionNoticeRef.current = null;
+    onNotice('');
+    return true;
+  }, [currentSendLease, onNotice]);
 
   useEffect(() => {
     const generation = ++hydrationRef.current;
@@ -783,6 +811,7 @@ export function useComposerSubmissionRuntime({
         });
       if (!isLeaseCurrent()) return false;
       if (landedRef.current.has(submission.messageId)) {
+        clearSubmissionNotice(lease, submission);
         submissionCorrelationPortRef.current.markLanded({
           channelId: submission.channelId,
           messageId: submission.messageId,
@@ -790,6 +819,7 @@ export function useComposerSubmissionRuntime({
         await outboxRef.current.remove(owner.principalId, submission.messageId);
         publishPending((rows) => rows.filter((row) => row.messageId !== submission.messageId));
       } else if (accepted) {
+        clearSubmissionNotice(lease, submission);
         publishPending((rows) => rows.map((row) => row.messageId === submission.messageId ? accepted : row));
       }
       onFeedChanged(submission.channelId);
@@ -826,13 +856,13 @@ export function useComposerSubmissionRuntime({
         });
       if (!isLeaseCurrent()) return false;
       if (failed) publishPending((rows) => rows.map((row) => row.messageId === submission.messageId ? failed : row));
-      if (state === 'uncertain') onNotice('发送结果待确认，正在通过重连账本核对。');
+      if (state === 'uncertain' && failed) publishUncertainNotice(lease, submission);
       if (state === 'rejected') {
         // A prior transport close may have published an uncertain notice for
         // this same durable intent.  Once the backend gives its definitive
         // rejection, that transient projection is no longer truthful; the
         // Composer's rejected row is the single public failure surface.
-        onNotice('');
+        clearSubmissionNotice(lease, submission);
         forgetLeaseCorrelation(lease, {
           channelId: submission.channelId,
           messageId: submission.messageId,
@@ -852,7 +882,7 @@ export function useComposerSubmissionRuntime({
         }
       }
     }
-  }, [assessSubmissionOwner, authorizeSubmission, beginSendLease, captureOwner, currentFacts, currentSendLease, forgetLeaseCorrelation, onAccessChanged, onError, onFeedChanged, onNotice, publishPending]);
+  }, [assessSubmissionOwner, authorizeSubmission, beginSendLease, captureOwner, clearSubmissionNotice, currentFacts, currentSendLease, forgetLeaseCorrelation, onAccessChanged, onError, onFeedChanged, publishPending, publishUncertainNotice]);
   transmitRef.current = transmit;
 
   const sendOnce = useCallback(async (request = {}) => {
@@ -1027,6 +1057,11 @@ export function useComposerSubmissionRuntime({
       const removed = pendingRef.current.filter((row) => landed.has(row.messageId));
       publishPending((rows) => rows.filter((row) => !landed.has(row.messageId)));
       for (const row of removed) {
+        const lease = sendLeaseRef.current.get(submissionEntryID(
+          authorityRef.current?.principalId || principalId,
+          row.messageId,
+        ));
+        clearSubmissionNotice(lease, row);
         submissionCorrelationPortRef.current.markLanded({
           channelId: row.channelId,
           messageId: row.messageId,
@@ -1044,7 +1079,7 @@ export function useComposerSubmissionRuntime({
       for (const key of removedKeys) void removePersistedControl(key).catch(onError);
     }
     return true;
-  }, [onError, principalId, publishControlStates, publishPending, removePersistedControl]);
+  }, [clearSubmissionNotice, onError, principalId, publishControlStates, publishPending, removePersistedControl]);
 
   const ownedWireCommand = useCallback(async (kind, channelId, reqId, decision, payload) => {
     const owner = captureOwner(channelId);

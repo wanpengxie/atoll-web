@@ -96,6 +96,7 @@ describe('TC0307 Composer stable submission origin', () => {
     await waitFor(() => expect(result.current.pending[0]).toMatchObject({
       messageId: 'tc0307-origin-stable', state: 'accepted',
     }));
+    expect(harness.onNotice).toHaveBeenLastCalledWith('');
     expect(submit).toHaveBeenCalledTimes(2);
     expect(prepareSubmit).toHaveBeenCalledTimes(2);
     expect(wireFrames).toHaveLength(2);
@@ -151,7 +152,11 @@ describe('TC0307 Composer stable submission origin', () => {
       if (args[3]?.frame) unmount();
       return store.patch(...args);
     });
-    harness.outboxFactory = () => ({ ...store, patch });
+    // Keep the test store readable after the logical owner is unmounted. The
+    // runtime's lifecycle fence still invalidates the lease synchronously;
+    // this only defers the physical-close concern so the durable row can be
+    // inspected after the rejected late patch.
+    harness.outboxFactory = () => ({ ...store, patch, close: vi.fn() });
     const hook = renderHook(() => useComposerSubmissionRuntime(harness));
     unmount = hook.unmount;
     await waitFor(() => expect(hook.result.current.pending).toEqual([]));
@@ -175,5 +180,108 @@ describe('TC0307 Composer stable submission origin', () => {
       expect.objectContaining({ leaseGuard: expect.any(Function) }),
     ));
     expect(submit).not.toHaveBeenCalled();
+
+    const restored = await store.restore(harness.principalId);
+    expect(restored).toHaveLength(1);
+    expect(restored[0]).toMatchObject({
+      messageId: 'tc0307-patch-stale',
+      state: 'transmitting',
+      frame: {
+        payload: { text: 'patch lease fence' },
+      },
+    });
+    expect(restored[0].frame.payload.origin).toBeUndefined();
+    expect(hook.result.current.submissionCorrelationPort.owns({
+      channelId: 'c0',
+      messageId: 'tc0307-patch-stale',
+    })).toBe(true);
+  });
+
+  it('does not let a stale receipt clear a newer uncertain notice', async () => {
+    let releaseFirstReceipt;
+    let submitCount = 0;
+    const firstReceipt = new Promise((resolve) => { releaseFirstReceipt = resolve; });
+    const submit = vi.fn(() => {
+      submitCount += 1;
+      if (submitCount === 1) return firstReceipt;
+      return Promise.reject(Object.assign(new Error('receipt dropped'), { code: 'closed' }));
+    });
+    const harness = runtimeHarness({
+      transport: { submit },
+      principalId: 'tc0307-stale-receipt-root',
+    });
+    const hook = renderHook(() => useComposerSubmissionRuntime(harness));
+    await waitFor(() => expect(hook.result.current.pending).toEqual([]));
+
+    let firstSend;
+    await act(async () => {
+      firstSend = hook.result.current.send({
+        messageId: 'tc0307-stale-receipt-old',
+        text: 'first attempt',
+        msgType: 'agent.ask',
+        audience: ['agent:worker:1'],
+      });
+      await firstSend;
+    });
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      await hook.result.current.send({
+        messageId: 'tc0307-stale-receipt-new',
+        text: 'replacement attempt',
+        msgType: 'agent.ask',
+        audience: ['agent:worker:1'],
+      });
+    });
+    await waitFor(() => expect(harness.onNotice).toHaveBeenLastCalledWith(
+      '发送结果待确认，正在通过重连账本核对。',
+    ));
+    expect(submit).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      releaseFirstReceipt({ message_id: 'tc0307-stale-receipt-old' });
+      await Promise.resolve();
+    });
+    expect(harness.onNotice).toHaveBeenLastCalledWith(
+      '发送结果待确认，正在通过重连账本核对。',
+    );
+    const restored = await harness.store.restore(harness.principalId);
+    expect(restored).toHaveLength(2);
+    expect(restored.find((row) => row.messageId === 'tc0307-stale-receipt-old')).toMatchObject({
+      state: 'accepted',
+    });
+    expect(restored.find((row) => row.messageId === 'tc0307-stale-receipt-new')).toMatchObject({
+      messageId: 'tc0307-stale-receipt-new',
+      state: 'uncertain',
+      frame: { payload: { text: 'replacement attempt' } },
+    });
+  });
+
+  it('clears the bound uncertain notice when the feed lands the submission', async () => {
+    const submit = vi.fn().mockRejectedValue(Object.assign(new Error('receipt dropped'), { code: 'closed' }));
+    const harness = runtimeHarness({
+      transport: { submit },
+      principalId: 'tc0307-landed-notice-root',
+    });
+    const hook = renderHook(() => useComposerSubmissionRuntime(harness));
+    await waitFor(() => expect(hook.result.current.pending).toEqual([]));
+
+    await act(async () => {
+      await hook.result.current.send({
+        messageId: 'tc0307-landed-notice',
+        text: 'landed after uncertain',
+        msgType: 'agent.ask',
+        audience: ['agent:worker:1'],
+      });
+    });
+    await waitFor(() => expect(harness.onNotice).toHaveBeenLastCalledWith(
+      '发送结果待确认，正在通过重连账本核对。',
+    ));
+
+    expect(hook.result.current.reconcileFeed(
+      new Set(['tc0307-landed-notice']), new Set(), harness.producerOwnerToken,
+    )).toBe(true);
+    await waitFor(() => expect(hook.result.current.pending).toEqual([]));
+    expect(harness.onNotice).toHaveBeenLastCalledWith('');
   });
 });
