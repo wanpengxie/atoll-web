@@ -663,6 +663,81 @@ describe('ChannelFeedRuntime ownership', () => {
     runtime.destroy();
   });
 
+  it('[TC-0456][AD-162] carries the committed producer owner through rAF batching and delayed roster callbacks', async () => {
+    // 用户能力：live row 在 Feed owner 交接期间仍归属于最初提交它的 owner；
+    // 迟到的旧 producer 不能再写入当前频道或提交一次假 landed 回调。
+    // 不变量：ChannelFeedRuntime 的 owner token 是 Feed/Replica/roster projection
+    // 的单一 admission fence；公开 owner 是 createChannelFeedRuntime + getOwnerSnapshot。
+    const ownerA = Object.freeze({ principalId: 'tc0456-owner-a' });
+    const ownerB = Object.freeze({ principalId: 'tc0456-owner-b' });
+    const submissionCalls = [];
+    const rosterCalls = [];
+    let rosterOwner = ownerA;
+    const options = runtimeOptions();
+    options.onSubmissionFeed = vi.fn((...args) => {
+      // Model the downstream rAF/settle delay without importing a private queue.
+      queueMicrotask(() => submissionCalls.push(args));
+    });
+    options.rosterRef.current = {
+      self: () => '',
+      observeFeed: () => '',
+      handleEnvelope: vi.fn((channelId, envelope) => {
+        const committedOwner = rosterOwner;
+        queueMicrotask(() => rosterCalls.push({ channelId, envelope, committedOwner }));
+      }),
+    };
+
+    const runtime = createChannelFeedRuntime(options);
+    runtime.mount();
+    runtime.bind({ ...options, ownerToken: ownerA });
+    try {
+      await runtime.getSnapshot().setHistoryGrants([
+        { channel_id: 'c0', head_seq: 0, has_rows: false },
+      ], { generation: 1, boot: 'tc0456-boot', focus: 'c0' });
+
+      const row = (seq, id) => ({
+        channel_id: 'c0', seq, source: 'live', generation: 1,
+        envelope: {
+          id, kind: 'event', type: 'channel.info',
+          sender: { id: 'system:c0:tc0456', kind: 'system' }, audience: [], payload: {},
+        },
+      });
+      const producerA = runtime.getOwnerSnapshot(ownerA);
+      expect(producerA.enqueue(row(1, 'owner-a-row'))).toBe(true);
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      expect(runtime.getSnapshot().stateFor('c0')?.rows.has(1)).toBe(true);
+      expect(submissionCalls).toHaveLength(1);
+      expect(submissionCalls[0][2]).toBe(ownerA);
+      expect(rosterCalls).toEqual([
+        expect.objectContaining({ channelId: 'c0', committedOwner: ownerA }),
+      ]);
+
+      rosterOwner = ownerB;
+      const releaseB = runtime.bind({ ...options, ownerToken: ownerB });
+      const producerB = runtime.getOwnerSnapshot(ownerB);
+
+      // The old public owner may retain a stable enqueue until its caller unmounts.
+      // It must be harmless even after two animation-frame turns.
+      expect(producerA.enqueue(row(2, 'late-owner-a-row'))).toBe(true);
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      expect(runtime.getSnapshot().stateFor('c0')?.rows.has(2)).not.toBe(true);
+      expect(submissionCalls).toHaveLength(1);
+      expect(rosterCalls.some(({ envelope }) => envelope.id === 'late-owner-a-row')).toBe(false);
+
+      expect(producerB.enqueue(row(3, 'owner-b-row'))).toBe(true);
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      expect(runtime.getSnapshot().stateFor('c0')?.rows.has(3)).toBe(true);
+      expect(submissionCalls).toHaveLength(2);
+      expect(submissionCalls[1][2]).toBe(ownerB);
+      expect(rosterCalls.some(({ envelope, committedOwner }) => (
+        envelope.id === 'owner-b-row' && committedOwner === ownerB
+      ))).toBe(true);
+      releaseB();
+    } finally {
+      runtime.destroy();
+    }
+  });
+
   it('exposes controlCurrent only after current tail coverage and exact parent closure', async () => {
     const options = runtimeOptions();
     const ownerToken = Object.freeze({ principalId: 'root' });
