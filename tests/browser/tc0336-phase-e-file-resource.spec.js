@@ -71,4 +71,3 @@ test('TC-0336 E-BR-08/E-BR-10 文件上传、附加、发送和下载用户闭�
   expect(downloaded.suggestedFilename()).toBe('phase-e-upload.txt');
   expect(await downloaded.failure()).toBeNull();
 });
-
