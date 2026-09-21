@@ -10,7 +10,7 @@ function row(channelId, seq) {
 }
 
 describe('channel replica store', () => {
-  it('is the single materialized owner for cache, history and live commits', () => {
+  it('[TC-0509][AD-215] is the single materialized owner for cache, history and live commits', () => {
     const store = createChannelReplicaStore();
     expect(store.commit(row('c0', 10), '').accepted).toBe(true);
     expect(store.commit(row('c0', 10), '').accepted).toBe(false);
