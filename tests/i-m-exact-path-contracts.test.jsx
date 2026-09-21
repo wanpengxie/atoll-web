@@ -3171,7 +3171,8 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
   it('message-list-lifecycle TC-0992: a promoted short-list row is resampled from the committed List without trusting its wrapper', async () => {
     const observations = [];
     const reading = round34Reading({ mode: READING_MODE.browsing });
-    reading.onReadingObservation = vi.fn((observation) => observations.push(observation));
+    reading.session = { ...reading.session, intentRevision: 0 };
+    reading.onReadingSample = vi.fn((observation) => observations.push(observation));
     render(
       <VendorListExecutor
         snapshot={round33Snapshot([round33Row('short-promoted-row', 1)], { firstItemIndex: 0 })}
@@ -3202,7 +3203,11 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
         vendorHarness.props.rangeChanged({ startIndex: 0, endIndex: 0 });
         await new Promise((resolve) => globalThis.requestAnimationFrame(resolve));
       });
-      expect(observations.at(-1)?.visibleRows).toEqual([]);
+      // A virtualizer wrapper is not a message. The current public owner
+      // rejects this empty hit-test sample rather than publishing a fake
+      // reading receipt; the committed row must be sampled again below.
+      expect(reading.onReadingSample).not.toHaveBeenCalled();
+      expect(observations).toEqual([]);
 
       Object.defineProperty(document, 'elementFromPoint', {
         configurable: true,
@@ -3212,6 +3217,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
         vendorHarness.props.rangeChanged({ startIndex: 0, endIndex: 0 });
         await new Promise((resolve) => globalThis.requestAnimationFrame(resolve));
       });
+      expect(reading.onReadingSample).toHaveBeenCalledTimes(1);
       expect(observations.at(-1)?.visibleRows).toEqual([
         { messageID: 'short-promoted-row', seqHigh: 1 },
       ]);
