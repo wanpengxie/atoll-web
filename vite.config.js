@@ -33,7 +33,15 @@ export default defineConfig({
     watch: {
       // Browser evidence is not application source. Watching traces and
       // screenshots can exhaust inotify and take down the development entry.
-      ignored: ['**/test-results*/**', '**/playwright-report*/**', '**/docs/evidence/**', '**/audit-output/**'],
+      ignored: [
+        '**/.worktrees/**',
+        '**/.review-*/**',
+        '**/.tmp-*/**',
+        '**/test-results*/**',
+        '**/playwright-report*/**',
+        '**/docs/evidence/**',
+        '**/audit-output/**',
+      ],
     },
     allowedHosts: ['tardis', 'tardis.tail6bc2a1.ts.net'],
     proxy: {
