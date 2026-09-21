@@ -22,7 +22,7 @@ describe('channel replica store', () => {
     });
   });
 
-  it('keeps durable and materialized coverage as different facts', () => {
+  it('[TC-0510][AD-216] keeps durable and materialized coverage as different facts', () => {
     const store = createChannelReplicaStore();
     store.installMeta('c0', { headSeq: 100, coverage: [{ lowSeq: 1, highSeq: 100 }] });
     store.commit(row('c0', 100));
