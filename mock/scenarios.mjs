@@ -58,6 +58,14 @@ export const SCENARIOS = Object.freeze({
   // Exercises the production initialization path after its 500ms readable
   // fallback without changing protocol order or inventing another endpoint.
   'deep-history-delayed': standard({ behavior: { history_turns: 120, history_page_delay_ms: 750 } }),
+  // The server-side cancel receipt acknowledges the request but deliberately
+  // leaves the already-scheduled page alive.  TC0223 uses this to prove that
+  // a late physical page cannot re-enter the retired Presentation authority.
+  'deep-history-cancel-late': standard({ behavior: {
+    history_turns: 120,
+    history_page_delay_ms: 1_500,
+    history_cancel_delivers_late: true,
+  } }),
   'mixed-height-history': standard({ behavior: { history_turns: 120, history_variable_heights: true } }),
   // One older terminal record carries much more text than a viewport while
   // remaining below 256KiB. The production presentation is expected to fold

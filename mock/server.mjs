@@ -1751,14 +1751,19 @@ export function createMockServer({
 		sendError(socket, { ref, frame: type, code: 'unavailable', detail: 'stale connection generation' });
 		return;
 	  }
-	  const timers = socketHistoryTimers.get(socket);
-	  const timer = timers?.get(payload.target_ref);
-	  if (timer) {
-		clearTimeout(timer);
-		scheduled.delete(timer);
-		timers.delete(payload.target_ref);
-	  }
-	  sendReceipt(socket, ref, { channel_id: payload.channel_id, target_ref: payload.target_ref, generation });
+      const timers = socketHistoryTimers.get(socket);
+      const timer = timers?.get(payload.target_ref);
+      if (timer && !domain.behavior.history_cancel_delivers_late) {
+        clearTimeout(timer);
+        scheduled.delete(timer);
+        timers.delete(payload.target_ref);
+      }
+      // The cancel acknowledgement is not a transport guarantee.  This
+      // fixture intentionally lets the already scheduled feed/page_end run so
+      // TC0223 can observe the distinction between late physical ingestion
+      // and current Presentation admission.
+      if (timer && domain.behavior.history_cancel_delivers_late) timers.delete(payload.target_ref);
+      sendReceipt(socket, ref, { channel_id: payload.channel_id, target_ref: payload.target_ref, generation });
 	  return;
     }
     if (type === 'submit') return handleSubmit(socket, ref, payload);

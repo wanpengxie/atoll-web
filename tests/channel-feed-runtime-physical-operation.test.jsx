@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { diagnosticsSnapshot, clearDiagnostics } from '../src/model/diagnostics.js';
 import { createChannelFeedRuntime } from '../src/model/channel-feed-runtime.js';
+import { selectTimelineItems } from '../src/model/conversation-presentation.js';
 
 function runtimeOptions(wireRef) {
   return {
@@ -45,6 +46,22 @@ function wireHarness() {
     cancelHistory: vi.fn(async () => undefined),
   } };
   return { requests, wireRef };
+}
+
+function reveal(operationID = 'history:current') {
+  return {
+    operationID, activationID: 'activation-current', viewID: 'c0:timeline', epoch: 'c0:1',
+    inputEpoch: 1, intentRevision: 1, durableBaselineIDs: [], uiBaselineIDs: [], demandUnits: 1,
+  };
+}
+
+function presentationReceipt(snapshot) {
+  const state = snapshot.stateFor('c0');
+  const semantic = selectTimelineItems(state, { scope: 'all' });
+  return Object.freeze({
+    sourceRevision: Number(state?._timelineRevision || 0),
+    visibleIDs: Object.freeze(semantic.items.map((item) => item.id || item.envelope?.id || '')),
+  });
 }
 
 async function attachedRuntime() {
@@ -326,6 +343,72 @@ describe('Feed PhysicalOperation / WaiterLease boundary', () => {
     })).toBe(true);
     await expect(second).resolves.toMatchObject({ kind: 'satisfied', released: 2 });
     expect(wireRef.current.cancelHistory).not.toHaveBeenCalled();
+    runtime.destroy();
+  });
+
+  it('keeps a late semantic page materialized without republishing a retired Presentation owner', async () => {
+    const { requests, wireRef, runtime, snapshot } = await attachedRuntime();
+    let notifications = 0;
+    let presented = null;
+    const unsubscribe = runtime.subscribe(() => {
+      notifications += 1;
+      presented = presentationReceipt(snapshot);
+    });
+    expect(snapshot.enqueue({ ...row(2), source: 'live', generation: 1 })).toBe(true);
+    await vi.waitFor(() => expect(presented?.visibleIDs).toContain('physical-row-2'));
+
+    const semanticController = new AbortController();
+    const retired = snapshot.loadHistory('c0', {
+      beforeSeq: 3, limit: 2, urgency: 'blocking', intent: 'scroll-history',
+      signal: semanticController.signal, historyRevealIntent: reveal('history:retired'),
+    });
+    const physicalJoiner = snapshot.loadHistory('c0', {
+      beforeSeq: 3, limit: 2, urgency: 'anticipatory',
+    });
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    semanticController.abort('newer native input');
+    await expect(retired).resolves.toMatchObject({ kind: 'cancelled', reason: 'aborted' });
+    const beforeLate = presented;
+    const notificationsBeforeLate = notifications;
+    const indexVersionBeforeLate = runtime.getSnapshot().indexVersion;
+    const replicaRevisionBeforeLate = Number(snapshot.stateFor('c0')?._timelineRevision || 0);
+
+    expect(snapshot.enqueue({ ...row(1), ref: requests[0].ref, generation: 1 })).toBe(true);
+    expect(snapshot.pageEnd({
+      ref: requests[0].ref, channel_id: 'c0', generation: 1,
+      rows: 1, scan_low_seq: 1, scan_high_seq: 2, next_before_seq: 1, has_older: false,
+    })).toBe(true);
+    await expect(physicalJoiner).resolves.toMatchObject({ kind: 'satisfied', released: 1 });
+
+    expect(Number(snapshot.stateFor('c0')?._timelineRevision || 0)).toBeGreaterThan(replicaRevisionBeforeLate);
+    expect(notifications).toBe(notificationsBeforeLate);
+    expect(runtime.getSnapshot().indexVersion).toBe(indexVersionBeforeLate);
+    expect(presented).toEqual(beforeLate);
+    expect(wireRef.current.cancelHistory).not.toHaveBeenCalled();
+    unsubscribe();
+    runtime.destroy();
+  });
+
+  it('publishes one completion for a current semantic waiter', async () => {
+    const { requests, runtime, snapshot } = await attachedRuntime();
+    let notifications = 0;
+    const unsubscribe = runtime.subscribe(() => { notifications += 1; });
+    const pending = snapshot.loadHistory('c0', {
+      beforeSeq: 3, limit: 2, urgency: 'blocking', intent: 'scroll-history',
+      historyRevealIntent: reveal('history:current'),
+    });
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    const beforePage = notifications;
+    const indexVersionBeforePage = runtime.getSnapshot().indexVersion;
+    expect(snapshot.enqueue({ ...row(1), ref: requests[0].ref, generation: 1 })).toBe(true);
+    expect(snapshot.pageEnd({
+      ref: requests[0].ref, channel_id: 'c0', generation: 1,
+      rows: 1, scan_low_seq: 1, scan_high_seq: 2, next_before_seq: 1, has_older: false,
+    })).toBe(true);
+    await expect(pending).resolves.toMatchObject({ kind: 'satisfied', released: 1 });
+    expect(notifications).toBeGreaterThan(beforePage);
+    expect(runtime.getSnapshot().indexVersion).toBe(indexVersionBeforePage + 1);
+    unsubscribe();
     runtime.destroy();
   });
 

@@ -61,7 +61,8 @@ export function createHistoryPresentationAdmission({ onChange = () => {} } = {})
         ? existing.lastAdmittedIDs
         : Object.freeze(baselineItems.map(idOf).filter(Boolean)),
       releaseBaselineItems: Object.freeze([]),
-      releaseSourceRevision: 0,
+      releaseSourceRevision: canInherit ? Number(existing.releaseSourceRevision || 0) : 0,
+      sourceFenceActive: canInherit ? existing.sourceFenceActive === true : false,
       deferredIDs: Object.freeze([]),
       committed: null,
       authorityRevision: nextAuthorityRevision,
@@ -293,9 +294,17 @@ export function createHistoryPresentationAdmission({ onChange = () => {} } = {})
     return true;
   }
 
-  function cancel(channelId, operationID) {
+  function cancel(channelId, operationID, { sourceRevision } = {}) {
     const state = channels.get(channelId);
     if (!state || state.token.operationID !== operationID) return false;
+    const capturedSourceRevision = Number(sourceRevision);
+    if (Number.isSafeInteger(capturedSourceRevision) && capturedSourceRevision >= 0) {
+      state.releaseSourceRevision = Math.max(
+        Number(state.releaseSourceRevision || 0),
+        capturedSourceRevision,
+      );
+      state.sourceFenceActive = true;
+    }
     if (state.phase === 'committed-awaiting-layout') {
       finishCommitted(state);
       if (channels.has(channelId)) advanceAuthority(state);
@@ -371,6 +380,7 @@ export function createHistoryPresentationAdmission({ onChange = () => {} } = {})
     // exact committed semantics rather than shallow references into Fold.
     state.releaseBaselineItems = Object.freeze(rows.map((row) => row.body));
     state.releaseSourceRevision = Number(presentationSnapshot?.sourceRevision || 0);
+    state.sourceFenceActive = true;
     state.committed = frozenToken(state.committed, {
       baselineSettledPresentationRevision: Number(presentationSnapshot?.revision || 0),
     });
@@ -381,7 +391,7 @@ export function createHistoryPresentationAdmission({ onChange = () => {} } = {})
 
   function sourceFence(channelId) {
     const state = channels.get(channelId);
-    return state?.phase === 'committed-awaiting-layout'
+    return state?.sourceFenceActive === true
       ? Number(state.releaseSourceRevision || 0)
       : null;
   }
@@ -455,6 +465,7 @@ export function createHistoryPresentationAdmission({ onChange = () => {} } = {})
     state.committed = null;
     state.releaseBaselineItems = Object.freeze([]);
     state.releaseSourceRevision = 0;
+    state.sourceFenceActive = false;
     advanceAuthority(state);
     onChange(channelId);
     return true;
