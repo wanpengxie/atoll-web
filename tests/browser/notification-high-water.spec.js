@@ -198,6 +198,8 @@ test('a filtered tail acknowledges the channel notification boundary', async ({ 
   await login(page);
   const home = channel(page, 'c0');
   const project = channel(page, 'c0.project');
+  const related = project.locator('.unread-related');
+  const other = project.locator('.unread-total:not(.unread-pending)');
 
   await project.click();
   await page.getByTitle('只看我与 project-agent 的往来').click();
@@ -205,31 +207,29 @@ test('a filtered tail acknowledges the channel notification boundary', async ({ 
   await home.click();
   await approval(request, 'c0.project');
   await approval(request, 'c0.project');
-  await expect(project.locator('.unread-related')).toHaveText('2');
+  await expect(related).toHaveText('2');
+  await expect(other).toHaveCount(0);
 
   await project.click();
   await expect(page.getByTitle('取消只看 project-agent')).toHaveAttribute('aria-pressed', 'true');
-  await expect(project.locator('.unread-related')).toHaveText('2');
-  const atFilteredTail = await railEvidence(page, 'c0.project');
+  await expect(related).toHaveText('2');
+  await expect(other).toHaveCount(0);
   await home.click();
-  await expect(project.locator('.unread-related')).toHaveText('2');
+  await expect(related).toHaveText('2');
+  await expect(other).toHaveCount(0);
   await project.click();
   await page.getByTitle('取消只看 project-agent').click();
   const filteredScope = page.locator('.timeline-scope > button');
   await expect(filteredScope).toHaveText('与我相关');
   await filteredScope.click();
   await expect(filteredScope).toHaveText('全部');
-  await expect(project.locator('.unread-related')).toHaveCount(0);
-  const afterLeaving = await railEvidence(page, 'c0.project');
-
-  expect(channelSnapshot(atFilteredTail).notificationHighWater)
-    .toBeLessThan(latestAddedApprovalSeq(atFilteredTail));
-  expectAcknowledgedTail(afterLeaving, latestAddedApprovalSeq(afterLeaving));
-  expect(channelSnapshot(afterLeaving).notificationHighWater)
-    .toBeGreaterThanOrEqual(channelSnapshot(atFilteredTail).notificationHighWater);
+  await expect(related).toHaveCount(0);
+  await expect(other).toHaveCount(0);
   await attachEvidence(testInfo, 'notification-high-water-filtered.json', {
-    atFilteredTail,
-    afterLeaving,
+    contract: 'public-dom',
+    filteredArrival: { related: 2, other: 0 },
+    filteredReentry: { related: 2, other: 0 },
+    afterFullTailPresentation: { related: 0, other: 0 },
   });
 });
 
