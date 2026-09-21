@@ -52,4 +52,9 @@ focused, adjacent, and build evidence with the final disposition.
 
 ## Closeout
 
-Pending focused, adjacent, and build verification.
+- **Reservation commit:** `2d4cbaf` (`claim TC0672 envelope status baseline`).
+- **Focused:** `npm test -- tests/envelope.test.js --run -t 'TC-0672' --reporter=verbose` — `1 passed` (3 Vitest selection skips; no declarations were skipped).
+- **Adjacent protocol suites:** `npm test -- tests/envelope.test.js tests/frame-fields.test.js tests/frame.test.js --run --reporter=dot` — `14 passed`.
+- **Build:** `npm run build` — passed; Vite retained its existing advisory about chunks larger than 500 kB.
+- **Diff hygiene:** only the `[TC-0672][EH02-01]` declaration and this audit report changed; the exact `FINAL`/`PROVISIONAL` values, equality checks, and empty-intersection assertion are unchanged in meaning. No product, package, protocol, fixture, skip/filter, private oracle, or compatibility change was introduced.
+- **Disposition:** **PASS / MIGRATED**; **credit: 1**. The canonical public envelope vocabulary keeps terminal and provisional lifecycle statuses disjoint, preserving unambiguous downstream classification.
