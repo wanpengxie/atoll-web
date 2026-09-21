@@ -44,14 +44,13 @@ function stateFor(rows, sourceRevision) {
   };
 }
 
-function admission(sourceRevision) {
-  return {
-    evaluate: (_channelID, items) => ({ items, receipt: null }),
-    sourceFence: () => sourceRevision,
-  };
-}
+const ADMISSION = Object.freeze({
+  // No sourceFence override: projectTimeline must expose the Replica's
+  // _timelineRevision as the public projection sourceRevision.
+  evaluate: (_channelID, items) => ({ items, receipt: null }),
+});
 
-function historyFor({ request, sourceRevision, presentationRevision, attached, generation, headSeq }) {
+function historyFor({ request, presentationRevision, attached, generation, headSeq }) {
   return {
     request,
     refreshLatest: vi.fn(),
@@ -79,7 +78,7 @@ function historyFor({ request, sourceRevision, presentationRevision, attached, g
         targetHead: headSeq,
         error: '',
       },
-      presentationAdmission: admission(sourceRevision),
+      presentationAdmission: ADMISSION,
     },
   };
 }
@@ -107,7 +106,6 @@ describe('SZ-186 fresh following cached projection authority', () => {
     const currentState = stateFor([message('head-row', 7)], 11);
     const emptyHistory = historyFor({
       request,
-      sourceRevision: 0,
       presentationRevision: 0,
       attached: false,
       generation: 0,
@@ -115,7 +113,6 @@ describe('SZ-186 fresh following cached projection authority', () => {
     });
     const laggingHistory = historyFor({
       request,
-      sourceRevision: 10,
       presentationRevision: 11,
       attached: true,
       generation: 1,
@@ -123,7 +120,6 @@ describe('SZ-186 fresh following cached projection authority', () => {
     });
     const currentHistory = historyFor({
       request,
-      sourceRevision: 11,
       presentationRevision: 11,
       attached: true,
       generation: 1,
@@ -140,6 +136,7 @@ describe('SZ-186 fresh following cached projection authority', () => {
     rerender({ state: laggingState, history: laggingHistory });
     await waitFor(() => expect(result.current.viewport.initializing).toBe(false));
     expect(result.current.projection.presentation.rows.map((row) => row.id)).toContain('head-row');
+    expect(result.current.projection.presentation.sourceRevision).toBe(10);
     expect(result.current.viewport.availability).toBe('readable');
     expect(result.current.viewport.bottomReady).toBe(false);
     expect(result.current.viewport.tailCaughtUp.caughtUp).toBe(false);
@@ -152,8 +149,12 @@ describe('SZ-186 fresh following cached projection authority', () => {
 
     rerender({ state: currentState, history: currentHistory });
     await waitFor(() => expect(result.current.viewport.bottomReady).toBe(true));
+    expect(result.current.projection.presentation.sourceRevision).toBe(11);
     expect(result.current.viewport.availability).toBe('readable');
     expect(result.current.projection.presentation.rows.map((row) => row.id)).toEqual(['head-row']);
+    // This test proves semantic following authority only; no physical Vendor
+    // receipt is manufactured by a cached Projection rerender.
+    expect(result.current.viewport.tailCaughtUp.caughtUp).toBe(false);
     expect(request).not.toHaveBeenCalled();
     unmount();
   });
