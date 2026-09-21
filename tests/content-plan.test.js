@@ -222,7 +222,7 @@ describe('ContentPlan', () => {
     expect(appended.blocks[0].renderSource).toContain('[target]: https://example.test');
   });
 
-  it('keeps suffix parsing byte-for-byte equivalent to full parsing across streamed constructs', () => {
+  it('[TC-0542] keeps suffix parsing byte-for-byte equivalent to full parsing across streamed constructs', () => {
     const chunks = [
       '# Heading',
       '\n\nA paragraph',
