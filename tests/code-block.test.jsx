@@ -8,7 +8,7 @@ import { fenceLanguageOf, prismLanguageOf } from '../src/ui/CodeBlock.jsx';
 afterEach(cleanup);
 
 describe('围栏代码块', () => {
-  it('语言名和 prism 语法名的映射', () => {
+  it('[TC-0511][AD-217] 语言名和 prism 语法名的映射', () => {
     expect(fenceLanguageOf('language-go')).toBe('go');
     expect(fenceLanguageOf('')).toBe('');
     expect(prismLanguageOf('py')).toBe('python');
