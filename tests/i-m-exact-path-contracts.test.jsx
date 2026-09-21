@@ -4135,10 +4135,13 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     reading.session = { ...reading.session, bottomIntent: intent };
     const first = round33Row('round37-unmeasured-first', 1);
     const target = { ...round33Row('round37-unmeasured-target', 2), body: { local: false } };
+    const staleSnapshot = round33Snapshot([first, target], { revision: 2 });
+    const stalePresentation = round36BottomPresentation(reading, staleSnapshot, intent, true);
     const view = render(
       <VendorListExecutor
-        snapshot={round33Snapshot([first, target], { revision: 2 })}
+        snapshot={staleSnapshot}
         reading={reading}
+        bottomIntentPresentation={stalePresentation}
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
@@ -4157,15 +4160,28 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     expect(reading.getSession().bottomIntent.id).toBe(intent.id);
 
     // The normal Presentation delivery is the only retry source. Once its
-    // revision reaches the intent's public floor, the existing Vendor writer
-    // may perform the one send join and receipt.
+    // revision reaches the intent's public floor, the typed receipt still
+    // needs the separate physical height acknowledgement before the existing
+    // Vendor writer may perform the one send join and receipt.
+    const currentSnapshot = round33Snapshot([first, target], { revision: 3 });
+    const currentPresentation = round36BottomPresentation(reading, currentSnapshot, intent, true);
     view.rerender(
       <VendorListExecutor
-        snapshot={round33Snapshot([first, target], { revision: 3 })}
+        snapshot={currentSnapshot}
         reading={reading}
+        bottomIntentPresentation={currentPresentation}
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
+    expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+    expect(reading.getSession().bottomIntent.id).toBe(intent.id);
+
+    setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_200, scrollTop: 200 });
+    act(() => vendorHarness.props.totalListHeightChanged());
+    expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
+    expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_200, behavior: 'auto' });
+    expect(reading.getSession().bottomIntent.id).toBe('');
+    act(() => vendorHarness.props.totalListHeightChanged());
     expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
     expect(reading.getSession().bottomIntent.id).toBe('');
   });
