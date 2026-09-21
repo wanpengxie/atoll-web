@@ -41,7 +41,7 @@ describe('围栏代码块', () => {
     expect(block.querySelector('.code-block-lang').textContent).toBe('text');
   });
 
-  it('行内 code 不受影响', () => {
+  it('[TC-0514][AD-220] 行内 code 不受影响', () => {
     const { container } = render(<MarkdownContent text={'一句 `inline` 话'} />);
     expect(container.querySelector('figure.code-block')).toBeNull();
     expect(container.querySelector('code').textContent).toBe('inline');
