@@ -21,6 +21,69 @@ const ACTIVE_CONTROL_STATES = new Set(['sending', 'accepted', 'uncertain', 'erro
 const CONTROL_RECORD_PREFIX = 'control:';
 const NOOP = () => {};
 const ZERO_GENERATION = () => 0;
+const STALE_SEND_LEASE = 'send_lease_stale';
+
+function submissionEntryID(principalId, messageId) {
+  return `${principalId}\u0000${messageId}`;
+}
+
+function sendLeaseFor(owner, entryID, attemptID, correlationID) {
+  return Object.freeze({
+    entryID,
+    attemptID,
+    principal: Object.freeze({ id: owner.principalId, epoch: owner.principalEpoch }),
+    world: owner.worldEpoch,
+    accessEpoch: Number(owner.access?.epoch || 0),
+    transportGeneration: Object.freeze({
+      epoch: Number(owner.transportEpoch || 0),
+      transport: owner.transport,
+    }),
+    correlationID,
+  });
+}
+
+function sameSendLease(left, right) {
+  return Boolean(left && right
+    && left.entryID === right.entryID
+    && left.attemptID === right.attemptID
+    && left.principal?.id === right.principal?.id
+    && Object.is(left.principal?.epoch, right.principal?.epoch)
+    && Object.is(left.world, right.world)
+    && left.accessEpoch === right.accessEpoch
+    && left.transportGeneration?.epoch === right.transportGeneration?.epoch
+    && Object.is(left.transportGeneration?.transport, right.transportGeneration?.transport)
+    && left.correlationID === right.correlationID);
+}
+
+function sameSubmissionFacts(left, right) {
+  return Boolean(left && right
+    && left.principalId === right.principalId
+    && Object.is(left.principalEpoch, right.principalEpoch)
+    && left.channelId === right.channelId
+    && Object.is(left.worldEpoch, right.worldEpoch)
+    && Object.is(left.attemptEpoch, right.attemptEpoch)
+    && left.access?.epoch === right.access?.epoch
+    && left.access?.relationship === right.access?.relationship
+    && left.access?.existence === right.access?.existence
+    && left.access?.runtime === right.access?.runtime
+    && left.access?.freshness === right.access?.freshness
+    && left.access?.unavailable === right.access?.unavailable
+    && Object.is(left.transport, right.transport)
+    && left.transportEpoch === right.transportEpoch
+    && left.transportOpen === right.transportOpen);
+}
+
+function sameSubmissionAssessment(left, right) {
+  return Boolean(left && right
+    && left.current === right.current
+    && left.code === right.code);
+}
+
+function staleSendLeaseError() {
+  const error = new Error('发送租约已失效');
+  error.code = STALE_SEND_LEASE;
+  return error;
+}
 
 function emptyDraft() {
   return { text: '', doc: null, recipients: [], attachments: [], replyTarget: null, editorRevision: 0 };
@@ -138,6 +201,11 @@ export function useComposerSubmissionRuntime({
   const acceptingRef = useRef(new Map());
   const landedRef = useRef(new Set());
   const submissionCorrelationPortRef = useRef(null);
+  // SendLease is the sole in-memory CAS owner for a submission attempt. Its
+  // authority and correlation facts never enter the durable outbox row.
+  const sendLeaseRef = useRef(new Map());
+  const leaseAttemptSequenceRef = useRef(0);
+  const correlationSequenceRef = useRef(0);
   const ownedControlRequestsRef = useRef(new WeakSet());
   if (!submissionCorrelationPortRef.current) {
     submissionCorrelationPortRef.current = createSubmissionCorrelationPort();
@@ -258,6 +326,68 @@ export function useComposerSubmissionRuntime({
     return true;
   }, [currentFacts]);
 
+  // A member can remain the same request owner while the physical channel
+  // runtime is temporarily unavailable.  The transport/access projection may
+  // advance its observation epoch for that transient, but this lease must
+  // still return to queued; only a definitive membership/world transition is
+  // allowed to reject it.
+  const assessSubmissionOwner = useCallback((owner, facts = currentFacts(owner)) => {
+    const assessment = assessRequestOwner(owner, facts, REQUEST_PHASE.submit);
+    if (assessment.code === 'access_changed'
+      && facts.access?.relationship === 'member'
+      && facts.access?.existence !== 'retired'
+      && (facts.access?.unavailable === true || facts.access?.runtime === 'closed')) {
+      return Object.freeze({ current: false, code: 'channel_unavailable', detail: '频道暂不可用' });
+    }
+    return assessment;
+  }, [currentFacts]);
+
+  const authorizeSubmission = useCallback((owner) => {
+    const assessment = assessSubmissionOwner(owner);
+    if (!assessment.current) throw requestAccessError(assessment);
+    return true;
+  }, [assessSubmissionOwner]);
+
+  const registerCorrelation = useCallback((owner, messageId, replace = false) => {
+    const entryID = submissionEntryID(owner.principalId, messageId);
+    const current = sendLeaseRef.current.get(entryID);
+    if (!replace && current?.correlationID) return current.correlationID;
+    const correlationID = `${entryID}:${++correlationSequenceRef.current}`;
+    sendLeaseRef.current.set(entryID, sendLeaseFor(
+      owner,
+      entryID,
+      `correlation:${correlationID}`,
+      correlationID,
+    ));
+    return correlationID;
+  }, []);
+
+  const beginSendLease = useCallback((owner, messageId) => {
+    const entryID = submissionEntryID(owner.principalId, messageId);
+    const current = sendLeaseRef.current.get(entryID);
+    const correlationID = current?.correlationID || registerCorrelation(owner, messageId);
+    const lease = sendLeaseFor(
+      owner,
+      entryID,
+      `${leaseOwnerRef.current}:${++leaseAttemptSequenceRef.current}`,
+      correlationID,
+    );
+    sendLeaseRef.current.set(entryID, lease);
+    return lease;
+  }, [registerCorrelation]);
+
+  const currentSendLease = useCallback((lease) => sameSendLease(
+    sendLeaseRef.current.get(lease?.entryID),
+    lease,
+  ), []);
+
+  const forgetLeaseCorrelation = useCallback((lease, identity) => {
+    if (!currentSendLease(lease)) return false;
+    const forgotten = submissionCorrelationPortRef.current.forget(identity);
+    if (currentSendLease(lease)) sendLeaseRef.current.delete(lease.entryID);
+    return forgotten;
+  }, [currentSendLease]);
+
   useEffect(() => {
     const generation = ++hydrationRef.current;
     const lifecycleGeneration = lifecycleRef.current.generation;
@@ -268,6 +398,7 @@ export function useComposerSubmissionRuntime({
     if (correlationPrincipalRef.current !== principalId) {
       correlationPrincipalRef.current = principalId;
       landedRef.current.clear();
+      sendLeaseRef.current.clear();
       submissionCorrelationPortRef.current.reset();
     }
     if (retryPrincipalRef.current !== principalId) {
@@ -279,6 +410,7 @@ export function useComposerSubmissionRuntime({
     controlStatesRef.current = {};
     setControlStates({});
     if (!principalId) {
+      sendLeaseRef.current.clear();
       submissionCorrelationPortRef.current.reset();
       publishPending([]);
       publishDrafts(new Map());
@@ -306,6 +438,7 @@ export function useComposerSubmissionRuntime({
         .map((state) => [`${state.channelId}:${state.requestId}:${state.action}`, state]));
       for (const row of restoredRows) {
         const identity = { channelId: row.channelId, messageId: row.messageId };
+        registerCorrelation(captureOwner(row.channelId), row.messageId);
         if (landedRef.current.has(row.messageId)) {
           submissionCorrelationPortRef.current.markLanded(identity);
         } else if (row.state !== 'rejected') {
@@ -339,7 +472,7 @@ export function useComposerSubmissionRuntime({
       if (alive && isLiveLifecycle(lifecycleRef.current, lifecycleGeneration)) onError(error);
     });
     return () => { alive = false; };
-  }, [onError, principalId, publishDrafts, publishPending, wireRef]);
+  }, [captureOwner, onError, principalId, publishDrafts, publishPending, registerCorrelation, wireRef]);
 
   useEffect(() => {
     // React.StrictMode probes effects with a setup -> cleanup -> setup cycle
@@ -354,6 +487,7 @@ export function useComposerSubmissionRuntime({
       lifecycleRef.current.generation += 1;
       hydrationRef.current += 1;
       attemptEpochRef.current += 1;
+      sendLeaseRef.current.clear();
       automaticReconnectRetryRef.current.clear();
       queueMicrotask(() => {
         if (lifecycleEffectTokenRef.current !== effectToken) return;
@@ -463,27 +597,128 @@ export function useComposerSubmissionRuntime({
     const isLive = () => isLiveLifecycle(lifecycleRef.current, lifecycleGeneration);
     if (!isLive()) return false;
     const owner = captureOwner(submission.channelId);
-    const transportAssessment = assessRequestOwner(owner, currentFacts(owner), REQUEST_PHASE.submit);
-    if (!transportAssessment.current) return false;
+    const lease = beginSendLease(owner, submission.messageId);
+    const isLeaseCurrent = () => isLive() && currentSendLease(lease);
+    const leaseGuard = () => {
+      if (!isLeaseCurrent()) throw staleSendLeaseError();
+      return true;
+    };
     transmittingRef.current.add(key);
     let leased = null;
+    let wireStarted = false;
+    const settleBeforeWire = async (assessment, expectedStates, hasLease = false, assessmentFacts = null) => {
+      if (!isLeaseCurrent()) return false;
+      const retryable = assessment.code === 'channel_unavailable' || assessment.code === 'transport_changed';
+      const settledFacts = assessmentFacts || currentFacts(owner);
+      const options = {
+        authorize: () => {
+          if (!isLeaseCurrent()) throw staleSendLeaseError();
+          const currentFactsValue = currentFacts(owner);
+          const currentAssessment = assessSubmissionOwner(owner, currentFactsValue);
+          if (!sameSubmissionFacts(settledFacts, currentFactsValue)
+            || !sameSubmissionAssessment(assessment, currentAssessment)) {
+            throw staleSendLeaseError();
+          }
+          return true;
+        },
+        leaseGuard,
+      };
+      if (hasLease) options.leaseOwner = leaseOwnerRef.current;
+      let changed;
+      try {
+        changed = await outboxRef.current.patch(
+          owner.principalId,
+          submission.messageId,
+          expectedStates,
+          {
+            state: retryable ? 'queued' : 'rejected',
+            error: serializedError(requestAccessError(assessment)),
+            leaseOwner: '',
+            leaseUntil: 0,
+          },
+          options,
+        );
+      } catch (error) {
+        if (error?.code !== STALE_SEND_LEASE && isLive()) onError(error);
+        return false;
+      }
+      if (!changed || !isLeaseCurrent()) return false;
+      publishPending((rows) => rows.map((row) => row.messageId === submission.messageId ? changed : row));
+      if (!retryable) {
+        forgetLeaseCorrelation(lease, {
+          channelId: submission.channelId,
+          messageId: submission.messageId,
+        });
+      }
+      onAccessChanged();
+      return false;
+    };
     try {
-      leased = await outboxRef.current.acquireLease(owner.principalId, submission.messageId, leaseOwnerRef.current);
-      if (!isLive()) return false;
+      const transportFacts = currentFacts(owner);
+      const transportAssessment = assessSubmissionOwner(owner, transportFacts);
+      if (!transportAssessment.current) {
+        // A queued row that wakes on a replacement connection must settle
+        // against the authority observed by this lease.  Returning early
+        // leaves a revoked row queued, where a later grant can replay it.
+        // Restored uncertain rows retain their evidence until a current owner
+        // reconciles them; revoke cannot turn that evidence into rejection.
+        if (submission.state === 'uncertain' && transportAssessment.code !== 'channel_unavailable') return false;
+        await settleBeforeWire(transportAssessment, ['queued', 'uncertain'], false, transportFacts);
+        return false;
+      }
+      try {
+        leased = await outboxRef.current.acquireLease(
+          owner.principalId,
+          submission.messageId,
+          leaseOwnerRef.current,
+          15_000,
+          {
+            authorize: () => {
+              if (!isLeaseCurrent()) throw staleSendLeaseError();
+              const assessment = assessSubmissionOwner(owner);
+              if (!assessment.current) throw requestAccessError(assessment);
+              return true;
+            },
+            leaseGuard,
+          },
+        );
+      } catch (error) {
+        if (error?.code === STALE_SEND_LEASE) return false;
+        throw error;
+      }
+      if (!isLeaseCurrent()) return false;
       if (!leased) return false;
-      authorize(owner, REQUEST_PHASE.submit);
+      authorizeSubmission(owner);
       const transmitting = await outboxRef.current.patch(owner.principalId, submission.messageId,
         ['queued', 'uncertain', 'rejected', 'transmitting'],
         { state: 'transmitting', error: null },
         {
           leaseOwner: leaseOwnerRef.current,
-          authorize: () => isLive() && assessRequestOwner(owner, currentFacts(owner), REQUEST_PHASE.submit).current,
+          authorize: () => {
+            if (!isLeaseCurrent()) throw staleSendLeaseError();
+            const assessment = assessSubmissionOwner(owner);
+            if (!assessment.current) throw requestAccessError(assessment);
+            return true;
+          },
+          leaseGuard,
         });
-      if (!isLive()) return false;
+      if (!isLeaseCurrent()) return false;
       if (!transmitting) return false;
+      const beforeWireFacts = currentFacts(owner);
+      const beforeWire = assessSubmissionOwner(owner, beforeWireFacts);
+      if (!beforeWire.current) {
+        // A restored uncertain row may have crossed the network before this
+        // runtime existed. An access transition cannot turn that evidence into
+        // a definitive rejection; leave it for a current owner to reconcile.
+        if (submission.state === 'uncertain' && beforeWire.code !== 'channel_unavailable') return false;
+        await settleBeforeWire(beforeWire, ['transmitting'], true, beforeWireFacts);
+        return false;
+      }
+      if (!isLeaseCurrent()) return false;
+      wireStarted = true;
       publishPending((rows) => rows.map((row) => row.messageId === submission.messageId ? transmitting : row));
       const receipt = await owner.transport.submit(transmitting.frame);
-      if (!isLive()) return false;
+      if (!isLeaseCurrent()) return false;
       authorize(owner, REQUEST_PHASE.settle, { requireTransport: false, requireAccess: false });
       if (receipt?.message_id && receipt.message_id !== submission.messageId) {
         const error = new Error('服务端返回了不同的消息编号');
@@ -493,9 +728,10 @@ export function useComposerSubmissionRuntime({
       const accepted = await outboxRef.current.patch(owner.principalId, submission.messageId,
         ['transmitting'], { state: 'accepted', error: null }, {
           leaseOwner: leaseOwnerRef.current,
-          authorize: () => isLive(),
+          authorize: () => isLeaseCurrent(),
+          leaseGuard,
         });
-      if (!isLive()) return false;
+      if (!isLeaseCurrent()) return false;
       if (landedRef.current.has(submission.messageId)) {
         submissionCorrelationPortRef.current.markLanded({
           channelId: submission.channelId,
@@ -509,26 +745,40 @@ export function useComposerSubmissionRuntime({
       onFeedChanged(submission.channelId);
       return true;
     } catch (error) {
+      if (error?.code === STALE_SEND_LEASE || !isLive() || !currentSendLease(lease)) return false;
+      if (!wireStarted) {
+        const prewireFacts = currentFacts(owner);
+        const prewire = assessSubmissionOwner(owner, prewireFacts);
+        if (!prewire.current) {
+          if (submission.state === 'uncertain' && prewire.code !== 'channel_unavailable') return false;
+          await settleBeforeWire(prewire, leased ? ['transmitting'] : ['queued', 'uncertain'], Boolean(leased), prewireFacts);
+          return false;
+        }
+      }
       const settlement = assessRequestOwner(owner, currentFacts(owner), REQUEST_PHASE.settle, {
         requireAccess: false,
         requireTransport: false,
       });
-      if (!isLive() || !settlement.current) return false;
+      if (!settlement.current) return false;
       const state = wireFailureState(error);
+      const patchOptions = {
+        authorize: () => isLeaseCurrent(),
+        leaseGuard,
+      };
+      if (leased) patchOptions.leaseOwner = leaseOwnerRef.current;
       const failed = await outboxRef.current.patch(owner.principalId, submission.messageId,
         ['queued', 'transmitting', 'uncertain', 'rejected'],
         { state, error: serializedError(error) }, {
-          leaseOwner: leaseOwnerRef.current,
-          authorize: () => isLive(),
+          ...patchOptions,
         }).catch((persistError) => {
-          if (isLive()) onError(persistError);
+          if (persistError?.code !== STALE_SEND_LEASE && isLive()) onError(persistError);
           return null;
         });
-      if (!isLive()) return false;
+      if (!isLeaseCurrent()) return false;
       if (failed) publishPending((rows) => rows.map((row) => row.messageId === submission.messageId ? failed : row));
       if (state === 'uncertain') onNotice('发送结果待确认，正在通过重连账本核对。');
       if (state === 'rejected') {
-        submissionCorrelationPortRef.current.forget({
+        forgetLeaseCorrelation(lease, {
           channelId: submission.channelId,
           messageId: submission.messageId,
         });
@@ -537,15 +787,17 @@ export function useComposerSubmissionRuntime({
       return false;
     } finally {
       transmittingRef.current.delete(key);
-      if (leased && isLive()) {
+      if (leased && isLive() && currentSendLease(lease)) {
         try {
-          await outboxRef.current.releaseLease(owner.principalId, submission.messageId, leaseOwnerRef.current);
+          await outboxRef.current.releaseLease(owner.principalId, submission.messageId, leaseOwnerRef.current, {
+            leaseGuard,
+          });
         } catch (error) {
-          if (isLive()) onError(error);
+          if (error?.code !== STALE_SEND_LEASE && isLive()) onError(error);
         }
       }
     }
-  }, [authorize, captureOwner, currentFacts, onAccessChanged, onError, onFeedChanged, onNotice, publishPending]);
+  }, [assessSubmissionOwner, authorizeSubmission, beginSendLease, captureOwner, currentFacts, currentSendLease, forgetLeaseCorrelation, onAccessChanged, onError, onFeedChanged, onNotice, publishPending]);
   transmitRef.current = transmit;
 
   const sendOnce = useCallback(async (request = {}) => {
@@ -622,6 +874,8 @@ export function useComposerSubmissionRuntime({
     const ids = new Set(submissions.map((row) => row.messageId));
     ids.forEach((id) => automaticReconnectRetryRef.current.delete(id));
     for (const row of submissions) {
+      const owner = owners.find((candidate) => candidate.channelId === row.channelId) || owners[0];
+      registerCorrelation(owner, row.messageId, true);
       const identity = { channelId: row.channelId, messageId: row.messageId };
       if (landedRef.current.has(row.messageId)) {
         submissionCorrelationPortRef.current.markLanded(identity);
@@ -640,7 +894,7 @@ export function useComposerSubmissionRuntime({
     }
     const values = submissions.map((row) => row.messageId);
     return request.batch?.length ? values : values[0];
-  }, [activeChannelId, authorize, captureOwner, currentFacts, onError, publishDrafts, publishPending, wireRef]);
+  }, [activeChannelId, authorize, captureOwner, currentFacts, onError, publishDrafts, publishPending, registerCorrelation, wireRef]);
 
   const send = useCallback((request = {}) => {
     if (request.draftRevision == null) return sendOnce(request);
@@ -684,6 +938,7 @@ export function useComposerSubmissionRuntime({
       [...RETRY_STATES], { state: 'queued', error: null },
       { authorize: () => assessRequestOwner(owner, currentFacts(owner), REQUEST_PHASE.persist, { requireTransport: false }).current });
     if (!queued) return false;
+    registerCorrelation(owner, queued.messageId);
     submissionCorrelationPortRef.current.record({
       channelId: queued.channelId,
       messageId: queued.messageId,
@@ -691,7 +946,7 @@ export function useComposerSubmissionRuntime({
     publishPending((rows) => rows.map((row) => row.messageId === submission.messageId ? queued : row));
     if (authorityRef.current?.wireState === 'open') return transmitRef.current(queued);
     return true;
-  }, [authorize, captureOwner, currentFacts, publishPending]);
+  }, [authorize, captureOwner, currentFacts, publishPending, registerCorrelation]);
 
   useEffect(() => {
     if (wireState !== 'open' || !wireRef?.current) return;
@@ -812,6 +1067,7 @@ export function useComposerSubmissionRuntime({
     transmittingRef.current.clear();
     acceptingRef.current.clear();
     landedRef.current.clear();
+    sendLeaseRef.current.clear();
     submissionCorrelationPortRef.current.reset();
     persistedDraftRevisionRef.current.clear();
     setAcceptingChannels(new Set());

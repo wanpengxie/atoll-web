@@ -86,6 +86,13 @@ export function createOutboxStore({
     return error;
   }
 
+  function assertLeaseCurrent(leaseGuard, detail) {
+    if (!leaseGuard || leaseGuard() === true) return;
+    const error = new Error(detail);
+    error.code = 'send_lease_stale';
+    throw error;
+  }
+
   function assertStoreOpen() {
     if (closed) throw outboxClosedError();
   }
@@ -168,7 +175,7 @@ export function createOutboxStore({
         return durable;
       });
     },
-    async patch(principalId, messageId, expectedStates, change, { authorize, leaseOwner } = {}) {
+    async patch(principalId, messageId, expectedStates, change, { authorize, leaseOwner, leaseGuard } = {}) {
       return withDatabase((db, assertCurrent) => db.transaction('rw', db.submissions, async () => {
         assertCurrent();
         const key = [principalId, messageId];
@@ -181,10 +188,12 @@ export function createOutboxStore({
         // the phase lease inside this transaction immediately before the first
         // durable mutation; an outer before/after check can only compensate
         // after a stale `transmitting` record has already become crash-visible.
+        assertLeaseCurrent(leaseGuard, '发送租约已失效，未推进发送状态');
         if (authorize && authorize() !== true) throw new Error('发送授权已变化，未推进发送状态');
         assertCurrent();
         const next = { ...current, ...change, principalId, messageId, updatedAt: now() };
         await db.submissions.put(next);
+        assertLeaseCurrent(leaseGuard, '发送租约已失效，未推进发送状态');
         return next;
       }));
     },
@@ -318,7 +327,7 @@ export function createOutboxStore({
         return { accepted: true, consumed: true, record: consumed, submissions: durable };
       }));
     },
-    async acquireLease(principalId, messageId, owner, ttlMs = 15_000) {
+    async acquireLease(principalId, messageId, owner, ttlMs = 15_000, { authorize, leaseGuard } = {}) {
       if (!owner) throw new TypeError('outbox lease requires owner');
       return withDatabase((db, assertCurrent) => db.transaction('rw', db.submissions, async () => {
         assertCurrent();
@@ -328,13 +337,16 @@ export function createOutboxStore({
         if (!current) return null;
         const timestamp = now();
         if (current.leaseOwner && current.leaseOwner !== owner && Number(current.leaseUntil || 0) > timestamp) return null;
+        assertLeaseCurrent(leaseGuard, '发送租约已失效，未取得发送租约');
+        if (authorize && authorize() !== true) throw new Error('发送授权已变化，未取得发送租约');
         const next = { ...current, leaseOwner: owner, leaseUntil: timestamp + ttlMs, updatedAt: timestamp };
         assertCurrent();
         await db.submissions.put(next);
+        assertLeaseCurrent(leaseGuard, '发送租约已失效，未取得发送租约');
         return next;
       }));
     },
-    async releaseLease(principalId, messageId, owner) {
+    async releaseLease(principalId, messageId, owner, { leaseGuard } = {}) {
       if (!owner) return false;
       return withDatabase((db, assertCurrent) => db.transaction('rw', db.submissions, async () => {
         assertCurrent();
@@ -342,8 +354,10 @@ export function createOutboxStore({
         const current = await db.submissions.get(key);
         assertCurrent();
         if (!current || current.leaseOwner !== owner) return false;
+        assertLeaseCurrent(leaseGuard, '发送租约已失效，未释放发送租约');
         assertCurrent();
         await db.submissions.put({ ...current, leaseOwner: '', leaseUntil: 0, updatedAt: now() });
+        assertLeaseCurrent(leaseGuard, '发送租约已失效，未释放发送租约');
         return true;
       }));
     },
