@@ -86,7 +86,10 @@ test('FAE-1644 F7 bounded warm cache survives reload and satisfies one physical 
   const viewport = page.locator('.timeline-message-list');
   await expect.poll(() => viewport.evaluate((node) => node.scrollHeight > node.clientHeight)).toBe(true);
   await page.waitForTimeout(500);
-  await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.clear());
+  await page.evaluate(() => {
+    window.__ATOLL_DIAGNOSTICS__.clear();
+    window.__ATOLL_DIAGNOSTICS__.reading.enable({ case: 'TC0231-second-top-wheel' });
+  });
 
   // One native top gesture must satisfy exactly one physical demand.
   await viewport.hover();
@@ -101,14 +104,30 @@ test('FAE-1644 F7 bounded warm cache survives reload and satisfies one physical 
     entry.event === 'history.intent_started'
   )));
   expect(operations).toHaveLength(1);
+  const firstReadingDemand = await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.reading.snapshot()
+    .entries.find((entry) => entry.event === 'history.intent-started'));
+  expect(firstReadingDemand?.detail?.inputEpoch).toBeGreaterThan(0);
+  expect(firstReadingDemand?.detail?.gestureID).toMatch(/^navigation:/);
 
   // Scroll + scrollend from the first gesture are deduplicated, but the key
   // is not lifetime suppression: a second native gesture owns a new epoch.
-  await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.clear());
+  await page.evaluate(() => {
+    window.__ATOLL_DIAGNOSTICS__.clear();
+    window.__ATOLL_DIAGNOSTICS__.reading.enable({ case: 'TC0231-second-top-wheel' });
+  });
   await page.mouse.wheel(0, -100_000);
   await expect.poll(() => page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot().filter((entry) => (
     entry.event === 'history.intent_started'
   )).length)).toBe(1);
+  const secondDemandBeforeSettle = await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.reading.snapshot()
+    .entries.filter((entry) => entry.event === 'history.intent-started'));
+  expect(secondDemandBeforeSettle).toHaveLength(1);
+  expect(secondDemandBeforeSettle[0].detail.inputEpoch)
+    .toBeGreaterThan(firstReadingDemand.detail.inputEpoch);
+  expect(secondDemandBeforeSettle[0].detail.gestureID)
+    .toMatch(/^navigation:/);
+  expect(secondDemandBeforeSettle[0].detail.gestureID)
+    .not.toBe(firstReadingDemand.detail.gestureID);
   await expect.poll(() => page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot().some((entry) => (
     entry.event === 'history.intent_satisfied'
   ))), { timeout: 30_000 }).toBe(true);

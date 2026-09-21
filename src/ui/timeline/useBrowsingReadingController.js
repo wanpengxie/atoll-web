@@ -29,6 +29,7 @@ export function useBrowsingReadingController({
   rootIdentity = 0,
   rootMountedRef = null,
   handoffPending = false,
+  onTopDemandSettled = null,
 }) {
   const readingRef = useRef(reading);
   const snapshotRef = useRef(snapshot);
@@ -62,10 +63,30 @@ export function useBrowsingReadingController({
     const key = `${current.activationID}:${current.inputEpoch}:${reason}`;
     if (frontierDemandKeyRef.current === key) return;
     frontierDemandKeyRef.current = key;
-    const detail = { demandUnits: evidence.demandUnits };
-    if (reason === 'runway') owner.onNearTop(detail);
-    else owner.onAtTop(detail);
-  }, []);
+    const input = inputRef.current;
+    const detail = Object.freeze({
+      demandUnits: evidence.demandUnits,
+      activationID: current.activationID,
+      inputEpoch: Number(current.inputEpoch),
+      gestureID: String(input.gestureID || ''),
+      hostRole: input.hostRole,
+      hostToken: input.hostToken,
+    });
+    const pending = reason === 'runway' ? owner.onNearTop(detail) : owner.onAtTop(detail);
+    // A top demand is the semantic owner of the wheel lease. Release only
+    // after the owner reports a terminal result; admission-pending and stale
+    // deduplication are not settlements and must not mint a new gesture.
+    if (reason === 'top' && pending && typeof pending.then === 'function') {
+      void Promise.resolve(pending).then((result) => {
+        if (!['satisfied', 'exhausted', 'failed'].includes(result?.kind)) return;
+        onTopDemandSettled?.(Object.freeze({
+          ...detail,
+          result: result.kind,
+        }));
+      });
+    }
+    return pending;
+  }, [onTopDemandSettled]);
 
   const reportDomEvidence = useCallback((evidence) => {
     const owner = readingRef.current;
@@ -316,6 +337,9 @@ export function useBrowsingReadingController({
       inputRef.current = {
         activationID: transaction.activationID,
         inputEpoch: transaction.inputGeneration,
+        gestureID: transaction.id,
+        hostRole: transaction.hostRole,
+        hostToken: transaction.hostToken,
         direction: transaction.direction,
         canRequestHistory: transaction.canRequestHistory === true,
         active: true,

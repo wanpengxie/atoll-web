@@ -226,6 +226,22 @@ export function createReadingNavigationCoordinator({
       return finish('native-scrollend');
     },
 
+    // A semantic top demand may settle after Chromium has already emitted its
+    // per-tick scrollend.  That settlement is the owner-level boundary for
+    // the wheel lease: release this exact transaction so the next native
+    // wheel mints a new gesture/input epoch.  It performs no DOM write.
+    settle(event = {}) {
+      if (!transaction || transaction.source !== 'wheel') return false;
+      if (transaction.activationID !== String(event.activationID || currentActivationID)
+        || (event.hostRole && transaction.hostRole !== String(event.hostRole))
+        || (Object.prototype.hasOwnProperty.call(event, 'hostToken')
+          && transaction.hostToken !== event.hostToken)
+        || (event.gestureID && transaction.id !== String(event.gestureID))
+        || (event.inputEpoch != null
+          && transaction.inputGeneration !== Number(event.inputEpoch))) return false;
+      return finish('semantic-settled');
+    },
+
     replaceActivation(nextActivationID) {
       const next = String(nextActivationID || '');
       if (next === currentActivationID) return false;

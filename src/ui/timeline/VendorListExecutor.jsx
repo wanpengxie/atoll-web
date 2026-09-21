@@ -386,12 +386,17 @@ export function VendorListExecutor({
   const coverageEvidenceRef = useRef(null);
   const coverageSourceKeyRef = useRef('');
   const coveragePublishedKeyRef = useRef('');
+  const coordinatorRef = useRef(null);
+  const onTopDemandSettled = useCallback((detail) => {
+    coordinatorRef.current?.settle(detail);
+  }, []);
   const readingController = useBrowsingReadingController({
     reading,
     snapshot,
     rootNode,
     rootIdentity,
     rootMountedRef,
+    onTopDemandSettled,
   });
   const { navigationPolicy, reportDomEvidence } = readingController;
   const readingRef = useRef(reading);
@@ -847,6 +852,13 @@ export function VendorListExecutor({
       });
     },
   }), [navigationPolicy, reading.activationID, scheduleObserve]);
+
+  useLayoutEffect(() => {
+    coordinatorRef.current = coordinator;
+    return () => {
+      if (coordinatorRef.current === coordinator) coordinatorRef.current = null;
+    };
+  }, [coordinator]);
 
   useEffect(() => {
     coordinator.replaceActivation(reading.activationID);

@@ -313,7 +313,7 @@ export function useHistoryConsumer({
       requiredVisibleCoverage = null, consumer = '', continuation = false,
       stableTopContinuation = false, continuationAnchorID = '', continuationAnchorSeq = 0,
       continuationFirstVisibleSeq = 0, continuationLease = null,
-      historyStartIntent = null, beforeSeq = 0,
+      historyStartIntent = null, beforeSeq = 0, gestureID = '',
     } = options;
     const historyStart = historyStartIntent?.type === 'history-start';
     if (!continuation && committedOwnerRef.current !== commitOwnerCandidate) {
@@ -632,6 +632,7 @@ export function useHistoryConsumer({
     }
     const epoch = epochRef.current + 1;
     epochRef.current = epoch;
+    const activeSession = controller.getSnapshot().session;
     diagnostic('debug', 'history.intent_started', {
       channelId: channelID, epoch, viewKey, reason, urgency,
       anchorSeq: Number(first?.seqLow || 0), installedVisibleRows: snapshotRef.current.rows.length,
@@ -646,11 +647,11 @@ export function useHistoryConsumer({
       presentationRevision: Number(snapshotRef.current.revision || 0),
       channelId: channelID, epoch, viewKey, reason, urgency,
       anchorID: first?.id || '', anchorSeq: Number(first?.seqLow || 0),
+      gestureID: String(gestureID || activeSession.historyAnchor?.gestureID || ''),
       revealRows: Number(revealRows || 0), revealBytes: Number(revealBytes || 0),
     });
     const abortController = new AbortController();
     let operation = null;
-    const activeSession = controller.getSnapshot().session;
     const revealIntent = historyRevealIntent({
       intent, activationID: controller.activationID, inputEpoch: activeSession.inputEpoch,
       intentRevision: activeSession.intentRevision,

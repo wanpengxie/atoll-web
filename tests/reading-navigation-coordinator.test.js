@@ -58,6 +58,30 @@ describe('reading navigation transaction coordinator', () => {
       .toEqual(['navigation:1', 'navigation:2']);
   });
 
+  it('releases a settled top lease before the next native wheel', () => {
+    const h = harness();
+    const host = { activationID: 'activation:a', hostRole: 'browsing', hostToken: 'timeline' };
+    const first = h.coordinator.recordInput({
+      ...host, source: 'wheel', direction: 'older',
+    });
+    expect(h.coordinator.settle({
+      ...host, gestureID: 'navigation:stale', inputEpoch: first.inputGeneration,
+    })).toBe(false);
+    expect(h.coordinator.settle({
+      ...host, gestureID: first.id, inputEpoch: first.inputGeneration,
+    })).toBe(true);
+    expect(h.events).toContainEqual([
+      'end', 'semantic-settled', expect.objectContaining({ id: 'navigation:1', inputGeneration: 1 }),
+    ]);
+
+    const second = h.coordinator.recordInput({
+      ...host, source: 'wheel', direction: 'older',
+    });
+    expect(second.id).toBe('navigation:2');
+    expect(second.inputGeneration).toBe(2);
+    expect(h.events.filter(([type]) => type === 'begin')).toHaveLength(2);
+  });
+
   it('uses native scrollend as an early wheel completion signal', () => {
     const h = harness();
     h.coordinator.recordInput({ source: 'wheel', hostRole: 'browsing', direction: 'older' });
