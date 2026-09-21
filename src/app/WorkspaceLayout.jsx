@@ -428,6 +428,14 @@ export function WorkspaceLayout({
   const messageSurfaceCovered = (topology === 'mobile' || topology === 'compact')
     && (navigation.terminalVisible || filesOpen);
   const messageSurfaceVisible = conversation?.surfaceVisible !== false && !messageSurfaceCovered;
+  // Files owns the only mobile content surface, but it must not remove the
+  // mounted Conversation composer. This is a presentation handoff only: the
+  // conversation owner still receives the committed `surfaceVisible` state
+  // above, while the mobile layout keeps its bottom input affordance
+  // available as an overlay over the full Files surface.
+  const mobileFilesComposerVisible = (topology === 'mobile' || topology === 'compact')
+    && filesOpen
+    && !navigation.terminalVisible;
   const conversationElement = React.isValidElement(conversation?.element)
     ? React.cloneElement(conversation.element, {
       ...(typeof conversation.element.type === 'string' ? {} : { surfaceVisible: messageSurfaceVisible }),
@@ -675,6 +683,7 @@ export function WorkspaceLayout({
         // grid facts when they are open so the existing desktop two-surface
         // geometry can place files above the terminal without remounting it.
         filesOpen && 'files-split-open',
+        mobileFilesComposerVisible && 'mobile-files-composer-open',
         navigation.activeView === 'tasks' && !navigation.terminalVisible && 'tasks-view-open',
       ].filter(Boolean).join(' ')}>
         <div className="dynamic-message-pane" data-surface-visible={String(messageSurfaceVisible)}>{conversationElement}</div>
