@@ -162,7 +162,7 @@ describe('ContentPlan', () => {
     expect(restored).toBe(first);
   });
 
-  it('accounts prepared bytes when a retained plan is deleted', () => {
+  it('[TC-0538][AD-244] accounts prepared bytes when a retained plan is deleted', () => {
     const store = createContentPlanStore({ limit: 2, preparedByteLimit: 1024 * 1024 });
     store.plan('delete-prepared', 'retained prepared tree');
     expect(store.preparedBytes).toBeGreaterThan(0);
