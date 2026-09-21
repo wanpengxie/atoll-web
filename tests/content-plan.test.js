@@ -54,7 +54,7 @@ describe('ContentPlan', () => {
     expect(new Set(next.blocks.map((block) => block.blockID)).size).toBe(3);
   });
 
-  it('keeps one unambiguous growing active tail id while sealed prefix revisions stay fixed', () => {
+  it('[TC-0529][AD-235] keeps one unambiguous growing active tail id while sealed prefix revisions stay fixed', () => {
     const first = plan({ contentKey: 'message:m3:body', source: 'sealed\n\nactive' });
     const next = plan({ contentKey: 'message:m3:body', source: 'sealed\n\nactive grows', previous: first });
     expect(next.blocks[0]).toMatchObject({
