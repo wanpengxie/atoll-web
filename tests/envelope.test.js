@@ -14,7 +14,7 @@ describe('envelope algebra', () => {
     expect([...FINAL].some((status) => PROVISIONAL.has(status))).toBe(false);
   });
 
-  it('only treats final responses as terminal', () => {
+  it('[TC-0673][EH02-02] only treats final responses as terminal', () => {
     expect(isTerminal({ kind: 'response', payload: { body: { status: 'completed' } } })).toBe(true);
     expect(isTerminal({ kind: 'response', payload: { body: { status: 'failed' } } })).toBe(true);
     expect(isTerminal({ kind: 'response', payload: { body: { status: 'processing' } } })).toBe(false);
