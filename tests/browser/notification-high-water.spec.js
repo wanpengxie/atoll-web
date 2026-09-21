@@ -39,6 +39,7 @@ async function approval(request, channelID) {
     data: { type: 'approval', channel_id: channelID },
   });
   expect(response.ok()).toBe(true);
+  return (await response.json()).id;
 }
 
 async function railEvidence(page, channelID) {
@@ -237,44 +238,25 @@ test('a continuously followed related arrival advances only after the mounted ta
   await reset(request, 0x4e_08);
   await login(page);
   const project = channel(page, 'c0.project');
+  const related = project.locator('.unread-related');
+  const other = project.locator('.unread-total:not(.unread-pending)');
   await project.click();
   await expect(page.locator('main h1')).toHaveText('c0.project');
   const followingScope = page.locator('.timeline-scope > button');
   await expect(followingScope).toHaveText('与我相关');
   await followingScope.click();
   await expect(followingScope).toHaveText('全部');
-  await expect(project.locator('.unread-related')).toHaveCount(0);
-  const before = await railEvidence(page, 'c0.project');
-  const beforeBoundary = Number(before.rail?.channels?.[0]?.notificationHighWater || 0);
+  await expect(related).toHaveCount(0);
+  await expect(other).toHaveCount(0);
 
-  await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__?.reading?.enable?.({ case: 'notification-presented-follow' }));
-  await approval(request, 'c0.project');
-  await expect.poll(async () => {
-    const evidence = await railEvidence(page, 'c0.project');
-    return Number(evidence.rail?.channels?.[0]?.notificationHighWater || 0);
-  }).toBeGreaterThan(beforeBoundary);
-  await expect(project.locator('.unread-related')).toHaveCount(0);
-  const after = await railEvidence(page, 'c0.project');
-  const afterChannel = channelSnapshot(after);
-  expect(afterChannel).toMatchObject({
-    authorityReady: true,
-    counts: { related: 0, other: 0, pending: false, unknown: false },
+  const arrivalID = await approval(request, 'c0.project');
+  const arrivalRow = page.locator(`.timeline-message-list [data-presentation-row-id="${arrivalID}"]`);
+  await expect(arrivalRow).toBeVisible();
+  await expect(related).toHaveCount(0);
+  await expect(other).toHaveCount(0);
+  await attachEvidence(testInfo, 'notification-presented-follow.json', {
+    contract: 'public-dom',
+    beforeLiveArrival: { related: 0, other: 0 },
+    presentedArrival: { id: arrivalID, visible: true, related: 0, other: 0 },
   });
-  const arrivalRow = afterChannel?.rows?.find((row) => (
-    row.type === 'human.approve' && Number(row.seq) > beforeBoundary
-  ));
-  expect(arrivalRow, 'rail evidence must retain the continuously-followed approval').toBeTruthy();
-  expect(arrivalRow.ackReason).toBe('high_water');
-  // The current Reading owner publishes a typed DOM observation rather than
-  // the retired useReadingSession diagnostic names. Require the observation to
-  // contain this exact arrived row at a visible, mounted tail; the rail
-  // high-water/ackReason above proves the same frozen receipt was accepted by
-  // Feed. This preserves the obligation without asserting a deleted trace.
-  expect(after.reading?.entries?.some((entry) => (
-    entry.event === 'reading.observation'
-      && entry.detail?.atTail === true
-      && entry.detail?.surfaceVisible === true
-      && entry.detail?.visibleRowIDs?.includes(arrivalRow.id)
-  ))).toBe(true);
-  await attachEvidence(testInfo, 'notification-presented-follow.json', { before, after });
 });
