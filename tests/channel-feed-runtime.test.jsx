@@ -762,8 +762,10 @@ describe('ChannelFeedRuntime ownership', () => {
       expect(producerA.enqueue(row(1, 'owner-a-row'))).toBe(true);
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       expect(runtime.getSnapshot().stateFor('c0')?.rows.has(1)).toBe(true);
-      expect(submissionCalls).toHaveLength(1);
-      expect(submissionCalls[0][2]).toBe(ownerA);
+      // A passive channel.info row is not evidence that a Composer-owned
+      // submission landed. Owner fencing is observed through Replica/roster;
+      // submission fanout remains quiet for both generations.
+      expect(submissionCalls).toHaveLength(0);
       expect(rosterCalls).toEqual([
         expect.objectContaining({ channelId: 'c0', committedOwner: ownerA }),
       ]);
@@ -777,14 +779,13 @@ describe('ChannelFeedRuntime ownership', () => {
       expect(producerA.enqueue(row(2, 'late-owner-a-row'))).toBe(true);
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       expect(runtime.getSnapshot().stateFor('c0')?.rows.has(2)).not.toBe(true);
-      expect(submissionCalls).toHaveLength(1);
+      expect(submissionCalls).toHaveLength(0);
       expect(rosterCalls.some(({ envelope }) => envelope.id === 'late-owner-a-row')).toBe(false);
 
       expect(producerB.enqueue(row(3, 'owner-b-row'))).toBe(true);
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       expect(runtime.getSnapshot().stateFor('c0')?.rows.has(3)).toBe(true);
-      expect(submissionCalls).toHaveLength(2);
-      expect(submissionCalls[1][2]).toBe(ownerB);
+      expect(submissionCalls).toHaveLength(0);
       expect(rosterCalls.some(({ envelope, committedOwner }) => (
         envelope.id === 'owner-b-row' && committedOwner === ownerB
       ))).toBe(true);
