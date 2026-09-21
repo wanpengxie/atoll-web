@@ -81,7 +81,7 @@ function historyFor({ request, hasOlder = true } = {}) {
       presentationRevision: 1,
       notificationAuthorityRevision: 0,
       historyDemand: { revision: 0, phase: 'idle', error: '' },
-      sync: { interestRevision: 0, fulfilledRevision: 0, targetHead: 1 },
+      sync: { interestRevision: 1, fulfilledRevision: 1, targetHead: 1 },
       presentationAdmission: admission(),
     },
   };
@@ -173,7 +173,12 @@ describe('SZ-159 committed history owner across a suspended candidate', () => {
     // request port, matching a Scheduler status publication after fallback.
     act(() => { control.current.startCandidate(); });
     await waitFor(() => expect(candidateAttempted.current).toBe(true));
-    const candidatePort = committedPort;
+    // Observe the still-committed public owner while B is suspended. Its
+    // generation/status and semantic EOF boundary must remain A's facts;
+    // candidate B's `hasOlder: false` is not a public state transition.
+    expect(committedPort.status).toMatchObject({ generation: 1, hasOlder: true });
+    expect(committedPort.historyBoundary).toBeNull();
+    expect(committedPort.availability).toBe('readable');
 
     act(() => { control.current.commitReplacement(); });
     await waitFor(() => expect(committedPort).not.toBe(ownerA));
@@ -183,7 +188,6 @@ describe('SZ-159 committed history owner across a suspended candidate', () => {
       settle({ kind: 'exhausted' });
       await pending;
     });
-    expect(candidatePort).toBe(ownerA);
     await act(async () => {
       await committedPort.onNearTop();
     });
