@@ -378,7 +378,7 @@ function creationConvergence(channel, children, request, creation = null) {
 // channel directory and access projection remain the existing Workspace
 // owners; this component only keeps the local request and renders their
 // convergence without a second store or a private protocol API.
-export function ChannelCreateModal({ channel, port = {}, onClose }) {
+export function ChannelCreateModal({ channel, port = {}, onClose, returnFocusRef = null }) {
   const [name, setName] = useState('');
   const [purpose, setPurpose] = useState('');
   const [templateId, setTemplateId] = useState('');
@@ -421,6 +421,7 @@ export function ChannelCreateModal({ channel, port = {}, onClose }) {
   useModalFocus({
     dialogRef,
     initialFocusRef: nameRef,
+    returnFocusRef,
     onClose,
     closeDisabled: submitting,
   });

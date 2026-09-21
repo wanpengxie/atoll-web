@@ -10,6 +10,7 @@ import { SearchFeature } from './search/SearchFeature.jsx';
 import { TaskDetailPanel } from './tasks/TaskDetailPanel.jsx';
 import { TasksFeature } from './tasks/TasksFeature.jsx';
 import { TerminalFeature } from './terminal/TerminalFeature.jsx';
+import { PanelCard } from '../primitives/PanelCard.jsx';
 import { SidePanel } from '../primitives/SidePanel.jsx';
 import { useModalFocus } from '../primitives/useModalFocus.js';
 
@@ -23,6 +24,7 @@ export const WORKSPACE_FEATURE_PANEL = Object.freeze({
   spaceAdministration: 'space-administration',
   activity: 'activity',
   readingHistory: 'reading-history',
+  resources: 'resources',
 });
 
 const ACTIVITY_TABS = Object.freeze([
@@ -225,6 +227,115 @@ function ReadingHistoryFeature({ files = {}, onClose }) {
   </SidePanel>;
 }
 
+const RESOURCE_TABS = Object.freeze([
+  { id: 'files', label: '文件' },
+  { id: 'kv', label: 'KV' },
+]);
+
+const RESOURCE_ACTIONS = Object.freeze({
+  create: '创建',
+  read: '读取',
+  write: '写入',
+  stat: '状态',
+  list: '列出',
+  delete: '删除',
+});
+
+function parseResourceArgs(value) {
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new TypeError('KV Args 必须是 JSON 对象');
+    return parsed;
+  } catch (error) {
+    if (error instanceof SyntaxError) throw new TypeError('KV Args JSON 格式无效');
+    throw error;
+  }
+}
+
+function KeyValueResourcePanel({ channel, files = {} }) {
+  const [resourceId, setResourceId] = useState('kv:demo');
+  const [args, setArgs] = useState('{"value":"hello"}');
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState('');
+  const command = files.commands?.resource;
+  const available = files.resourceAvailable !== false && typeof command === 'function';
+  const writeDisabled = files.resourceWriteDisabled === true || files.disabled === true;
+
+  const run = async (op) => {
+    setError('');
+    if (!available) {
+      setError('当前会话没有可用的资源操作端口。');
+      return;
+    }
+    const id = String(resourceId || '').trim();
+    if (op !== 'list' && !id) {
+      setError('资源 ID 不能为空');
+      return;
+    }
+    let payload = { channel_id: channel?.id, op };
+    if (op !== 'list') payload.resource_id = id;
+    if (op === 'create' || op === 'write') {
+      try { payload = { ...payload, args: parseResourceArgs(args) }; } catch (failure) {
+        setError(failure?.message || String(failure));
+        return;
+      }
+    }
+    setBusy(op);
+    try {
+      setResult(await command(payload));
+    } catch (failure) {
+      setError(failure?.message || String(failure));
+    } finally {
+      setBusy('');
+    }
+  };
+
+  return <>
+    {!available && <p className="governance-error" role="status">当前会话没有可用的资源操作端口；不会伪造资源结果。</p>}
+    {error && <p className="governance-error" role="alert">{error}</p>}
+    <PanelCard className="governance-form" title="KV 资源">
+      <label>资源 ID<input aria-label="KV 资源 ID" value={resourceId} onChange={(event) => setResourceId(event.target.value)} /></label>
+      <label>Args JSON<textarea aria-label="KV Args JSON" rows="6" value={args} onChange={(event) => setArgs(event.target.value)} /></label>
+      <div className="resource-actions">{Object.entries(RESOURCE_ACTIONS).map(([op, label]) => <button
+        type="button"
+        key={op}
+        className={op === 'delete' ? 'danger-text' : op === 'create' ? 'primary-button' : ''}
+        disabled={!available || Boolean(busy) || (writeDisabled && ['create', 'write', 'delete'].includes(op))}
+        onClick={() => void run(op)}
+      >{busy === op ? '处理中…' : label}</button>)}</div>
+    </PanelCard>
+    {result && <PanelCard className="resource-result" title="最近结果"><pre>{JSON.stringify(result, null, 2)}</pre></PanelCard>}
+  </>;
+}
+
+function ChannelResourcesFeature({ channel, files = {}, onClose }) {
+  const [tab, setTab] = useState('files');
+  const filePort = {
+    ...files,
+    // The resource panel is a side surface; its file close command returns to
+    // the committed conversation route through the existing Files owner.
+    commands: {
+      ...(files.commands || {}),
+      close: onClose || files.commands?.close,
+    },
+  };
+  const content = tab === 'kv'
+    ? <KeyValueResourcePanel channel={channel} files={files} />
+    : <div className="resource-files-embed"><FilesFeature channel={channel} port={filePort} visible onClose={filePort.commands.close} /></div>;
+  return <SidePanel
+    className="resource-panel"
+    ariaLabel="频道资源"
+    eyebrow="CHANNEL DATA"
+    title="资源与文件"
+    closeLabel="关闭频道资源"
+    tabs={RESOURCE_TABS}
+    activeTab={tab}
+    onTabChange={setTab}
+    onClose={onClose}
+  >{content}</SidePanel>;
+}
+
 // Product surfaces consume only domain projections and command callbacks.
 // The composition root remains the owner of session, feed, and reading state.
 export function WorkspaceFeatures({
@@ -335,12 +446,13 @@ export function WorkspaceRightPanel({ panel, channel, files = {}, tasks = {}, ro
     focusKey = `${kind}:${initialTab || 'members'}`;
     const governancePort = governance.channel || governance;
     content = initialTab === 'overview'
-      ? <ChannelCreateModal channel={channel} port={governancePort} onClose={onClose} />
+      ? <ChannelCreateModal channel={channel} port={governancePort} onClose={onClose} returnFocusRef={returnFocusRef} />
       : <ChannelAdministrationPanel channel={channel} port={governancePort} initialTab={initialTab} onClose={onClose} />;
   }
   else if (kind === WORKSPACE_FEATURE_PANEL.spaceAdministration) content = <SpaceAdministrationPanel channel={channel} port={governance.space || governance} onClose={onClose} />;
   else if (kind === WORKSPACE_FEATURE_PANEL.activity) content = <ActivityFeature port={activity} onClose={onClose} />;
   else if (kind === WORKSPACE_FEATURE_PANEL.readingHistory) content = <ReadingHistoryFeature files={files} onClose={onClose} />;
+  else if (kind === WORKSPACE_FEATURE_PANEL.resources) content = <ChannelResourcesFeature channel={channel} files={files} onClose={onClose} />;
   if (!content) return null;
   // A new-channel request is an app-level modal, not a context side panel.
   // Keep this feature-owned branch outside ContextHost so the public rail
