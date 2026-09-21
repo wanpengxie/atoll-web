@@ -139,6 +139,10 @@ vi.mock('react-virtuoso', async () => {
         role={props.role}
         aria-label={props['aria-label']}
         tabIndex={props.tabIndex}
+        data-reading-container={props['data-reading-container']}
+        data-reading-mode={props['data-reading-mode']}
+        data-reading-presentation-revision={props['data-reading-presentation-revision']}
+        data-reading-root-identity={props['data-reading-root-identity']}
       >
         <List context={props.context}>
           <Header context={props.context} />
@@ -3113,10 +3117,14 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
   it('message-list-lifecycle TC-0991: the public Waiting reserve excludes rows behind its readable bottom', async () => {
     const observations = [];
     const reading = round34Reading({ mode: READING_MODE.browsing });
-    reading.onReadingObservation = vi.fn((observation) => observations.push(observation));
+    reading.session = { ...reading.session, intentRevision: 0 };
+    reading.onReadingSample = vi.fn((observation) => observations.push(observation));
     render(
       <VendorListExecutor
-        snapshot={round33Snapshot([round33Row('covered-by-waiting', 1)], { firstItemIndex: 0 })}
+        snapshot={round33Snapshot([
+          round33Row('readable-before-waiting', 1),
+          round33Row('covered-by-waiting', 2),
+        ], { firstItemIndex: 0 })}
         reading={reading}
         surfaceVisible
         renderRow={(row) => <article>{row.id}</article>}
@@ -3128,14 +3136,17 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
       scrollTop: 0,
     });
     scroller.style.setProperty('--conversation-waiting-reserve', '100px');
-    const rowNode = scroller.querySelector('[data-presentation-row-id]');
-    rowNode.getBoundingClientRect = () => ({
+    const [readableRow, coveredRow] = scroller.querySelectorAll('[data-presentation-row-id]');
+    readableRow.getBoundingClientRect = () => ({
+      top: 80, bottom: 150, left: 0, right: 800, width: 800, height: 70,
+    });
+    coveredRow.getBoundingClientRect = () => ({
       top: 520, bottom: 590, left: 0, right: 800, width: 800, height: 70,
     });
     const previousElementFromPoint = document.elementFromPoint;
     Object.defineProperty(document, 'elementFromPoint', {
       configurable: true,
-      value: vi.fn(() => rowNode),
+      value: vi.fn((_x, y) => y < 500 ? readableRow : coveredRow),
     });
     try {
       const Footer = vendorHarness.props.components.Footer;
@@ -3146,7 +3157,9 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
         vendorHarness.props.rangeChanged({ startIndex: 0, endIndex: 0 });
         await new Promise((resolve) => globalThis.requestAnimationFrame(resolve));
       });
-      expect(observations.at(-1)?.visibleRows).toEqual([]);
+      expect(observations.at(-1)?.visibleRows).toEqual([
+        { messageID: 'readable-before-waiting', seqHigh: 1 },
+      ]);
     } finally {
       Object.defineProperty(document, 'elementFromPoint', {
         configurable: true,
