@@ -160,7 +160,7 @@ test('rail follows presented lifecycle roots and persists only unacknowledged ex
   });
 });
 
-test('tool, timer, and public-event notifications follow independent readable roots', async ({ page, request }, testInfo) => {
+test('[TC-0284] tool, timer, and public-event notifications follow independent readable roots', async ({ page, request }, testInfo) => {
   const reset = await request.post('/mock/control/reset', { data: { scenario: 'multi-channel', seed: 2632 } });
   expect(reset.ok()).toBe(true);
   await login(page);
