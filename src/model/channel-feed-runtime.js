@@ -1536,7 +1536,9 @@ export function createChannelFeedRuntime(options = {}) {
       if (!operation.waiters.size) retireOrphanedOperation(operation, reason);
     }
     if (demand.revealToken && !demand.revealSettled) {
-      admission.cancel(demand.channelId, demand.revealToken.operationID);
+      admission.cancel(demand.channelId, demand.revealToken.operationID, {
+        sourceRevision: demand.baselineSourceRevision,
+      });
       demand.revealSettled = true;
     }
     const status = histories.get(demand.channelId);
@@ -1583,6 +1585,7 @@ export function createChannelFeedRuntime(options = {}) {
       waiters: new Map(),
       operations: new Set(),
       retired: false,
+      baselineSourceRevision: Number(replica.state(channelId)?._timelineRevision || 0),
     };
     semanticDemands.set(channelId, demand);
     Object.assign(status, {
@@ -1901,9 +1904,38 @@ export function createChannelFeedRuntime(options = {}) {
     });
   }
 
+  function semanticWaiterCurrent(waiter) {
+    const demand = waiter?.semanticDemand;
+    if (!demand || demand.retired
+      || waiter.authorityRevision !== demand.authorityRevision
+      || semanticDemands.get(demand.channelId) !== demand) return false;
+    const revealToken = demand.revealToken;
+    if (!revealToken) return true;
+    const admissionState = admission.snapshot(demand.channelId);
+    const currentToken = admissionState?.token || admissionState?.committed;
+    return Boolean(currentToken
+      && admissionState.phase !== 'idle'
+      && admissionState.phase !== 'holding'
+      && currentToken.cancelled !== true
+      && String(currentToken.operationID || '') === String(revealToken.operationID || '')
+      && String(currentToken.activationID || '') === String(revealToken.activationID || '')
+      && String(currentToken.viewID || '') === String(revealToken.viewID || '')
+      && String(currentToken.epoch || '') === String(revealToken.epoch || ''));
+  }
+
+  function hasCurrentSemanticWaiter(operation) {
+    return [...(operation?.waiters || [])].some((waiter) => semanticWaiterCurrent(waiter));
+  }
+
   function settlePhysicalOperation(operation, outcome) {
     if (operation.settled) return;
     operation.settled = true;
+    // Physical rows/cache are allowed to finish after a semantic navigation
+    // revoke.  The public Presentation/index notification is narrower: it
+    // belongs only to an exact live semantic waiter whose admission still
+    // addresses the current transaction.  A stale page therefore remains a
+    // materialized fact without waking the current Reading owner.
+    const currentSemanticWaiter = hasCurrentSemanticWaiter(operation);
     let publishNeeded = false;
     if (outcome.kind === 'failed') {
       const accessProjected = Boolean(operation.accessFailureCode)
@@ -1915,8 +1947,8 @@ export function createChannelFeedRuntime(options = {}) {
     if (physicalOperations.get(operation.key) === operation) physicalOperations.delete(operation.key);
     removeActivePhysical(operation);
     recomputePhysicalStatus(operation.channelId);
-    publishNeeded = semanticChanged;
-    if (publishNeeded || outcome.kind === 'page') {
+    publishNeeded = currentSemanticWaiter && semanticChanged;
+    if (publishNeeded || (currentSemanticWaiter && outcome.kind === 'page')) {
       publish({ index: outcome.kind === 'page' && outcome.acceptedRows > 0 });
     }
   }
