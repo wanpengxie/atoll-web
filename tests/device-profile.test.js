@@ -20,7 +20,7 @@ describe('性能路径的判据', () => {
     expect(detectProfile({ matchMedia: media({ '(max-width: 900px)': true }), search: '', storage: storage() })).toBe(PROFILE_DESKTOP);
   });
 
-  it('触屏但宽屏（平板横放、触屏一体机）→ 桌面端', () => {
+  it('[TC-0604][AD-310] 触屏但宽屏（平板横放、触屏一体机）→ 桌面端', () => {
     expect(detectProfile({ matchMedia: media({ '(pointer: coarse)': true }), search: '', storage: storage() })).toBe(PROFILE_DESKTOP);
   });
 
