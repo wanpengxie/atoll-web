@@ -143,7 +143,7 @@ describe('ContentPlanBlocks', () => {
     expect(resolveContentTextPoint(view.container, point)).toBeNull();
   });
 
-  it('rejects an ordinal id reused for different text after plan history is unavailable', () => {
+  it('[TC-0523][AD-229] rejects an ordinal id reused for different text after plan history is unavailable', () => {
     const renderBlock = (block) => <p>{block.source}</p>;
     const oldPlan = createContentPlan({ contentKey: 'message:evicted:body', source: 'first\n\ntarget passage' });
     const oldView = render(<ContentPlanBlocks plan={oldPlan} renderBlock={renderBlock} />);
