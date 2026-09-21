@@ -18,7 +18,23 @@ test('production list keeps a browsing anchor when a mounted row below it grows'
   await list.hover();
   await page.mouse.wheel(0, -1_800);
   await expect(page.locator('.timeline')).toHaveAttribute('data-viewport-mode', 'browsing');
-  const anchor = list.locator('[data-presentation-row-id]').filter({ has: page.locator('.agent-conversation-turn') }).first();
+  // Virtuoso keeps measured rows mounted outside the viewport with
+  // `visibility:hidden`; `.first()` therefore selects an off-screen shell and
+  // never exercises the user-visible anchor contract. Select the first
+  // mounted conversation row whose public box intersects the actual scroller.
+  const anchorID = await list.evaluate((root) => {
+    const viewport = root.getBoundingClientRect();
+    return [...root.querySelectorAll('[data-presentation-row-id]')]
+      .find((node) => {
+        const rect = node.getBoundingClientRect();
+        return node.querySelector('.agent-conversation-turn')
+          && getComputedStyle(node).visibility !== 'hidden'
+          && rect.bottom > viewport.top
+          && rect.top < viewport.bottom;
+      })?.getAttribute('data-presentation-row-id') || '';
+  });
+  expect(anchorID).not.toBe('');
+  const anchor = list.locator(`[data-presentation-row-id="${anchorID}"]`);
   await expect(anchor).toBeVisible();
   const before = await anchor.boundingBox();
   const created = await request.post('/mock/control/action', { data: { type: 'dense_progress', channel_id: 'c0', count: 1 } });
