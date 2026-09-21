@@ -30,18 +30,36 @@ export function useTimelineArrivalReceipt(state) {
 
   const events = useMemo(() => {
     const live = snapshot.events || [];
-    const liveRecords = new Set(live.map((event) => `${event.key}\u0000${event.seq}`));
-    const restored = durableRecords
-      .filter(([key, seq]) => !liveRecords.has(`${key}\u0000${seq}`))
-      .map(([key, seq], index) => Object.freeze({
-        revision: 0,
-        key,
-        rowID: key,
-        seq,
-        durable: true,
-        durableIndex: index,
-      }));
-    return Object.freeze([...live, ...restored]);
+    // The Replica journal records every protocol transition, while Reading
+    // exposes one notice per stable conversation identity. A terminal/update
+    // for an already pending root must advance that root's high-water rather
+    // than create a second badge. Keep the newest finite sequence for each key;
+    // the raw journal revision remains owned by `snapshot` for acknowledgement.
+    const byKey = new Map();
+    const retain = (event) => {
+      const key = String(event?.key || event?.rowID || '');
+      if (!key) return;
+      const seq = Number(event?.seq || 0);
+      const previous = byKey.get(key);
+      if (!previous
+        || seq > Number(previous.seq || 0)
+        || (seq === Number(previous.seq || 0)
+          && Number(event?.revision || 0) > Number(previous.revision || 0))) {
+        byKey.set(key, event);
+      }
+    };
+    for (const event of live) retain(event);
+    durableRecords.forEach(([key, seq], index) => retain(Object.freeze({
+      revision: 0,
+      key,
+      rowID: key,
+      seq,
+      durable: true,
+      durableIndex: index,
+    })));
+    return Object.freeze([...byKey.values()].sort((left, right) => (
+      Number(left.revision || 0) - Number(right.revision || 0)
+    )));
   }, [durableFingerprint, snapshot.events, durableRecords]);
 
   return {
