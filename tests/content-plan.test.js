@@ -89,7 +89,7 @@ describe('ContentPlan', () => {
     expect(ambiguous.blocks.every((block) => !oldIDs.has(block.blockID))).toBe(true);
   });
 
-  it('expands invalidation for document-wide reference definitions without changing text identity', () => {
+  it('[TC-0531][AD-237] expands invalidation for document-wide reference definitions without changing text identity', () => {
     const first = plan({ contentKey: 'message:m4:body', source: '[link][ref]\n\nplain\n\n[ref]: https://one.example' });
     const next = plan({ contentKey: 'message:m4:body', source: '[link][ref]\n\nplain\n\n[ref]: https://two.example', previous: first });
     expect(next.blocks.map((block) => block.blockID)).toEqual(first.blocks.map((block) => block.blockID));
