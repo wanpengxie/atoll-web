@@ -412,6 +412,31 @@ describe('Feed PhysicalOperation / WaiterLease boundary', () => {
     runtime.destroy();
   });
 
+  it('publishes an authoritative empty EOF after an anticipatory filtered scan', async () => {
+    const { requests, runtime, snapshot } = await attachedRuntime();
+    let notifications = 0;
+    const unsubscribe = runtime.subscribe(() => { notifications += 1; });
+    const pending = snapshot.loadHistory('c0', {
+      beforeSeq: 3, limit: 2, urgency: 'anticipatory',
+      viewSpec: { scope: 'mine', selfId: 'human:root:1', actorFilter: new Set(['agent:claude:1']) },
+    });
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    const beforeEOF = notifications;
+    expect(snapshot.pageEnd({
+      ref: requests[0].ref, channel_id: 'c0', generation: 1,
+      rows: 0, scan_low_seq: 0, scan_high_seq: 2,
+      next_before_seq: 0, has_older: false,
+    })).toBe(true);
+    await expect(pending).resolves.toMatchObject({ kind: 'exhausted', released: 0 });
+    expect(notifications).toBeGreaterThan(beforeEOF);
+    expect(runtime.getSnapshot().historyFor('c0')).toMatchObject({
+      loading: false, foregroundLoading: false, backgroundLoading: false,
+      hasOlder: false,
+    });
+    unsubscribe();
+    runtime.destroy();
+  });
+
   it('aborts the physical operation when its last waiter leaves', async () => {
     const { requests, wireRef, runtime, snapshot } = await attachedRuntime();
     const controller = new AbortController();

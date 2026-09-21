@@ -1993,7 +1993,19 @@ export function createChannelFeedRuntime(options = {}) {
     removeActivePhysical(operation);
     recomputePhysicalStatus(operation.channelId);
     publishNeeded = currentSemanticWaiter && semanticChanged;
-    if (publishNeeded || (currentSemanticWaiter && outcome.kind === 'page')) {
+    // An anticipatory filtered scan has no semantic waiter by design.  Its
+    // final zero-row page still owns the physical EOF fact, however: without
+    // publishing the status transition, the current Presentation retains
+    // the preceding `loading=true/hasOlder=true` snapshot forever and cannot
+    // replace its partial empty feedback with the definitive one.  Keep the
+    // stale-page fence for materialized rows; only this empty authoritative
+    // boundary may wake the public status projection without a live semantic
+    // waiter.
+    const emptyAuthoritativeEOF = outcome.kind === 'page'
+      && Number(outcome.acceptedRows || 0) === 0
+      && histories.get(operation.channelId)?.hasOlder === false;
+    if (publishNeeded || (currentSemanticWaiter && outcome.kind === 'page')
+      || emptyAuthoritativeEOF) {
       publish({ index: outcome.kind === 'page' && outcome.acceptedRows > 0 });
     }
   }
