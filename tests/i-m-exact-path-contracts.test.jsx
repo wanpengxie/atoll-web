@@ -3929,10 +3929,13 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     reading.session = { ...reading.session, bottomIntent: intent };
     const previousTail = round33Row('round37-unrelated-tail', 1);
     const target = { ...round33Row('round37-mixed-target', 2), body: { local: false } };
+    const initialSnapshot = round33Snapshot([previousTail], { revision: 1 });
+    const initialPresentation = round36BottomPresentation(reading, initialSnapshot, intent, false);
     const view = render(
       <VendorListExecutor
-        snapshot={round33Snapshot([previousTail], { revision: 1 })}
+        snapshot={initialSnapshot}
         reading={reading}
+        bottomIntentPresentation={initialPresentation}
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
@@ -3943,21 +3946,26 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     });
     vendorHarness.scrollTo.mockClear();
 
+    const targetSnapshot = {
+      ...round33Snapshot([target], { revision: 2 }),
+      changes: {
+        kind: 'mixed',
+        inserted: ['round37-mixed-target'],
+        updated: [],
+        removed: ['round37-unrelated-tail'],
+      },
+    };
+    const targetPresentation = round36BottomPresentation(reading, targetSnapshot, intent, true);
     view.rerender(
       <VendorListExecutor
-        snapshot={{
-          ...round33Snapshot([target], { revision: 2 }),
-          changes: {
-            kind: 'mixed',
-            inserted: ['round37-mixed-target'],
-            updated: [],
-            removed: ['round37-unrelated-tail'],
-          },
-        }}
+        snapshot={targetSnapshot}
         reading={reading}
+        bottomIntentPresentation={targetPresentation}
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
+    expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+    expect(reading.getSession().bottomIntent.id).toBe(intent.id);
     act(() => vendorHarness.props.totalListHeightChanged());
 
     expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
