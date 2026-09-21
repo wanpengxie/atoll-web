@@ -111,6 +111,25 @@ describe('Composer public control error projection', () => {
     config.store.close();
   });
 
+  it('marks every canonical control command, including system governance, as control-owned', async () => {
+    const failure = Object.assign(new Error('raw governance wording'), {
+      code: 'governance_rejected', detail: '治理请求被拒绝',
+    });
+    const config = harness({ submit: vi.fn().mockRejectedValue(failure) });
+    const { result, unmount } = renderHook(() => useComposerSubmissionRuntime(config));
+    await waitFor(() => expect(result.current.pending).toEqual([]));
+
+    const messageId = await act(async () => result.current.control({
+      channelId: 'c0', type: TYPES.member.list, payload: { scope: 'current' },
+    }));
+    await waitFor(() => expect(result.current.pending[0]).toMatchObject({
+      messageId, state: 'rejected', controlSubmission: true,
+    }));
+    expectBounded(result.current.pending[0].error, 'governance_rejected', '治理请求被拒绝');
+    unmount();
+    config.store.close();
+  });
+
   it('projects cancel rejection in the public control state and its persisted record', async () => {
     const failure = Object.assign(new Error('raw cancel wording'), {
       code: 'cancel_rejected', detail: '服务端拒绝取消命令',
@@ -207,6 +226,84 @@ describe('Composer public control error projection', () => {
     remounted.unmount();
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     secondStore.close();
+  });
+
+  it.each([
+    ['system.channel.create', '治理频道创建请求正文'],
+    ['system.member.list', '治理成员列表请求正文'],
+    ['actor.describe', 'Actor 能力描述请求正文'],
+  ])('preserves the business message for non-control %s rows on remount', async (type, businessMessage) => {
+    const principalId = `system-remount-${serial + 1}`;
+    const store = createOutboxStore({ databaseName: databaseName() });
+    const messageId = `${type}-request`;
+    await store.putMany(principalId, [{
+      key: messageId, messageId, channelId: 'c0', state: 'rejected', frame: controlFrame(messageId, type),
+      createdAt: 1, updatedAt: 1,
+      error: { code: 'governance_rejected', detail: '服务端拒绝治理请求', message: businessMessage },
+    }]);
+    const config = harness({ principalId, wireState: 'closed', store });
+    const { result, unmount } = renderHook(() => useComposerSubmissionRuntime(config));
+    await waitFor(() => expect(result.current.pending.find((row) => row.messageId === messageId)?.state).toBe('rejected'));
+    expect(result.current.pending.find((row) => row.messageId === messageId)?.error).toEqual({
+      code: 'governance_rejected', detail: '服务端拒绝治理请求', message: businessMessage,
+    });
+    unmount();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    store.close();
+  });
+
+  it('does not let a deferred resolve settlement repopulate approvalStates after world reset', async () => {
+    let rejectResolve;
+    const resolveReceipt = new Promise((resolve, reject) => { rejectResolve = reject; });
+    const failure = Object.assign(new Error('late resolve wording'), {
+      code: 'late_resolve', detail: '旧审批结果不应覆盖当前世界',
+    });
+    const config = harness({ resolve: vi.fn(() => resolveReceipt) });
+    const { result, unmount } = renderHook(() => useComposerSubmissionRuntime(config));
+    await waitFor(() => expect(result.current.pending).toEqual([]));
+
+    const deferred = result.current.resolve('c0', 'request-1', 'approve');
+    await waitFor(() => expect(config.resolve).toHaveBeenCalledOnce());
+    await waitFor(() => expect(result.current.approvalStates['request-1']).toBe('sending'));
+    await act(async () => { result.current.resetWorld(); });
+    expect(result.current.approvalStates).toEqual({});
+    rejectResolve(failure);
+    await expect(deferred).rejects.toBe(failure);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(result.current.approvalStates).toEqual({});
+    unmount();
+    config.store.close();
+  });
+
+  it('does not let a deferred cancel settlement rewrite public or durable state after world reset', async () => {
+    let rejectCancel;
+    const cancelReceipt = new Promise((resolve, reject) => { rejectCancel = reject; });
+    const failure = Object.assign(new Error('late cancel wording'), {
+      code: 'late_cancel', detail: '旧取消结果不应覆盖当前世界',
+    });
+    const config = harness({ cancel: vi.fn(() => cancelReceipt) });
+    await config.store.putMany(config.principalId, [{
+      key: 'control:hydration-sentinel', messageId: 'control:hydration-sentinel', kind: 'control',
+      controlKey: 'hydration-sentinel', principalId: config.principalId, channelId: 'c0',
+      requestId: 'hydration-sentinel', action: 'cancel', state: 'accepted', createdAt: 1, updatedAt: 1,
+      error: null,
+    }]);
+    const { result, unmount } = renderHook(() => useComposerSubmissionRuntime(config));
+    await waitFor(() => expect(result.current.controlStates['c0:hydration-sentinel:cancel']?.state).toBe('accepted'));
+
+    const deferred = result.current.cancel('c0', 'request-1');
+    const key = 'c0:request-1:cancel';
+    await waitFor(() => expect(config.cancel).toHaveBeenCalledOnce());
+    await waitFor(() => expect(result.current.controlStates[key]?.state).toBe('sending'));
+    await act(async () => { result.current.resetWorld(); });
+    expect(result.current.controlStates).toEqual({});
+    rejectCancel(failure);
+    await expect(deferred).rejects.toBe(failure);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(result.current.controlStates).toEqual({});
+    expect((await config.store.restore(config.principalId)).find((row) => row.controlKey === key)).toBeUndefined();
+    unmount();
+    config.store.close();
   });
 
   it('keeps a stale control settlement from overwriting the bounded world-reset error', async () => {

@@ -127,13 +127,7 @@ function serializedControlError(error) {
 }
 
 function isControlSubmission(submission) {
-  const type = submission?.frame?.msg_type;
-  return submission?.controlSubmission === true
-    || isAgentControlType(type)
-    // Older durable command rows have no local provenance marker. These are
-    // command-only protocol families, unlike the ordinary agent.ask message.
-    || type === 'actor.describe'
-    || (typeof type === 'string' && type.startsWith('system.'));
+  return submission?.controlSubmission === true;
 }
 
 function serializedSubmissionError(error, submission) {
@@ -942,7 +936,7 @@ export function useComposerSubmissionRuntime({
   // bypass control-specific authorization.
   const control = useCallback((request = {}) => {
     const command = createControlCommand(request);
-    if (isAgentControlType(command.msgType)) ownedControlRequestsRef.current.add(command);
+    ownedControlRequestsRef.current.add(command);
     return send(command);
   }, [send]);
 
@@ -1030,16 +1024,22 @@ export function useComposerSubmissionRuntime({
   }, [authorize, captureOwner]);
 
   const resolve = useCallback(async (channelId, reqId, decision, payload) => {
+    const lifecycleGeneration = lifecycleRef.current.generation;
+    const attemptEpoch = attemptEpochRef.current;
+    const isCurrentAttempt = () => attemptEpochRef.current === attemptEpoch
+      && isLiveLifecycle(lifecycleRef.current, lifecycleGeneration);
     setApprovalStates((current) => ({ ...current, [reqId]: 'sending' }));
     try {
       const value = await ownedWireCommand('resolve', channelId, reqId, decision, payload);
-      setApprovalStates((current) => ({ ...current, [reqId]: 'resolved' }));
+      if (isCurrentAttempt()) setApprovalStates((current) => ({ ...current, [reqId]: 'resolved' }));
       return value;
     } catch (error) {
-      setApprovalStates((current) => ({
-        ...current,
-        [reqId]: { error: serializedControlError(error) },
-      }));
+      if (isCurrentAttempt()) {
+        setApprovalStates((current) => ({
+          ...current,
+          [reqId]: { error: serializedControlError(error) },
+        }));
+      }
       throw error;
     }
   }, [ownedWireCommand]);
@@ -1047,6 +1047,9 @@ export function useComposerSubmissionRuntime({
   const cancel = useCallback(async (channelId, reqId) => {
     const key = `${channelId}:${reqId}:cancel`;
     const lifecycleGeneration = lifecycleRef.current.generation;
+    const attemptEpoch = attemptEpochRef.current;
+    const isCurrentAttempt = () => attemptEpochRef.current === attemptEpoch
+      && isLiveLifecycle(lifecycleRef.current, lifecycleGeneration);
     const identity = { channelId, requestId: reqId, action: 'cancel' };
     const sending = { ...identity, state: 'sending', error: null, updatedAt: Date.now() };
     publishControlStates((current) => ({ ...current, [key]: sending }));
@@ -1056,14 +1059,14 @@ export function useComposerSubmissionRuntime({
     await persistControlState(key, sending, lifecycleGeneration);
     try {
       const value = await ownedWireCommand('cancel', channelId, reqId);
-      if (isLiveLifecycle(lifecycleRef.current, lifecycleGeneration)) {
+      if (isCurrentAttempt()) {
         const accepted = { ...identity, state: 'accepted', error: null, updatedAt: Date.now() };
         publishControlStates((current) => ({ ...current, [key]: accepted }));
         await persistControlState(key, accepted, lifecycleGeneration).catch(onError);
       }
       return value;
     } catch (error) {
-      if (isLiveLifecycle(lifecycleRef.current, lifecycleGeneration)) {
+      if (isCurrentAttempt()) {
         const failed = {
           ...identity,
           state: controlFailureState(error),
