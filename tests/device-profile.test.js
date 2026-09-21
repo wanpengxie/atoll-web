@@ -16,7 +16,7 @@ describe('性能路径的判据', () => {
   });
 
   // PC 上把窗口拖窄不该切路径:窄但不是触屏,恒是 desktop。
-  it('窄屏但不是触屏 → 桌面端', () => {
+  it('[TC-0603][AD-309] 窄屏但不是触屏 → 桌面端', () => {
     expect(detectProfile({ matchMedia: media({ '(max-width: 900px)': true }), search: '', storage: storage() })).toBe(PROFILE_DESKTOP);
   });
 
