@@ -74,6 +74,52 @@ describe('view session ownership', () => {
     expect(store.save('c0', 'all', 'a1', saved.revision, { mode: 'browsing', bookmark: { messageID: 'stale' } })).toBe(false);
   });
 
+  it('keeps a newer exact-incarnation actor filter across an old mount write, but allows removal', () => {
+    const storage = new MemoryStorage();
+    storage.setItem('atoll.view-session.v3.me', JSON.stringify({
+      schema: 3,
+      preferences: { c0: { scope: 'mine', actorFilter: [] } },
+      readings: {},
+    }));
+    const store = createViewSessionStore({ principalID: 'me', storage });
+    const oldSnapshot = store.read('c0');
+    const exactIncarnation = 'agent:steward:old-incarnation';
+    storage.setItem('atoll.view-session.v3.me', JSON.stringify({
+      schema: 3,
+      preferences: { c0: { scope: 'mine', actorFilter: [exactIncarnation] } },
+      readings: {},
+    }));
+
+    expect(store.writeConversation('c0', {
+      scope: oldSnapshot.scope,
+      actorFilter: oldSnapshot.actorFilter,
+    })).toBe(true);
+    expect(store.read('c0').actorFilter).toEqual([exactIncarnation]);
+
+    // Reading-state persistence from that same old mount must preserve the
+    // newer preference too; persistence writes one v3 record for both domains.
+    storage.setItem('atoll.view-session.v3.me', JSON.stringify({
+      schema: 3,
+      preferences: { c0: { scope: 'mine', actorFilter: [] } },
+      readings: {},
+    }));
+    const staleReader = createViewSessionStore({ principalID: 'me', storage });
+    const activation = staleReader.activate('c0', 'conversation', 'old-mount');
+    storage.setItem('atoll.view-session.v3.me', JSON.stringify({
+      schema: 3,
+      preferences: { c0: { scope: 'mine', actorFilter: [exactIncarnation] } },
+      readings: {},
+    }));
+    expect(staleReader.save('c0', 'conversation', 'old-mount', activation.revision, {
+      mode: 'following',
+    })).toBe(true);
+    expect(staleReader.read('c0').actorFilter).toEqual([exactIncarnation]);
+
+    expect(staleReader.writeConversation('c0', { actorFilter: [] })).toBe(true);
+    expect(staleReader.read('c0').actorFilter).toEqual([]);
+    expect(storage.getItem('atoll.view-session.v2.me')).toBeNull();
+  });
+
   it('does not forget unseen stable identities past the former 256-key boundary', () => {
     const storage = new MemoryStorage();
     const store = createViewSessionStore({ principalID: 'me', storage });

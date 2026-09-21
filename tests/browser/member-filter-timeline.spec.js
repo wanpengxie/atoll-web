@@ -45,21 +45,30 @@ test('opaque member filter keeps a whole historical turn across roster and human
   await expect(stale).toBeVisible();
   await expect(stale).toHaveAttribute('aria-pressed', 'true');
   await stale.click();
+  // The user-visible contract is that removing the stale exact-incarnation
+  // choice clears its control. Do not use the virtualized row set as a
+  // same-frame oracle: it may briefly be empty while the stable article is
+  // being retained/repositioned.
+  await expect(stale).toHaveCount(0);
 
   const historyQuestion = page.getByText('c0 history 120: ask steward for PONG', { exact: true });
   await expect(historyQuestion).toBeVisible();
+  const turn = page.locator('[data-presentation-row-id]').filter({ hasText: 'c0 history 120: ask steward for PONG' }).first();
+  const historicalArticle = turn.locator('article.message-row').first();
+  await expect(turn).toBeVisible();
+  await expect(historicalArticle).toBeVisible();
+  await expect(historicalArticle).toHaveAttribute('tabindex', '0');
+  await historicalArticle.focus();
+  await expect(historicalArticle).toBeFocused();
   const steward = page.getByRole('group', { name: '按成员过滤' })
     .getByRole('button', { name: 'steward', exact: true });
   await expect(steward).toBeVisible();
   await steward.click();
   await expect(steward).toHaveAttribute('aria-pressed', 'true');
 
-  const turn = page.locator('[data-presentation-row-id]').filter({ hasText: 'c0 history 120: ask steward for PONG' }).first();
   await expect(turn).toBeVisible();
   await expect(turn).toContainText('c0 PONG 120');
   const filtered = await page.evaluate(() => ({
-    rowIDs: [...document.querySelectorAll('.timeline-message-list [data-presentation-row-id]')]
-      .map((node) => node.dataset.presentationRowId || ''),
     selected: [...document.querySelectorAll('.timeline-actor-filter button[aria-pressed="true"]')]
       .map((node) => node.textContent?.trim() || ''),
     scopeText: document.querySelector('[aria-label="动态范围"]')?.textContent || '',
@@ -68,7 +77,6 @@ test('opaque member filter keeps a whole historical turn across roster and human
     body: JSON.stringify({ filtered }, null, 2),
     contentType: 'application/json',
   });
-  expect(filtered.rowIDs.length).toBeGreaterThan(0);
   expect(filtered.selected).toContain('steward');
   expect(filtered.scopeText).not.toContain('正在确认频道内容');
 

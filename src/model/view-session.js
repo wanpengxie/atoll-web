@@ -102,6 +102,13 @@ function copyPreferences(value = {}) {
   };
 }
 
+function sameStringArray(left = [], right = []) {
+  const normalize = (value) => [...new Set(value || [])].filter(Boolean).map(String).sort();
+  const a = normalize(left);
+  const b = normalize(right);
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
 function readingKey(channelID, viewKey) {
   return `${channelID}\u0000${viewKey}`;
 }
@@ -184,7 +191,13 @@ export function createViewSessionStore({ principalID = '', storage = globalThis.
     if (item) mergeStoredReading(key, item);
   }
 
-  const persist = () => writeStored(storage, principalID, preferences, readings);
+  const persist = ({ preserveLatestPreferences = false } = {}) => {
+    if (preserveLatestPreferences) {
+      const latest = parseStored(storage, principalID);
+      for (const [channelID, item] of latest.preferences) preferences.set(channelID, item);
+    }
+    writeStored(storage, principalID, preferences, readings);
+  };
 
   const store = Object.freeze({
     read(channelID) {
@@ -195,8 +208,24 @@ export function createViewSessionStore({ principalID = '', storage = globalThis.
     },
     writeConversation(channelID, change = {}) {
       if (!channelID) return false;
-      const current = preferences.get(channelID) || defaultPreferences();
-      preferences.set(channelID, copyPreferences({ ...current, ...change }));
+      const previous = preferences.get(channelID) || defaultPreferences();
+      // A mounted document can still publish its last preference snapshot while
+      // another current document has already persisted a newer exact actor ID
+      // (for example while a reload is crossing the commit boundary). Refresh
+      // before writing, and only let an incoming actorFilter replace the latest
+      // value when it differs from that old snapshot. This preserves a stale
+      // exact-incarnation filter as an explicit removable choice; an explicit
+      // removal from the current non-empty choice still writes an empty list.
+      refresh();
+      const latest = preferences.get(channelID) || defaultPreferences();
+      const hasActorFilterChange = Object.hasOwn(change, 'actorFilter');
+      const actorFilterChangeIsStale = hasActorFilterChange
+        && !sameStringArray(previous.actorFilter, latest.actorFilter)
+        && sameStringArray(change.actorFilter, previous.actorFilter);
+      const effectiveChange = actorFilterChangeIsStale
+        ? { ...change, actorFilter: latest.actorFilter }
+        : change;
+      preferences.set(channelID, copyPreferences({ ...latest, ...effectiveChange }));
       persist();
       return true;
     },
@@ -230,7 +259,7 @@ export function createViewSessionStore({ principalID = '', storage = globalThis.
       if (Number(expectedRevision) !== current.revision) return false;
       const next = copyReading({ ...current, ...change, revision: current.revision + 1 });
       readings.set(key, next);
-      persist();
+      persist({ preserveLatestPreferences: true });
       return true;
     },
     recordLiveArrivals(channelID, events = []) {
@@ -267,7 +296,7 @@ export function createViewSessionStore({ principalID = '', storage = globalThis.
         unseenAcknowledgements.set(key, true);
         changed = true;
       }
-      if (changed) persist();
+      if (changed) persist({ preserveLatestPreferences: true });
       return changed;
     },
     readActiveUnseen(channelID) {
@@ -310,7 +339,7 @@ export function createViewSessionStore({ principalID = '', storage = globalThis.
         }));
         changed = true;
       }
-      if (changed) persist();
+      if (changed) persist({ preserveLatestPreferences: true });
       return Object.freeze({ records: Object.freeze([...before]), remaining: 0 });
     },
     deactivate(channelID, viewKey, activationID) {
