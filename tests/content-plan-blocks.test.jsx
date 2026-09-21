@@ -133,7 +133,7 @@ describe('ContentPlanBlocks', () => {
     expect(afterRemount.textOffset).toBe(changed.indexOf('target'));
   });
 
-  it('does not guess a deleted block from ambiguous duplicate fingerprints', () => {
+  it('[TC-0522][AD-228] does not guess a deleted block from ambiguous duplicate fingerprints', () => {
     const renderBlock = (block) => <p>{block.source}</p>;
     const plan = createContentPlan({ contentKey: 'message:deleted:body', source: 'same text\n\nsame text' });
     const view = render(<ContentPlanBlocks plan={plan} renderBlock={renderBlock} />);
