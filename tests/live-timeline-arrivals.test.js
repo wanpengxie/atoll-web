@@ -127,4 +127,34 @@ describe('live timeline arrival receipts', () => {
     expect(state.arrivalReceipts.dispatch(acknowledgeLiveTimelineArrivals(1))).toBe(1);
     expect(state.arrivalReceipts.timeline().events.map((event) => event.rowID)).toEqual(['second']);
   });
+
+  it('acknowledges only the observed sequence prefix when a later arrival shares the receipt revision', () => {
+    const replica = createChannelReplicaStore();
+    const state = replica.ensure('c0').state;
+    state.arrivalReceipts.attachTimelineConsumer(Symbol('timeline'));
+
+    replica.commit(liveRow('c0', 3, request('installed')), 'me', (value) => value, { source: 'live' });
+    replica.commit(liveRow('c0', 5, request('later')), 'me', (value) => value, { source: 'live' });
+    expect(state.arrivalReceipts.timeline().events.map((event) => event.rowID)).toEqual([
+      'installed', 'later',
+    ]);
+
+    const installedReceipt = acknowledgeLiveTimelineArrivals(2, 3);
+    expect(installedReceipt).toEqual({
+      type: LIVE_ARRIVAL_RECEIPT.acknowledgeTimeline,
+      throughRevision: 2,
+      throughSeq: 3,
+    });
+    state.arrivalReceipts.dispatch(installedReceipt);
+    expect(state.arrivalReceipts.timeline()).toMatchObject({
+      acknowledgedRevision: 1,
+      events: [{ revision: 2, rowID: 'later', seq: 5 }],
+    });
+
+    state.arrivalReceipts.dispatch(acknowledgeLiveTimelineArrivals(2, 5));
+    expect(state.arrivalReceipts.timeline()).toMatchObject({
+      acknowledgedRevision: 2,
+      events: [],
+    });
+  });
 });

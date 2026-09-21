@@ -622,17 +622,45 @@ function presentationArrivalSnapshot(state, throughSourceRevision = Number.POSIT
   });
 }
 
-function acknowledgeTimelineArrivals(state, throughRevision) {
+function acknowledgeTimelineArrivals(state, throughRevision, throughSeq) {
   const revision = Math.min(
     state._liveArrivalRevision,
     Math.max(state._liveArrivalAckRevision, numeric(throughRevision)),
   );
-  state._liveArrivalAckRevision = revision;
-  state._liveArrivalLog = state._liveArrivalLog.filter((event) => event.revision > revision);
-  for (const [key, event] of state._liveArrivalOverflow) {
-    if (event.revision <= revision) state._liveArrivalOverflow.delete(key);
+  const sequence = Number(throughSeq);
+  const bounded = Number.isSafeInteger(sequence) && sequence > 0;
+  if (!bounded) {
+    state._liveArrivalAckRevision = revision;
+    state._liveArrivalLog = state._liveArrivalLog.filter((event) => event.revision > revision);
+    for (const [key, event] of state._liveArrivalOverflow) {
+      if (event.revision <= revision) state._liveArrivalOverflow.delete(key);
+    }
+    return revision;
   }
-  return revision;
+
+  const eligible = (event) => {
+    const eventSequence = Number(event.seq);
+    return event.revision <= revision
+      && Number.isSafeInteger(eventSequence)
+      && eventSequence > 0
+      && eventSequence <= sequence;
+  };
+  state._liveArrivalLog = state._liveArrivalLog.filter((event) => !eligible(event));
+  for (const [key, event] of state._liveArrivalOverflow) {
+    if (eligible(event)) state._liveArrivalOverflow.delete(key);
+  }
+  const retained = [
+    ...state._liveArrivalLog,
+    ...state._liveArrivalOverflow.values(),
+  ].filter((event) => event.revision <= revision);
+  const blockingRevision = retained.length
+    ? Math.min(...retained.map((event) => Number(event.revision || 0)))
+    : 0;
+  state._liveArrivalAckRevision = Math.max(
+    state._liveArrivalAckRevision,
+    blockingRevision ? Math.min(revision, blockingRevision - 1) : revision,
+  );
+  return state._liveArrivalAckRevision;
 }
 
 function acknowledgePresentationArrivals(state, throughRevision) {
@@ -676,7 +704,7 @@ function arrivalReceiptPort(state) {
     },
     dispatch(command) {
       if (command?.type === LIVE_ARRIVAL_RECEIPT.acknowledgeTimeline) {
-        return acknowledgeTimelineArrivals(state, command.throughRevision);
+        return acknowledgeTimelineArrivals(state, command.throughRevision, command.throughSeq);
       }
       if (command?.type === LIVE_ARRIVAL_RECEIPT.acknowledgePresentation) {
         return acknowledgePresentationArrivals(state, command.throughRevision);

@@ -1000,7 +1000,10 @@ function useProjectionReadingOwner({
   // and make the next badge under-count (1 instead of 2).
   useEffect(() => {
     if (tailCaughtUp.caughtUp !== true || Number(tailCaughtUp.boundary) <= 0) return;
-    arrivals?.acknowledge?.(Number(arrivals.revision || 0));
+    arrivals?.acknowledge?.(
+      Number(arrivals.revision || 0),
+      Number(tailCaughtUp.boundary || 0),
+    );
   }, [arrivals, tailCaughtUp.boundary, tailCaughtUp.caughtUp]);
 
   useLayoutEffect(() => {

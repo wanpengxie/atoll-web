@@ -88,9 +88,11 @@ export function useTimelineArrivalReceipt(state, activationID) {
   return {
     ...snapshot,
     events,
-    acknowledge(revision) {
-      const acknowledged = state.arrivalReceipts.dispatch(acknowledgeLiveTimelineArrivals(revision));
-      const cleared = acknowledgeActiveReadingUnseen(state.channelId);
+    acknowledge(revision, throughSeq) {
+      const acknowledged = state.arrivalReceipts.dispatch(
+        acknowledgeLiveTimelineArrivals(revision, throughSeq),
+      );
+      const cleared = acknowledgeActiveReadingUnseen(state.channelId, throughSeq);
       if (cleared.records.length) {
         readingTrace('reading.visible-rows-ack', {
           channelId: state.channelId,
