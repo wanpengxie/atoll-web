@@ -39,7 +39,9 @@ test('channel replacement keeps the Composer mounted through the EditorView hand
   await reset(request);
   await login(page);
 
-  await page.getByRole('button', { name: '# c0.project', exact: true }).click();
+  // The public rail appends its visible sync-status text to the channel
+  // button's accessible name; match the stable channel identity prefix.
+  await page.getByRole('button', { name: /^# c0\.project(?:\s|$)/ }).click();
   await expect(page.locator('main h1')).toHaveText('c0.project');
   await expect(page.locator('.composer-richtext')).toBeVisible();
 
