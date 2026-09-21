@@ -734,9 +734,40 @@ export function useComposerSubmissionRuntime({
         return false;
       }
       if (!isLeaseCurrent()) return false;
+      // Materialize the first wire frame while this SendLease still owns the
+      // attempt.  The wire may add connection-local provenance (for example,
+      // the current session id); keeping that result in the durable row makes
+      // a receipt-drop retry submit the exact same business frame instead of
+      // stamping the replacement connection's session onto it.
+      let prepared = transmitting;
+      if (typeof owner.transport?.prepareSubmit === 'function') {
+        const preparedFrame = owner.transport.prepareSubmit(transmitting.frame);
+        if (!isLeaseCurrent()) return false;
+        if (preparedFrame !== transmitting.frame) {
+          prepared = await outboxRef.current.patch(
+            owner.principalId,
+            submission.messageId,
+            ['transmitting'],
+            { frame: preparedFrame },
+            {
+              leaseOwner: leaseOwnerRef.current,
+              authorize: () => {
+                if (!isLeaseCurrent()) throw staleSendLeaseError();
+                const assessment = assessSubmissionOwner(owner);
+                if (!assessment.current) throw requestAccessError(assessment);
+                return true;
+              },
+              leaseGuard,
+            },
+          );
+          if (!isLeaseCurrent()) return false;
+          if (!prepared) return false;
+        }
+      }
+      if (!isLeaseCurrent()) return false;
       wireStarted = true;
-      publishPending((rows) => rows.map((row) => row.messageId === submission.messageId ? transmitting : row));
-      const receipt = await owner.transport.submit(transmitting.frame);
+      publishPending((rows) => rows.map((row) => row.messageId === submission.messageId ? prepared : row));
+      const receipt = await owner.transport.submit(prepared.frame);
       if (!isLeaseCurrent()) return false;
       authorize(owner, REQUEST_PHASE.settle, { requireTransport: false, requireAccess: false });
       if (receipt?.message_id && receipt.message_id !== submission.messageId) {
