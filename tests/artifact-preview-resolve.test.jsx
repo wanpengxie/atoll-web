@@ -139,6 +139,28 @@ describe('预览面板 (useAttachmentTransactions previewArtifact + ArtifactPrev
     expect(document.querySelectorAll('.artifact-source-preview .token').length).toBeGreaterThan(0);
   });
 
+  it('EH06-06 Markdown 文件面板只显示标题栏与阅读区，模式切换位于关闭按钮左侧', async () => {
+    render(<ArtifactPreviewPanel
+      channel={{ id: 'c0' }}
+      port={{
+        selectedArtifact: { channelId: 'c0', resourceId: 'readme', name: 'README.md', mediaType: 'text/markdown', size: 10 },
+        preview: { status: 'ready', text: '# 阅读区' },
+      }}
+      onClose={() => {}}
+    />);
+
+    expect(await screen.findByRole('heading', { name: '阅读区' })).toBeTruthy();
+    const header = document.querySelector('.side-panel-header');
+    const buttons = [...header.querySelectorAll('button')].map((button) => button.textContent || button.getAttribute('aria-label'));
+    expect(buttons).toEqual(['预览', '源码', '复制', '×']);
+    expect(screen.getByRole('button', { name: '预览' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: '源码' }).getAttribute('aria-pressed')).toBe('false');
+    expect(document.querySelector('.artifact-metadata')).toBeNull();
+    expect(document.querySelector('.artifact-context-actions')).toBeNull();
+    expect(document.querySelectorAll('.artifact-preview-mode')).toHaveLength(1);
+    expect(document.querySelector('.artifact-preview-mode-header')).toBeTruthy();
+  });
+
   it('类型认不出的文件嗅探为文本后按源码预览，并给复制按钮', async () => {
     const wireResource = vi.fn(async (payload) => (payload.op === 'read' ? { ticket: 't' } : { items: [] }));
     vi.stubGlobal('fetch', vi.fn(async () => blobResponse(new TextEncoder().encode('key = value\nname = "atoll"\n'), 'application/octet-stream')));
