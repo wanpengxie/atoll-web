@@ -499,6 +499,51 @@ describe('notification confirmation contract', () => {
     expect(secondFeed.unreadFor(channelId, selfId)).toMatchObject({ related: 0, other: 0, pending: false, unknown: false });
   });
 
+  it('keeps an inactive nonzero grant unknown until local notification context exists', async () => {
+    runtimeID += 1;
+    const selfId = `human:notification-context:${runtimeID}`;
+    const focus = 'c0.project';
+    const inactive = 'c1.project';
+    const loaded = 'c2.project';
+    const runtime = createChannelFeedRuntime(runtimeOptions(selfId));
+    runtime.mount();
+    const feed = runtime.getSnapshot();
+    await feed.prepareLocalReplica(selfId, { focus });
+    await feed.setHistoryGrants([
+      { channel_id: focus, head_seq: 0 },
+      { channel_id: inactive, head_seq: 3 },
+      { channel_id: loaded, head_seq: 0 },
+    ], { generation: 1, boot: `notification-context-boot-${runtimeID}` });
+
+    // A server grant is only a physical head. With no local Meta or rows for
+    // the inactive channel, the Feed must fail closed instead of baselining a
+    // durable high-water that pretends the unread context was observed.
+    expect(feed.historyFor(inactive).loaded).toBe(false);
+    expect(feed.historyFor(inactive).notificationHighWater).toBe(0);
+    expect(feed.unreadFor(inactive, selfId)).toMatchObject({
+      related: 0, other: 0, pending: false, unknown: true,
+    });
+
+    // Once a post-grant live tail is actually materialized, the same Feed
+    // cursor may establish the advertised head and expose that new root.
+    feed.enqueue({ ...relatedRequest(inactive, 'inactive-live-approval', selfId), seq: 4 });
+    expect(feed.historyFor(inactive).notificationHighWater).toBe(3);
+    expect(feed.unreadFor(inactive, selfId)).toEqual({
+      related: 1, other: 0, pending: false, unknown: false,
+    });
+
+    // Zero head remains an explicit empty context, while an actually
+    // materialized live row keeps the normal known projection.
+    expect(feed.unreadFor(focus, selfId)).toEqual({
+      related: 0, other: 0, pending: false, unknown: false,
+    });
+    feed.enqueue({ ...relatedRequest(loaded, 'materialized-approval', selfId), seq: 1 });
+    expect(feed.unreadFor(loaded, selfId)).toEqual({
+      related: 1, other: 0, pending: false, unknown: false,
+    });
+    runtime.destroy();
+  });
+
   it('accepts one frozen typed acknowledgement after network history admission', async () => {
     runtimeID += 1;
     const channelId = 'c0.project';
