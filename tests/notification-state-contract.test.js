@@ -923,6 +923,52 @@ describe('notification confirmation contract', () => {
 });
 
 describe('notification presentation facts', () => {
+  it('[TC-0587] keeps UI operations and system narration out of rail notifications', async () => {
+    const { runtime, channelId, selfId } = await readyRuntime();
+    const feed = runtime.getSnapshot();
+
+    // These rows are legitimate Feed/Replica facts, but they are not
+    // person-facing conversation roots.  The rail must not infer a badge from
+    // their transport presence or canonical body alone.
+    feed.enqueue({
+      channel_id: channelId,
+      seq: 1,
+      source: 'live',
+      envelope: {
+        id: 'ui-operation',
+        kind: 'request',
+        type: 'ui.state',
+        sender: { kind: 'agent', id: 'agent:reviewer:1' },
+        audience: [selfId],
+        payload: { body: { text: 'internal UI operation' } },
+      },
+    });
+    feed.enqueue({
+      channel_id: channelId,
+      seq: 2,
+      source: 'live',
+      envelope: {
+        id: 'system-narration',
+        kind: 'event',
+        type: 'system.member.created',
+        visibility: 'system',
+        sender: { kind: 'system', id: 'system' },
+        audience: [selfId],
+        payload: { body: { text: 'membership changed' } },
+      },
+    });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({
+      related: 0, other: 0, pending: false, unknown: false,
+    });
+
+    // A normal conversation request in the same ledger remains a notification
+    // root; this guards against silencing the rail with a broad type filter.
+    feed.enqueue({ ...relatedRequest(channelId, 'readable-request', selfId), seq: 3 });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({
+      related: 1, other: 0, pending: false, unknown: false,
+    });
+  });
+
   it('holds a response-first terminal out of the rail until its exact parent arrives', async () => {
     const { runtime, channelId, selfId } = await readyRuntime();
     const feed = runtime.getSnapshot();

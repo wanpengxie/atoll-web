@@ -35,13 +35,34 @@ The current public contract will be driven through `createChannelFeedRuntime`
 and its `unreadFor`/notification snapshot; policy-only classification is
 supporting evidence, not the product oracle.
 
-## Verification plan
+## Verification and closeout
 
-Before closeout, add only the smallest public-owner assertion if the existing
-contract does not already cover this exact user boundary. Run the focused
-notification/Feed suites and build. If the current owner fails, record the
-first public boundary and stop at a bounded regression packet; do not add a
-compatibility path or alter product source outside the existing Feed/Replica/
-Policy owner.
+The smallest public-owner successor was added to
+`tests/notification-state-contract.test.js`: it admits a `ui.state` request
+and `system.member.created` narration into the same Feed, asserts the public
+`unreadFor` projection remains `{ related: 0, other: 0, pending: false,
+unknown: false }`, then admits a normal related request and asserts that the
+rail becomes `{ related: 1, other: 0, pending: false, unknown: false }`.
+This proves the current owner does not silence ordinary conversation with a
+broad type filter.
+
+Evidence on the claimed worktree:
+
+- Focused successor: **1/1 passed** (`[TC-0587]`).
+- Notification/Feed owner set (`notification-state-contract`,
+  `notification-fallback`, `nr02-canonical-frontier`,
+  `channel-feed-runtime`, `n-r-public-owner-contracts`,
+  `sz187-notification-following-boundary`, and
+  `sz214-unfiltered-high-water-public-owner`): **7 files / 68 tests passed**.
+- Existing public notification browser contract
+  (`tests/browser/notification-policy.spec.js`, Chromium, repeat 3):
+  **6/6 passed**.
+- `npm run build`: **passed** (only the existing large-chunk advisory).
+
+Only the successor test and this audit report changed. No product source,
+vendor/package file, fixture, second cursor/store, compatibility path, or
+private diagnostic assertion changed.
+
+**Disposition: ACCEPT / MIGRATED; credit: 1.**
 
 This reservation report is committed before any successor test change.
