@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { actorNameFromMap } from '../../model/actor-display.js';
 import { isStandardActorIdentity } from '../../model/actor-visibility.js';
-import { redactSensitive, terminalContentEnvelope, terminalResultState, turnProcessAuditFacts, turnProcessObservations } from '../../model/terminal-result.js';
+import { redactSensitive, terminalContentEnvelope, terminalResultState, turnProcessObservations } from '../../model/terminal-result.js';
 import { isMobileProfile } from '../../model/device-profile.js';
 import { argsOf, hasCanonicalBody } from '../../protocol/envelope.js';
 import { DECISIONS, isSystemWord, TYPES } from '../../protocol/vocab.js';
@@ -555,19 +555,36 @@ function ApprovalCard({ turn, names, state, onResolve }) {
   </article>;
 }
 
+function readProcessField(process, field) {
+  try {
+    if (!process || typeof process !== 'object' || !Object.prototype.hasOwnProperty.call(process, field)) return undefined;
+    return process[field];
+  } catch {
+    // A malformed/proxy process must not make the presentation walk arbitrary
+    // data or fail the whole timeline. Its field simply has no projection.
+    return undefined;
+  }
+}
+
+function processScalar(process, field) {
+  const value = readProcessField(process, field);
+  return (typeof value === 'string' || typeof value === 'number') && String(value).trim()
+    ? String(value).trim()
+    : '';
+}
+
 function hasProcessSummary(turn) {
-  // A process can be auditable even when it has no human-readable detail
-  // body. Keep the entry owned by the timeline, while allowing the existing
-  // TurnDetailPanel facts projection to expose its safe identifiers.
-  const hasAuditFacts = turnProcessAuditFacts(turn).some((fact) => {
-    const hasAuditNumber = fact.identifiers.some(({ label }) => label === '审计编号');
-    const hasCompletedCall = fact.phase === 'ended'
-      && fact.identifiers.some(({ label }) => label === '调用编号');
-    return hasAuditNumber || hasCompletedCall;
+  // Read only the documented scalar identifiers here. The former
+  // turnProcessAuditFacts path recursively redacted the entire raw process
+  // before this owner selected its public fields.
+  const hasAuditFacts = turnProcessObservations(turn).some(({ process }) => {
+    const auditId = processScalar(process, 'audit_id') || processScalar(process, 'auditId');
+    const callId = processScalar(process, 'tool_call_id') || processScalar(process, 'toolCallId');
+    const phase = processScalar(process, 'phase') || processScalar(process, 'stage');
+    return Boolean(auditId) || (phase === 'ended' && Boolean(callId));
   });
   return hasAuditFacts || progressRows(turn).some((row) => !row.stateOnly
-    && typeof row.body === 'string'
-    && row.body.trim());
+    && ((typeof row.body === 'string' && row.body.trim()) || hasToolData(row.toolData)));
 }
 function conversationObservations(turn) {
   return turnProcessObservations(turn).filter(({ process }) => process.kind === 'stage' && process.stage === 'text' && typeof process.text === 'string' && process.text.trim());
@@ -599,28 +616,148 @@ function mobileToolOutputText(output) {
   }
 }
 
-function toolPresentationBody(process, detail) {
-  if (!isMobileProfile() || process.kind !== 'tool') return detail;
-  const output = mobileToolOutputText(process.output);
+function toolPresentationBody(detail, toolData) {
+  if (!isMobileProfile()) return detail;
+  const output = mobileToolOutputText(toolData?.output);
   if (!output) return detail;
   if (!detail) return output;
   return `${detail}\n\n${output}`;
 }
 
+// Tool input/output is a presentation-only projection. Select only these two
+// documented fields before traversing anything, then redact and bound them in
+// one shared-budget pass. The raw process/envelope is never recursively
+// visited by this owner.
+const TOOL_DATA_LIMITS = Object.freeze({
+  depth: 3,
+  nodes: 128,
+  fields: 48,
+  items: 48,
+  stringChars: 8192,
+  stringLength: 4096,
+});
+
+const TOOL_DATA_OMITTED = '…（内容已省略）';
+const TOOL_DATA_COLLAPSED = '…（内容已折叠）';
+const TOOL_DATA_HIDDEN = '已隐藏';
+const TOOL_DATA_ERROR = Symbol('tool-data-error');
+// Keep this complete-field set aligned with terminal-result.js; unlike the
+// generic helper, this local check never receives or walks the raw process.
+const TOOL_SENSITIVE_FIELD = /^(password|secret|secret_hash|token|access_token|refresh_token|private_key|key|credential)$/i;
+
+function toolDataBudget() {
+  return {
+    depth: TOOL_DATA_LIMITS.depth,
+    nodes: TOOL_DATA_LIMITS.nodes,
+    fields: TOOL_DATA_LIMITS.fields,
+    items: TOOL_DATA_LIMITS.items,
+    stringChars: TOOL_DATA_LIMITS.stringChars,
+  };
+}
+
+function boundedToolValue(value, budget, depth = 0, key = '', seen = new WeakSet()) {
+  try {
+    if (key && TOOL_SENSITIVE_FIELD.test(String(key))) return TOOL_DATA_HIDDEN;
+    if (budget.nodes <= 0) return TOOL_DATA_OMITTED;
+    budget.nodes -= 1;
+    if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
+    if (typeof value === 'string') {
+      if (budget.stringChars <= 0) return TOOL_DATA_OMITTED;
+      const limit = Math.min(value.length, TOOL_DATA_LIMITS.stringLength, budget.stringChars);
+      budget.stringChars -= limit;
+      if (value.length <= limit) return value;
+      return `${value.slice(0, limit)}\n…（已省略 ${value.length - limit} 字符）`;
+    }
+    if (typeof value !== 'object') return TOOL_DATA_OMITTED;
+    if (depth >= budget.depth) return TOOL_DATA_COLLAPSED;
+    if (seen.has(value)) return TOOL_DATA_ERROR;
+    seen.add(value);
+    try {
+      if (Array.isArray(value)) {
+        const bounded = [];
+        for (const item of value) {
+          if (budget.items <= 0) break;
+          budget.items -= 1;
+          const child = boundedToolValue(item, budget, depth + 1, '', seen);
+          if (child !== TOOL_DATA_ERROR) bounded.push(child);
+        }
+        if (value.length > bounded.length && budget.items <= 0) bounded.push(TOOL_DATA_OMITTED);
+        return bounded;
+      }
+      const bounded = {};
+      let omitted = false;
+      for (const field in value) {
+        if (!Object.prototype.hasOwnProperty.call(value, field)) continue;
+        if (budget.fields <= 0) { omitted = true; break; }
+        budget.fields -= 1;
+        const child = boundedToolValue(value[field], budget, depth + 1, field, seen);
+        if (child !== TOOL_DATA_ERROR) bounded[field] = child;
+      }
+      if (omitted) bounded['…'] = TOOL_DATA_OMITTED;
+      return bounded;
+    } finally {
+      seen.delete(value);
+    }
+  } catch {
+    // Getters, proxies, cyclic/non-JSON values, and other malformed tool data
+    // fail closed: the offending field is omitted instead of exposing raw data.
+    return TOOL_DATA_ERROR;
+  }
+}
+
+function hasToolData(value) {
+  if (value === TOOL_DATA_ERROR) return false;
+  if (value == null) return false;
+  if (typeof value === 'string') return value.trim().length > 0;
+  if (Array.isArray(value)) return value.some((item) => hasToolData(item));
+  if (typeof value === 'object') return Object.values(value).some((item) => hasToolData(item));
+  return true;
+}
+
+function toolDataFromProcess(process) {
+  if (!process || typeof process !== 'object') return null;
+  // This is the only raw-process read in the tool-data path. It is a shallow
+  // field selection; the selected values are traversed exactly once below.
+  const selected = {};
+  for (const field of ['input', 'output']) {
+    const value = readProcessField(process, field);
+    if (value !== undefined) selected[field] = value;
+  }
+  if (!Object.keys(selected).length) return null;
+  const bounded = boundedToolValue(selected, toolDataBudget());
+  if (bounded === TOOL_DATA_ERROR || !bounded || typeof bounded !== 'object') return null;
+  return hasToolData(bounded) ? bounded : null;
+}
+
+function mergeToolData(previous, next) {
+  const merged = {};
+  for (const field of ['input', 'output']) {
+    const value = hasToolData(next?.[field]) ? next[field] : previous?.[field];
+    if (hasToolData(value)) merged[field] = value;
+  }
+  return Object.keys(merged).length ? merged : null;
+}
+
+function toolInputOnly(data) {
+  if (!data || typeof data !== 'object') return null;
+  const input = Object.fromEntries(Object.entries(data).filter(([field]) => field === 'input'));
+  return Object.keys(input).length ? input : null;
+}
+
 function progressRows(turn) {
   const rows = []; const tools = new Map();
   for (const { process, seq, envelope } of turnProcessObservations(turn)) {
-    // Keep the process projection typed and redact any nested sensitive field
-    // before selecting the public presentation fields this surface owns. The
-    // mobile output is a bounded display copy only; the Replica/cache row is
-    // never changed or handed back to a persistence owner.
-    const safeProcess = redactSensitive(process);
-    if (safeProcess.kind === 'stage' && safeProcess.stage !== 'text') {
-      const stageText = typeof safeProcess.text === 'string' ? safeProcess.text : '';
+    // Read only scalar process fields and the typed input/output projection;
+    // never recursively redact or stringify the raw process object here.
+    const kind = processScalar(process, 'kind');
+    if (kind === 'stage' && processScalar(process, 'stage') !== 'text') {
+      const stage = processScalar(process, 'stage');
+      const text = readProcessField(process, 'text');
+      const stageText = typeof text === 'string' ? text : '';
       rows.push({
         key: `stage:${seq}`,
         seq,
-        line: stageText || (safeProcess.stage === 'thinking' ? '思考中…' : safeProcess.stage || '处理中'),
+        line: stageText || (stage === 'thinking' ? '思考中…' : stage || '处理中'),
         body: stageText,
         ts: envelope.ts,
         kind: 'stage',
@@ -628,39 +765,52 @@ function progressRows(turn) {
       });
       continue;
     }
-    if (safeProcess.kind !== 'tool') continue;
-    const key = safeProcess.tool_call_id || String(seq);
-    const detail = typeof safeProcess.detail === 'string' ? safeProcess.detail : '';
-    const body = toolPresentationBody(safeProcess, detail);
-    if (safeProcess.phase === 'started') {
+    if (kind !== 'tool') continue;
+    const callID = processScalar(process, 'tool_call_id') || String(seq);
+    const tool = processScalar(process, 'tool');
+    const phase = processScalar(process, 'phase');
+    const outcome = processScalar(process, 'outcome');
+    const detailValue = readProcessField(process, 'detail');
+    const detail = typeof detailValue === 'string' ? detailValue : '';
+    const toolData = toolDataFromProcess(process);
+    const body = toolPresentationBody(detail, toolData);
+    const mobileOutputShown = isMobileProfile() && hasToolData(toolData?.output);
+    if (phase === 'started') {
       const row = {
-        key: `tool:${key}`,
+        key: `tool:${callID}`,
         seq,
-        line: `tool: ${safeProcess.tool || '工具'} …`,
+        line: `tool: ${tool || '工具'} …`,
         body,
         ts: envelope.ts,
         kind: 'tool',
-        stateOnly: !body.trim(),
+        toolData,
+        mobileOutputShown,
+        stateOnly: !body.trim() && !hasToolData(toolData),
       };
       rows.push(row);
-      tools.set(key, row);
-    } else if (safeProcess.phase === 'ended') {
-      const started = tools.get(key);
+      tools.set(callID, row);
+    } else if (phase === 'ended') {
+      const started = tools.get(callID);
       if (started) {
         const endedBody = body.trim() ? body : started.body;
+        const mergedToolData = mergeToolData(started.toolData, toolData);
         started.seq = seq;
-        started.line = `tool: ${safeProcess.tool || '工具'} ${safeProcess.outcome === 'failed' ? '失败' : '完成'}`;
+        started.line = `tool: ${tool || '工具'} ${outcome === 'failed' ? '失败' : '完成'}`;
         started.body = endedBody;
         started.ts = envelope.ts || started.ts;
-        started.stateOnly = !String(endedBody || '').trim();
+        started.toolData = mergedToolData;
+        started.mobileOutputShown = started.mobileOutputShown || mobileOutputShown;
+        started.stateOnly = !String(endedBody || '').trim() && !hasToolData(mergedToolData);
       } else rows.push({
-        key: `tool:${key}`,
+        key: `tool:${callID}`,
         seq,
-        line: `tool: ${safeProcess.tool || '工具'} ${safeProcess.outcome === 'failed' ? '失败' : '完成'}`,
+        line: `tool: ${tool || '工具'} ${outcome === 'failed' ? '失败' : '完成'}`,
         body,
         ts: envelope.ts,
         kind: 'tool',
-        stateOnly: !body.trim(),
+        toolData,
+        mobileOutputShown,
+        stateOnly: !body.trim() && !hasToolData(toolData),
       });
     }
   }
@@ -698,6 +848,12 @@ function ProcessDetailDrawer({ row, onClose }) {
   const dialogRef = useRef(null);
   const closeRef = useRef(null);
   useModalFocus({ dialogRef, initialFocusRef: closeRef, onClose });
+  const body = typeof row.body === 'string' ? row.body.trim() : '';
+  const rawToolData = row.kind === 'tool' && hasToolData(row.toolData) ? row.toolData : null;
+  // Mobile already receives the bounded output markdown owned by this same
+  // row projection. Do not duplicate that output in the structured tree;
+  // desktop keeps both typed input and output sections in the drawer.
+  const toolData = rawToolData && row.mobileOutputShown ? toolInputOnly(rawToolData) : rawToolData;
   return <div className="progress-drawer-backdrop" data-modal-layer role="presentation" onMouseDown={(event) => {
     if (event.target === event.currentTarget) onClose?.();
   }}>
@@ -707,7 +863,11 @@ function ProcessDetailDrawer({ row, onClose }) {
         <button ref={closeRef} type="button" className="progress-drawer-close" aria-label="关闭详情" onClick={onClose}>×</button>
       </header>
       <div className="progress-drawer-body">
-        {row.body ? <MarkdownContent contentKey={`progress-detail:${row.key}:body`} text={row.body} /> : <p className="progress-empty">这次过程没有留下可展示的正文。</p>}
+        {row.kind === 'tool' ? <div className="progress-tool-data">
+          {toolData && <div className="progress-json-shell" aria-label="工具输入输出"><StructuredTree value={toolData} /></div>}
+          {body && <div className="progress-tool-detail"><strong>执行说明</strong><MarkdownContent contentKey={`progress-detail:${row.key}:body`} text={body} /></div>}
+          {!toolData && !body && <p className="progress-empty">这次调用没有返回可展示的数据。</p>}
+        </div> : body ? <MarkdownContent contentKey={`progress-detail:${row.key}:body`} text={body} /> : <p className="progress-empty">这次过程没有留下可展示的正文。</p>}
       </div>
     </aside>
   </div>;

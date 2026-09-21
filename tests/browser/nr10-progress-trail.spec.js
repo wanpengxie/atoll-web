@@ -35,9 +35,10 @@ test('NR10-01/04 public process detail and live timing', async ({ page, request 
   await expect(trail.locator('.progress-row')).toHaveCount(1);
   await expect(trail.locator('.progress-row time')).toHaveCount(1);
   await expect(trail.locator('.progress-row-duration')).toHaveCount(1);
-  // The fixture's first tool observation has no typed detail: the public
-  // turn-level process action must not advertise an empty panel.
-  await expect(turn.getByRole('button', { name: '查看过程' })).toHaveCount(0);
+  // The fixture's first tool observation carries typed input even before its
+  // ended output arrives, so the public action advertises safe tool data. A
+  // truly empty tool is covered by the owner unit contract.
+  await expect(turn.getByRole('button', { name: '查看过程' })).toHaveCount(2);
   const before = await trail.locator('.progress-row-duration').textContent();
   await expect.poll(
     () => trail.locator('.progress-row-duration').textContent(),
@@ -90,7 +91,7 @@ test('NR10-01/04 public process detail and live timing', async ({ page, request 
       payload: {
         process: {
           kind: 'tool', phase: 'started', tool_call_id: liveToolCallID,
-          tool: 'search', input: { secret: 'nr10-live-input' },
+          tool: 'search',
         },
       },
     },
@@ -114,7 +115,8 @@ test('NR10-01/04 public process detail and live timing', async ({ page, request 
         process: {
           kind: 'tool', phase: 'ended', tool_call_id: liveToolCallID,
           tool: 'search', outcome: 'completed', detail: '同一调用的公开结果。',
-          input: { secret: 'nr10-live-input' }, output: { secret: 'nr10-live-output' },
+          input: { query: '账本模型', filters: { scope: 'channel' }, secret: 'nr10-live-input' },
+          output: { hits: 3, secret: 'nr10-live-output' },
         },
       },
     },
@@ -124,8 +126,30 @@ test('NR10-01/04 public process detail and live timing', async ({ page, request 
   await liveToolRow.locator('button[title="查看完整内容"]').click();
   const liveDrawer = page.getByRole('dialog', { name: /过程详情/ });
   await expect(liveDrawer).toContainText('同一调用的公开结果。');
+  await expect(liveDrawer).toContainText('input');
+  await expect(liveDrawer).toContainText('账本模型');
+  await expect(liveDrawer).toContainText('output');
+  await expect(liveDrawer).toContainText('3');
   await expect(liveDrawer).not.toContainText('nr10-live-input');
   await expect(liveDrawer).not.toContainText('nr10-live-output');
+  const nested = liveDrawer.locator('details').first();
+  await expect(nested).not.toHaveAttribute('open');
+  const drawerClose = liveDrawer.getByRole('button', { name: '关闭详情' });
+  const nestedSummary = nested.locator('summary');
+  await drawerClose.focus();
+  await drawerClose.press('Tab');
+  await expect.poll(() => nestedSummary.evaluate((node) => document.activeElement === node)).toBe(true);
+  await page.keyboard.press('Shift+Tab');
+  await expect.poll(() => drawerClose.evaluate((node) => document.activeElement === node)).toBe(true);
+  // At either edge the existing modal owner wraps without leaking focus to
+  // the page; this also proves native <summary> participates in FOCUSABLE.
+  await page.keyboard.press('Shift+Tab');
+  await expect.poll(() => nestedSummary.evaluate((node) => document.activeElement === node)).toBe(true);
+  await page.keyboard.press('Tab');
+  await expect.poll(() => drawerClose.evaluate((node) => document.activeElement === node)).toBe(true);
+  await nested.locator('summary').click();
+  await expect(nested).toHaveAttribute('open', '');
+  await expect(liveDrawer).toContainText('scope');
   await liveDrawer.getByRole('button', { name: '关闭详情' }).click();
   await expect(liveDrawer).toHaveCount(0);
 });

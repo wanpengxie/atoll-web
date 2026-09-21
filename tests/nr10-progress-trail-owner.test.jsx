@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 // NR10-01/04: public TimelineRowRenderer owner for process detail and timing.
-// The contract intentionally excludes the retired raw JSON drawer: users get
-// safe process正文, while timing remains attached to the same trail rows.
+// Tool input/output is a bounded typed projection in the same drawer owner;
+// wire payloads and the retired activity host/store remain out of scope.
 import React from 'react';
 import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -69,7 +69,8 @@ describe('NR10 TimelineRowRenderer process trail', () => {
       processRow(3, {
         kind: 'tool', phase: 'ended', tool_call_id: 'call-1', tool: 'search', outcome: 'completed',
         detail: '搜索过程已完成，命中 3 条来源。',
-        input: { secret: 'must-not-render' }, output: { secret: 'must-not-render' },
+        input: { query: '账本模型', filters: { scope: 'channel' }, secret: 'must-not-render' },
+        output: { hits: 3, secret: 'must-not-render' },
       }, '2026-09-21T05:00:03.000Z'),
     ]);
     const view = render(<Renderer value={value} />);
@@ -92,6 +93,21 @@ describe('NR10 TimelineRowRenderer process trail', () => {
     expect(drawer?.textContent).not.toContain('must-not-render');
     fireEvent.click(drawer.querySelector('button[aria-label="关闭详情"]'));
     expect(view.container.querySelector('[role="dialog"].progress-drawer')).toBeNull();
+
+    const tool = rows[1];
+    fireEvent.click(tool.querySelector('button[title="查看完整内容"]'));
+    const toolDrawer = view.container.querySelector('[role="dialog"].progress-drawer');
+    expect(toolDrawer?.textContent).toContain('input');
+    expect(toolDrawer?.textContent).toContain('账本模型');
+    expect(toolDrawer?.textContent).toContain('output');
+    expect(toolDrawer?.textContent).toContain('3');
+    expect(toolDrawer?.textContent).not.toContain('must-not-render');
+    const nested = toolDrawer?.querySelector('details');
+    expect(nested).toBeTruthy();
+    expect(nested.hasAttribute('open')).toBe(false);
+    fireEvent.click(nested.querySelector('summary'));
+    expect(nested.hasAttribute('open')).toBe(true);
+    expect(toolDrawer?.textContent).toContain('scope');
   });
 
   it('shows every live row timestamp and only the latest row live duration', () => {
@@ -122,7 +138,7 @@ describe('NR10 TimelineRowRenderer process trail', () => {
       processRow(1, {
         kind: 'tool', phase: 'started', tool_call_id: 'call-live', tool: 'search',
         detail: '开始搜索…',
-        input: { secret: 'must-not-render' },
+        input: { query: 'initial', secret: 'must-not-render' },
       }, '2026-09-21T05:00:01.000Z'),
     ]);
     const view = render(<Renderer value={started} />);
@@ -136,22 +152,23 @@ describe('NR10 TimelineRowRenderer process trail', () => {
       processRow(2, {
         kind: 'tool', phase: 'ended', tool_call_id: 'call-live', tool: 'search', outcome: 'completed',
         detail: '同一工具调用的公开结果。',
-        input: { secret: 'must-not-render' }, output: { secret: 'must-not-render' },
+        output: { hits: 3, secret: 'must-not-render' },
       }, '2026-09-21T05:00:02.000Z'),
     ]);
     view.rerender(<Renderer value={ended} />);
 
     const drawer = view.container.querySelector('.progress-drawer-body');
     expect(drawer?.textContent).toContain('同一工具调用的公开结果。');
+    expect(drawer?.textContent).toContain('initial');
+    expect(drawer?.textContent).toContain('hits');
     expect(drawer?.textContent).not.toContain('must-not-render');
     expect(view.container.querySelector('[role="dialog"]')).toBeTruthy();
   });
 
-  it('keeps a tool status row non-actionable until typed detail exists', () => {
+  it('keeps a tool status row non-actionable when typed detail and data are empty', () => {
     const value = turn([
       processRow(1, {
         kind: 'tool', phase: 'started', tool_call_id: 'call-no-detail', tool: 'search',
-        input: { secret: 'must-not-render' },
       }, '2026-09-21T05:00:01.000Z'),
     ]);
     const view = render(<Renderer value={value} />);
@@ -163,12 +180,130 @@ describe('NR10 TimelineRowRenderer process trail', () => {
     expect(view.container.querySelector('[role="dialog"].progress-drawer')).toBeNull();
   });
 
+  it('opens a bounded typed tool-data drawer even when detail text is absent', () => {
+    const value = turn([
+      processRow(1, {
+        kind: 'tool', phase: 'ended', tool_call_id: 'call-data-only', tool: 'search', outcome: 'completed',
+        input: { query: '账本模型', secret: 'must-not-render' },
+        output: { hits: 3, secret: 'must-not-render' },
+      }, '2026-09-21T05:00:01.000Z'),
+    ]);
+    const view = render(<Renderer value={value} />);
+    const trail = view.container.querySelector('.progress-trail.running');
+    fireEvent.click(trail.querySelector('.progress-running-header'));
+    const row = trail.querySelector('.progress-row');
+    expect(row?.querySelector('button[title="查看完整内容"]')).toBeTruthy();
+    fireEvent.click(row.querySelector('button[title="查看完整内容"]'));
+    const drawer = view.container.querySelector('[role="dialog"].progress-drawer');
+    expect(drawer?.textContent).toContain('账本模型');
+    expect(drawer?.textContent).toContain('hits');
+    expect(drawer?.textContent).not.toContain('must-not-render');
+  });
+
+  it('keeps native structured summaries in the modal focus cycle and returns the opener', () => {
+    const value = turn([
+      processRow(1, {
+        kind: 'tool', phase: 'ended', tool_call_id: 'call-focus', tool: 'search', outcome: 'completed',
+        input: { query: '账本模型', filters: { scope: 'channel' } },
+      }, '2026-09-21T05:00:01.000Z'),
+    ]);
+    const view = render(<Renderer value={value} />);
+    const trail = view.container.querySelector('.progress-trail.running');
+    fireEvent.click(trail.querySelector('.progress-running-header'));
+    const row = trail.querySelector('.progress-row');
+    const opener = row.querySelector('button[title="查看完整内容"]');
+    opener.focus();
+    fireEvent.click(opener);
+
+    const drawer = view.container.querySelector('[role="dialog"].progress-drawer');
+    const close = drawer.querySelector('button[aria-label="关闭详情"]');
+    const summary = drawer.querySelector('.progress-json-shell details > summary');
+    expect(summary).toBeTruthy();
+    expect(document.activeElement).toBe(close);
+
+    // jsdom does not perform the browser's default Tab movement, so the two
+    // normal-direction assertions explicitly model that movement while the
+    // modal's boundary cases exercise useModalFocus's native summary query.
+    const forward = fireEvent.keyDown(close, { key: 'Tab', code: 'Tab' });
+    expect(forward).toBe(true);
+    summary.focus();
+    expect(document.activeElement).toBe(summary);
+    const backward = fireEvent.keyDown(summary, { key: 'Tab', code: 'Tab', shiftKey: true });
+    expect(backward).toBe(true);
+    close.focus();
+    expect(document.activeElement).toBe(close);
+
+    fireEvent.keyDown(close, { key: 'Tab', code: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(summary);
+    fireEvent.keyDown(summary, { key: 'Tab', code: 'Tab' });
+    expect(document.activeElement).toBe(close);
+
+    fireEvent.click(close);
+    expect(view.container.querySelector('[role="dialog"].progress-drawer')).toBeNull();
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it('bounds long and deeply nested typed tool data before rendering', () => {
+    const longValue = `head-${'x'.repeat(5000)}-tail-marker`;
+    const manyItems = Array.from({ length: 80 }, (_, index) => index === 79 ? 'array-tail-marker' : `item-${index}`);
+    const manyFields = Object.fromEntries(Array.from({ length: 80 }, (_, index) => [index === 79 ? 'field-tail-marker' : `field-${index}`, index]));
+    const value = turn([
+      processRow(1, {
+        kind: 'tool', phase: 'ended', tool_call_id: 'call-bounded', tool: 'search', outcome: 'completed',
+        input: {
+          longValue,
+          nested: { level1: { level2: { level3: { level4: 'not-rendered' } } } },
+          manyItems,
+          manyFields,
+        },
+      }, '2026-09-21T05:00:01.000Z'),
+    ]);
+    const view = render(<Renderer value={value} />);
+    const trail = view.container.querySelector('.progress-trail.running');
+    fireEvent.click(trail.querySelector('.progress-running-header'));
+    fireEvent.click(trail.querySelector('button[title="查看完整内容"]'));
+    const drawer = view.container.querySelector('[role="dialog"].progress-drawer');
+    expect(drawer?.textContent).toContain('head-');
+    expect(drawer?.textContent).toContain('已省略');
+    expect(drawer?.textContent).toContain('内容已折叠');
+    expect(drawer?.textContent).not.toContain('tail-marker');
+    expect(drawer?.textContent).not.toContain('not-rendered');
+    expect(drawer?.textContent).not.toContain('array-tail-marker');
+    expect(drawer?.textContent).not.toContain('field-tail-marker');
+  });
+
+  it('uses one total budget and fails closed for cyclic or unreadable data', () => {
+    const cyclic = {};
+    cyclic.self = cyclic;
+    const unreadable = {};
+    Object.defineProperty(unreadable, 'boom', {
+      enumerable: true,
+      get() { throw new Error('unreadable tool field'); },
+    });
+    const value = turn([
+      processRow(1, {
+        kind: 'tool', phase: 'ended', tool_call_id: 'call-cycle', tool: 'search', outcome: 'completed',
+        input: cyclic,
+      }, '2026-09-21T05:00:01.000Z'),
+      processRow(2, {
+        kind: 'tool', phase: 'ended', tool_call_id: 'call-unreadable', tool: 'search', outcome: 'completed',
+        output: unreadable,
+      }, '2026-09-21T05:00:02.000Z'),
+    ]);
+    const view = render(<Renderer value={value} />);
+    const trail = view.container.querySelector('.progress-trail.running');
+    fireEvent.click(trail.querySelector('.progress-running-header'));
+    const rows = [...trail.querySelectorAll('.progress-row')];
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => !row.querySelector('button[title="查看完整内容"]'))).toBe(true);
+    expect(view.container.querySelector('.progress-drawer')).toBeNull();
+  });
+
   it('gates the top-level public process action on typed progress正文', () => {
     const onOpenTurn = vi.fn();
     const started = turn([
       processRow(1, {
         kind: 'tool', phase: 'started', tool_call_id: 'call-top-level', tool: 'search',
-        input: { secret: 'must-not-render' },
       }, '2026-09-21T05:00:01.000Z'),
     ]);
     const view = render(<Renderer value={started} onOpenTurn={onOpenTurn} />);
