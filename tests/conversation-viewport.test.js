@@ -426,7 +426,7 @@ describe('reading session authority', () => {
     expect(staleObservation.mode).toBe(READING_MODE.browsing);
   });
 
-  it('does not reinterpret a later layout clamp as downward user evidence', () => {
+  it('[TC-0564][AD-270] does not reinterpret a later layout clamp as downward user evidence', () => {
     let current = takeReadingControl(session(), {
       direction: 'newer', gestureID: 'down', geometryRevision: 4,
     });

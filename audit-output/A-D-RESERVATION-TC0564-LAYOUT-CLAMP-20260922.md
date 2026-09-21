@@ -60,3 +60,25 @@ committed.
 This is an atomic claim: this reservation report is committed before changing
 the test declaration. Closeout will append focused, adjacent, and build
 evidence plus the final PASS or bounded regression disposition.
+
+## Closeout — 2026-09-22
+
+- **Reservation commit:** `8b30fc1b4af605a134afc77f0af1e7bd6998110a`
+- **Migration:** the retained declaration is tagged `[TC-0564][AD-270]`; its
+  newer gesture, later layout clamp, same-revision user observation, and final
+  `browsing` assertions are unchanged.
+- **Focused:** `npm test -- tests/conversation-viewport.test.js --run -t
+  'TC-0564' --reporter=verbose` — 1 passed, 20 selection skips.
+- **Viewport owner suite:** `tests/conversation-viewport.test.js` — 21 passed,
+  0 failed.
+- **Adjacent reading suites:** `tests/reading-session-ports.test.js
+  tests/reading-navigation-coordinator.test.js tests/reading-geometry.test.js`
+  — 17 passed, 0 failed.
+- **Build:** `npm run build` — passed; Vite emitted only the existing large
+  chunk advisory.
+- **Disposition:** `PASS / MIGRATED`, credit 1. The public reading-session
+  owner keeps a layout clamp from authorizing following and requires fresh
+  matching user evidence after the geometry revision changes. No product
+  change was made.
+- **Final commit:** recorded after this closeout; only this report and the
+  tagged existing test declaration are included.
