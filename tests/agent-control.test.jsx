@@ -247,6 +247,19 @@ describe('agent control：编辑锁与冻结显示（heldActors/WaitingLayer 承
     });
   });
 
+  it('[TC-0315] does not project a plain interrupt as a Waiting pause', () => {
+    const stop = turn({
+      requestId: 'stop-only', actorId: 'agent', type: 'agent.interrupt', requestSeq: 1,
+      terminal: completedTerminal({ requestId: 'stop-only', type: 'agent.interrupt' }),
+    });
+    const queued = turn({ requestId: 'queued-after-stop', actorId: 'agent', type: 'agent.ask', requestSeq: 2 });
+    const state = { channelId: 'c0', rows: new Map(), timeline: timeline([stop, queued]) };
+
+    render(<WaitingLayer {...baseProps({ turns: [queued], state })} />);
+
+    expect(pausedFor('agent')).toBeNull();
+  });
+
   it('32 derives freeze from wall clock expiry and queue advancement', () => {
     // (a) 到期：hold 请求发生在 10 分钟前，只声明 1 分钟时长——早该过期了。
     const expiredHold = turn({ requestId: 'h2', actorId: 'agent', type: 'agent.hold', requestSeq: 1, ts: Date.now() - 10 * 60 * 1000, durationMs: 60 * 1000, terminal: completedTerminal({ requestId: 'h2', type: 'agent.hold' }) });

@@ -277,12 +277,19 @@ function heldActors(state, now = Date.now()) {
     const current = frozen.get(operation.actorId);
     if (operation.kind === 'freeze') {
       const restore = operation.source === 'hold'
-        ? (current?.source === 'interrupt' ? current : current?.restore || null)
+        ? (current?.source === 'interrupt'
+          ? { ...current, waitingVisible: true }
+          : current?.restore || null)
         : null;
       frozen.set(operation.actorId, {
         holdId: operation.turn.requestId,
         until: operation.source === 'interrupt' ? Number.POSITIVE_INFINITY : holdDeadline(operation.turn),
         source: operation.source,
+        // An interrupt is a stopped-turn fact, not a Waiting pause by itself.
+        // Keep it in the causal freeze chain so an edit hold can restore that
+        // fact, but only a hold (or its restored interrupt) is user-visible in
+        // Waiting. The stopped turn itself owns the interrupt affordance.
+        waitingVisible: operation.source === 'hold',
         restore,
         seq: operation.seq,
       });
@@ -632,7 +639,7 @@ export function WaitingLayer({
         </div>}
       </header>}
       {!collapsed && groups.map((group) => {
-        const paused = frozenByActor.has(group.actorId);
+        const paused = frozenByActor.get(group.actorId)?.waitingVisible === true;
         return <section className="agent-wait-group" key={group.actorId || 'unknown'} data-agent-id={group.actorId}>
         {!hasQueuedEditor && !soleGroup && <header><strong>{actorNameFromMap(group.actorId, names)}{paused ? '（已暂停）' : ''}</strong></header>}
         <ol>{group.items.map(({ turn, exiting }) => {
