@@ -39,6 +39,114 @@ async function reset(request, scenario, seed) {
   expect(response.ok()).toBe(true);
 }
 
+// The first rows can be mounted in a hidden Virtuoso preparation layer while
+// the public active layer is still acquiring its geometry.  A ResizeObserver
+// delivery in that phase is initialization evidence, not growth evidence.
+// Wait on the public surface itself: one active list, a visible and
+// hit-tested presentation row, and the same public identity/geometry over
+// consecutive paint frames.  This deliberately does not consult the
+// diagnostics bridge, private Reading state, or a fixed timeout as a fence.
+async function waitForPublicBootSettled(page) {
+  return page.evaluate(() => new Promise((resolve, reject) => {
+    const selector = '.timeline-reading-stack > .timeline-reading-layer.is-active > .timeline-message-list';
+    const deadline = performance.now() + 60_000;
+
+    const rectShape = (rect) => ({
+      top: Math.round(rect.top),
+      left: Math.round(rect.left),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+    });
+
+    const sample = () => {
+      const lists = [...document.querySelectorAll(selector)];
+      if (lists.length !== 1) return { ready: false, reason: `active-list-count:${lists.length}` };
+      const list = lists[0];
+      const layer = list.closest('.timeline-reading-layer');
+      const listRect = list.getBoundingClientRect();
+      const listStyle = getComputedStyle(list);
+      const layerStyle = layer ? getComputedStyle(layer) : null;
+      const visible = (node, rect, style) => Boolean(
+        node
+        && rect.width > 0
+        && rect.height > 0
+        && style.display !== 'none'
+        && style.visibility !== 'hidden'
+        && Number(style.opacity || 1) > 0.01,
+      );
+      if (!visible(list, listRect, listStyle) || !visible(layer, layer?.getBoundingClientRect(), layerStyle)) {
+        return { ready: false, reason: 'active-list-not-visible' };
+      }
+
+      const row = [...list.querySelectorAll('[data-presentation-row-id]')].find((candidate) => {
+        const rect = candidate.getBoundingClientRect();
+        const style = getComputedStyle(candidate);
+        if (!visible(candidate, rect, style)) return false;
+        const x = Math.min(window.innerWidth - 1, Math.max(0, rect.left + Math.min(rect.width / 2, 12)));
+        const y = Math.min(window.innerHeight - 1, Math.max(0, Math.max(listRect.top, rect.top) + Math.min(rect.height / 2, 12)));
+        if (x < listRect.left || x > listRect.right || y < listRect.top || y > listRect.bottom) return false;
+        const hit = document.elementFromPoint(x, y);
+        return hit === candidate || candidate.contains(hit);
+      });
+      if (!row) return { ready: false, reason: 'no-visible-hit-tested-row' };
+
+      const rowRect = row.getBoundingClientRect();
+      const revisionNode = list.matches('[data-reading-presentation-revision]')
+        ? list
+        : list.querySelector('[data-reading-presentation-revision]');
+      const revision = revisionNode?.getAttribute('data-reading-presentation-revision') || '';
+      return {
+        ready: true,
+        key: [
+          row.getAttribute('data-presentation-row-id') || '',
+          revision,
+          Math.round(list.scrollTop),
+          Math.round(list.scrollHeight),
+          Math.round(list.clientHeight),
+          ...Object.values(rectShape(listRect)),
+          ...Object.values(rectShape(rowRect)),
+        ].join('|'),
+        list: rectShape(listRect),
+        row: {
+          id: row.getAttribute('data-presentation-row-id') || '',
+          rect: rectShape(rowRect),
+        },
+        revision,
+      };
+    };
+
+    const same = (left, right) => left.ready && right.ready && left.key === right.key;
+    const check = () => {
+      if (performance.now() > deadline) {
+        reject(new Error('public active reading surface did not settle before timeout'));
+        return;
+      }
+      const first = sample();
+      if (!first.ready) {
+        requestAnimationFrame(check);
+        return;
+      }
+      requestAnimationFrame(() => {
+        const second = sample();
+        if (!same(first, second)) {
+          check();
+          return;
+        }
+        requestAnimationFrame(() => {
+          const third = sample();
+          if (same(second, third)) {
+            resolve({ ...third, stablePaintFrames: 3 });
+            return;
+          }
+          check();
+        });
+      });
+    };
+
+    check();
+  }));
+}
+
 async function growEditor(page, prefix, lines = 5) {
   const editor = page.getByLabel('消息');
   await editor.click();
@@ -83,20 +191,23 @@ test('the detector is live on both browser and application channels', async ({ p
 });
 
 for (const scenario of ['long-running-history', 'huge-history']) {
-  test(`no ResizeObserver loop while the production surface grows — ${scenario}`, async ({ page, request }, testInfo) => {
+  for (let repetition = 1; repetition <= 5; repetition += 1) {
+    test(`no ResizeObserver loop while the production surface grows — ${scenario} (repeat ${repetition}/5)`, async ({ page, request }, testInfo) => {
     test.setTimeout(180_000);
     await page.addInitScript(installProbe);
     await page.setViewportSize({ width: 1120, height: 760 });
     await reset(request, scenario, 0x92_09_30);
     await login(page);
+    const bootFence = await waitForPublicBootSettled(page);
     const bootProbe = await page.evaluate(() => ({
       deliveries: window.__roProbe.deliveries,
       loops: [...window.__roProbe.loops],
       unsettled: [...window.__roProbe.unsettled],
       diagnostics: (window.__ATOLL_DIAGNOSTICS__?.snapshot?.() || []).filter((entry) => entry.event === 'window.resize_observer_loop'),
     }));
-    // Boot measurements are recorded separately.  Growth assertions start at
-    // a settled production surface and still attach the boot evidence so a
+    // Boot measurements are recorded separately.  Growth assertions start
+    // only after the public active surface has been visible, hit-tested, and
+    // stable over paint frames; boot evidence remains attached so a
     // regression in initialization is not silently discarded.
     await page.evaluate(() => {
       window.__roProbe.deliveries = 0;
@@ -116,10 +227,11 @@ for (const scenario of ['long-running-history', 'huge-history']) {
       ...window.__roProbe,
       diagnostics: (window.__ATOLL_DIAGNOSTICS__?.snapshot?.() || []).filter((entry) => entry.event === 'window.resize_observer_loop'),
     }));
-    await testInfo.attach('resize-observer-loops.json', { body: JSON.stringify({ bootProbe, growthProbe: probe }, null, 2), contentType: 'application/json' });
+    await testInfo.attach('resize-observer-loops.json', { body: JSON.stringify({ bootFence, bootProbe, growthProbe: probe }, null, 2), contentType: 'application/json' });
     expect(probe.deliveries).toBeGreaterThan(0);
     expect(probe.loops, JSON.stringify(probe.unsettled.slice(-10))).toEqual([]);
     expect(probe.diagnostics).toEqual([]);
     expect(probe.unsettled).toEqual([]);
-  });
+    });
+  }
 }
