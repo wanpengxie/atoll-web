@@ -385,7 +385,7 @@ describe('reading session authority', () => {
     expect(current.mode).toBe(READING_MODE.following);
   });
 
-  it('updates direction evidence inside one input epoch and cancellation revokes it', () => {
+  it('[TC-0563][AD-269] updates direction evidence inside one input epoch and cancellation revokes it', () => {
     const started = takeReadingControl(session(), {
       direction: 'older', gestureID: 'gesture:one', geometryRevision: 3,
     });
