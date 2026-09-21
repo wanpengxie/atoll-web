@@ -31,7 +31,7 @@ function preparedHTML(source) {
 }
 
 describe('ContentPlan semantic boundaries', () => {
-  it('reuses one immutable prepared React description for exact render options', () => {
+  it('[TC-0524][AD-230] reuses one immutable prepared React description for exact render options', () => {
     const plan = createContentPlan({ contentKey: 'prepared-cache', source: '**stable** [link](https://example.test)' });
     const root = plan.blocks[0].preparedRoot;
     const components = {};
