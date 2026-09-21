@@ -50,6 +50,67 @@ test('F2-FS-01 Files surface opens beside the conversation without replacing its
   await expect(page).toHaveURL(/#\/channels\/c0\/conversation$/);
 });
 
+test('F2-FS-02 desktop restores Files only for a channel that previously opened it', async ({ page, request }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await reset(request, 227);
+  await login(page);
+
+  const c0Files = await openFilesAtWorkspace(page);
+  await expect(page).toHaveURL(/#\/channels\/c0\/files$/);
+
+  const channelRail = page.getByRole('navigation', { name: '频道' });
+  await channelRail.getByText('c0.project', { exact: true }).click();
+  await expect(page.locator('main h1')).toHaveText('c0.project');
+  await expect(c0Files).toHaveCount(0);
+  await expect(page).toHaveURL(/#\/channels\/c0\.project\/conversation$/);
+
+  await page.locator('#workspace-files-toggle').click();
+  const projectFiles = page.getByRole('region', { name: '频道文件' });
+  await expect(projectFiles).toBeVisible();
+  await expect(projectFiles.getByRole('row', { name: /项目说明/ })).toBeVisible();
+  await expect(page).toHaveURL(/#\/channels\/c0\.project\/files$/);
+
+  await channelRail.getByText('c0', { exact: true }).click();
+  await expect(page.locator('main h1')).toHaveText('c0');
+  await expect(page.getByRole('region', { name: '频道文件' })).toBeVisible();
+  await expect(page.getByRole('region', { name: '频道文件' }).getByRole('row', { name: /README\.md/ })).toBeVisible();
+  await expect(page).toHaveURL(/#\/channels\/c0\/files$/);
+});
+
+test('F2-FS-02 mobile isolates Files memory while switching channels', async ({ page, request }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  await reset(request, 228);
+  await login(page);
+
+  await page.getByRole('button', { name: '频道操作', exact: true }).click();
+  await page.getByRole('menuitem', { name: '打开文件', exact: true }).click();
+  const c0Files = page.getByRole('region', { name: '频道文件' });
+  await expect(c0Files).toBeVisible();
+  await c0Files.getByRole('row', { name: /workspace/ }).click();
+  await expect(c0Files.getByRole('row', { name: /README\.md/ })).toBeVisible();
+
+  await page.getByRole('button', { name: '打开频道列表', exact: true }).click();
+  const channelRail = page.getByRole('navigation', { name: '频道' });
+  await channelRail.getByText('c0.project', { exact: true }).click();
+  await expect(page.locator('main h1')).toHaveText('c0.project');
+  await expect(c0Files).toHaveCount(0);
+  await expect(page).toHaveURL(/#\/channels\/c0\.project\/conversation$/);
+
+  await page.getByRole('button', { name: '频道操作', exact: true }).click();
+  await page.getByRole('menuitem', { name: '打开文件', exact: true }).click();
+  const projectFiles = page.getByRole('region', { name: '频道文件' });
+  await expect(projectFiles).toBeVisible();
+  await expect(projectFiles.getByRole('row', { name: /项目说明/ })).toBeVisible();
+
+  await page.getByRole('button', { name: '打开频道列表', exact: true }).click();
+  await channelRail.getByText('c0', { exact: true }).click();
+  await expect(page.locator('main h1')).toHaveText('c0');
+  await expect(page.getByRole('region', { name: '频道文件' })).toBeVisible();
+  await expect(page.getByRole('region', { name: '频道文件' }).getByRole('row', { name: /README\.md/ })).toBeVisible();
+  await expect(page).toHaveURL(/#\/channels\/c0\/files$/);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
 test('UI-VIS-12 Files surface close returns focus to the desktop route trigger', async ({ page, request }) => {
   await page.setViewportSize({ width: 1280, height: 720 });
   await reset(request, 224);

@@ -91,6 +91,67 @@ describe('useChannelNavigation Files/Tasks temporary return owner', () => {
     expect(result.current.activeView).toBe('conversation');
   });
 
+  it('remembers Files visibility per channel without opening it on an unseen channel', () => {
+    const { result } = navigation();
+
+    act(() => result.current.setActiveView('files'));
+    act(() => result.current.select('c1'));
+    expect(result.current.activeView).toBe('conversation');
+    expect(window.location.hash).toBe('#/channels/c1/conversation');
+
+    act(() => result.current.select('c0'));
+    expect(result.current.activeView).toBe('files');
+    expect(window.location.hash).toBe('#/channels/c0/files');
+
+    act(() => result.current.select('c1'));
+    act(() => result.current.setActiveView('files'));
+    act(() => result.current.select('c0'));
+    expect(result.current.activeView).toBe('files');
+    act(() => result.current.select('c1'));
+    expect(result.current.activeView).toBe('files');
+  });
+
+  it('retires Files and its per-channel memory across an empty world replacement', async () => {
+    const rowsRef = { current: [
+      { id: 'c0', name: 'c0', access: 'member_active' },
+      { id: 'c1', name: 'c1', access: 'member_active' },
+    ] };
+    const { result } = navigation(rowsRef);
+
+    act(() => result.current.setActiveView('files'));
+    expect(result.current.activeView).toBe('files');
+
+    rowsRef.current = [];
+    act(() => result.current.setChannels(new Map()));
+    expect(result.current.activeChannelId).toBe('');
+    expect(result.current.activeView).toBe('conversation');
+
+    rowsRef.current = [{ id: 'c1', name: 'c1', access: 'member_active' }];
+    act(() => result.current.setChannels(new Map([['c1', rowsRef.current[0]]] )));
+    await waitFor(() => expect(result.current.activeChannelId).toBe('c1'));
+    expect(result.current.activeView).toBe('conversation');
+    expect(window.location.hash).toBe('#/channels/c1/conversation');
+
+    rowsRef.current = [
+      { id: 'c0', name: 'c0', access: 'member_active' },
+      rowsRef.current[0],
+    ];
+    act(() => result.current.bump());
+    act(() => result.current.select('c0'));
+    expect(result.current.activeView).toBe('conversation');
+    expect(window.location.hash).toBe('#/channels/c0/conversation');
+  });
+
+  it('falls back from an invalid Files URL to a valid channel conversation', async () => {
+    window.history.replaceState({}, '', '#/channels/missing/files');
+    const rowsRef = { current: [{ id: 'c1', name: 'c1', access: 'member_active' }] };
+    const { result } = navigation(rowsRef);
+
+    await waitFor(() => expect(result.current.activeChannelId).toBe('c1'));
+    expect(result.current.activeView).toBe('conversation');
+    expect(window.location.hash).toBe('#/channels/c1/conversation');
+  });
+
   it('clears the temporary return on channel and world replacement', () => {
     const { result } = navigation();
 
