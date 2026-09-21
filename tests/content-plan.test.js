@@ -180,7 +180,7 @@ describe('ContentPlan', () => {
     expect(appended.blocks[0].renderRevision).toBe(first.blocks[0].renderRevision);
   });
 
-  it('reparses only the final top-level suffix for a strict append', () => {
+  it('[TC-0540] reparses only the final top-level suffix for a strict append', () => {
     const prefix = Array.from({ length: 80 }, (_, index) => `## Section ${index}\n\nparagraph ${index}`)
       .join('\n\n');
     const first = plan({ contentKey: 'message:suffix-fast-path:body', source: prefix });
