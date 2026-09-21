@@ -54,3 +54,12 @@ existing fixture, exact six-kind expectation, loop, and kind/completeness/items
 assertions are preserved byte-for-byte in meaning. Closeout will append
 focused, adjacent, and build evidence plus the final PASS/REGRESSION
 disposition.
+
+## Closeout
+
+- **Focused:** `npm test -- tests/contract-fixtures.test.js --run -t 'TC-0548' --reporter=verbose` — `1 passed, 3 skipped by Vitest selection` (no test declarations were skipped).
+- **Adjacent:** `npm test -- tests/contract-fixtures.test.js --run --reporter=dot` — `4 passed`.
+- **Diagnostics adjacent:** `npm test -- tests/diagnostics.test.js --run --reporter=dot` — `8 passed`.
+- **Build:** `npm run build` — passed; Vite retained its existing advisory about chunks larger than 500 kB.
+- **Diff hygiene:** only the `[TC-0548]` declaration and this audit report changed; the fixture, exact six-kind expectation, loop, and kind/completeness/items assertions are unchanged. No skip/filter/private oracle, product, package, protocol, or compatibility change was introduced.
+- **Disposition:** `PASS / MIGRATED`; **credit: 1**. The existing OBS evidence path proves the exact six observation kinds and per-kind completeness/item shape without adding a second authority or synchronization mechanism.
