@@ -56,3 +56,29 @@ committed.
 This is an atomic claim: this reservation report is committed before changing
 the test declaration. Closeout will append focused, adjacent, and build
 evidence plus the final PASS or bounded regression disposition.
+
+## Closeout — 2026-09-22
+
+- **Reservation commit:** `99cb4a8` (`claim TC0547 feed envelope baseline`).
+- **Migration:** the existing declaration is tagged
+  `[TC-0547][AD-253]`; fixture selection, `ENVELOPE_FIELDS` closed-key
+  assertion, and `channel_id` identity assertion remain unchanged. No test was
+  deleted/skipped and no private oracle, frontend authority, or compatibility
+  path was added.
+- **Focused:**
+  `npm test -- tests/contract-fixtures.test.js --run -t 'TC-0547' --reporter=verbose`
+  — **1 passed, 3 selection skips**; the skips are Vitest selection output,
+  not skipped declarations.
+- **Adjacent owner suite:**
+  `npm test -- tests/contract-fixtures.test.js --run --reporter=verbose` —
+  **4 passed, 0 failed**.
+- **Adjacent protocol suites:**
+  `npm test -- tests/envelope.test.js tests/frame-fields.test.js tests/frame.test.js --run --reporter=dot`
+  — **14 passed, 0 failed**.
+- **Build:** `npm run build` — **passed**; Vite emitted only the existing
+  large-chunk advisory.
+- **Disposition:** **PASS / MIGRATED**, credit `1`. The current public
+  protocol vocabulary accepts the authoritative feed envelope without unknown
+  fields and preserves its channel identity. No product change or semantic
+  weakening was required.
+- **Final commit:** recorded below after this closeout and test-only tag.

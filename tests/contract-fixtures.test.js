@@ -15,7 +15,7 @@ describe('atoll contract v5 fixtures', () => {
     }
   });
 
-  it('keeps feed envelope fields within the real closed vocabulary', () => {
+  it('[TC-0547][AD-253] keeps feed envelope fields within the real closed vocabulary', () => {
     const envelope = fixtures.downstream.feed.payload.envelope;
     expect(Object.keys(envelope).filter((field) => !ENVELOPE_FIELDS.includes(field))).toEqual([]);
     expect(envelope.channel_id).toBe(fixtures.downstream.feed.payload.channel_id);
