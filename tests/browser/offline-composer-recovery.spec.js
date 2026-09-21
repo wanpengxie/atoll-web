@@ -49,6 +49,7 @@ test('offline draft restores after reload and sends exactly once when reconnecte
   await disconnect(context, page, request);
   await expect(editor).toBeEnabled();
   await expect(page.locator('.connection-state')).toHaveClass(/state-reconnecting/);
+  await expect(page.getByText(/离线编辑；发送会先保存到本机/)).toBeVisible();
   await expect(page.getByLabel('上传本机文件到频道')).toBeDisabled();
 
   await editor.pressSequentially('离线草稿跨刷新恢复');
