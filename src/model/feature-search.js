@@ -381,6 +381,98 @@ function participantSearchRow(actor, channel) {
   });
 }
 
+const OPERATION_TERMINAL_STATES = new Set([
+  'completed',
+  'cancelled',
+  'canceled',
+  'succeeded',
+  'success',
+  'done',
+  'settled',
+]);
+
+const PUBLIC_SOURCE_VIEWS = new Set(['dynamic', 'conversation', 'artifacts', 'files', 'tasks']);
+
+function operationSourceRef(operation, fallback) {
+  const source = operation?.source || {};
+  const channelId = string(source.channelId || fallback.channelId);
+  const objectId = string(source.objectId || fallback.objectId);
+  if (!channelId || !objectId) return null;
+  const view = PUBLIC_SOURCE_VIEWS.has(source.view)
+    ? source.view
+    : PUBLIC_SOURCE_VIEWS.has(fallback.view) ? fallback.view : 'dynamic';
+  const objectType = string(source.objectType || fallback.objectType) || 'operation';
+  const seq = finiteSeq(source.seq || fallback.seq);
+  const requestId = string(source.requestId || fallback.requestId);
+  const envelopeId = string(source.envelopeId || fallback.envelopeId);
+  return Object.freeze({
+    kind: 'operation',
+    channelId,
+    view,
+    objectType,
+    objectId,
+    ...(seq ? { seq } : {}),
+    ...(requestId ? { requestId } : {}),
+    ...(envelopeId ? { envelopeId } : {}),
+  });
+}
+
+function operationSearchRow(operation, fallbackChannelId, channelById) {
+  const channelId = string(operation?.channelId || operation?.source?.channelId || fallbackChannelId);
+  const channel = channelById.get(channelId);
+  const operationId = string(operation?.operationId || operation?.nativeId || operation?.id || operation?.key);
+  const state = string(operation?.state).toLocaleLowerCase('en-US');
+  if (!operationId || !channelCanExposeContent(channel)) return null;
+  const requestId = string(operation?.requestId || operation?.source?.requestId);
+  const source = operationSourceRef(operation, {
+    channelId,
+    view: 'dynamic',
+    objectType: 'operation',
+    objectId: operationId,
+    requestId,
+  });
+  if (!source) return null;
+  const title = string(operation?.title || operation?.name || operation?.detail) || operationId;
+  const detail = string(operation?.detail || operation?.description);
+  const updatedAt = timestamp(operation?.updatedAt, timestamp(operation?.createdAt, timestamp(operation?.startedAt)));
+  return Object.freeze({
+    key: `search:${channelId}:operation:${operationId}`,
+    id: operationId,
+    operationId,
+    kind: 'operation',
+    objectType: 'operation',
+    title,
+    subtitle: detail || state || '有更新',
+    text: normalizeSearchText(
+      title,
+      detail,
+      state,
+      operation?.kind,
+      requestId,
+      operation?.resourceId,
+      operation?.resource_id,
+    ),
+    state,
+    updatedAt,
+    channelId,
+    channelName: channelName(channel),
+    ...(requestId ? { requestId } : {}),
+    source,
+  });
+}
+
+function operationProjectionRows(operations, channelById) {
+  const latest = new Map();
+  for (const { row, channelId } of ownedRows(operations)) {
+    const operation = operationSearchRow(row, channelId, channelById);
+    if (!operation) continue;
+    const identity = `${operation.channelId}:operation:${operation.operationId}`;
+    const previous = latest.get(identity);
+    if (!previous || operation.updatedAt >= previous.updatedAt) latest.set(identity, operation);
+  }
+  return [...latest.values()].filter((operation) => !OPERATION_TERMINAL_STATES.has(operation.state));
+}
+
 // A pure projection over owner snapshots. Search neither loads history nor
 // retains a shadow corpus; every row disappears when its supplying snapshot
 // disappears. Message attachment references are derived from the same visible
@@ -392,6 +484,7 @@ export function selectFeatureSearchIndex({
   rosters = new Map(),
   tasks = [],
   files = [],
+  operations = [],
 } = {}) {
   const stateEntries = [...(states || [])];
   const stateByChannel = new Map(stateEntries);
@@ -438,17 +531,20 @@ export function selectFeatureSearchIndex({
     const file = fileSearchRow(row, channelId, channelById);
     if (file) rows.push(file);
   }
+  rows.push(...operationProjectionRows(operations, channelById));
 
   const unique = new Map();
   const requestFacts = new Map();
   for (const row of rows) {
-    const requestId = row.kind === 'turn'
+    const requestId = row.kind === 'operation'
+      ? row.requestId
+      : row.kind === 'turn'
       ? string(row.source?.requestId || row.source?.objectId)
       : row.kind === 'work_item' && ['agent_run', 'approval'].includes(row.workItemKind)
         ? row.requestId
         : '';
     const identity = requestId ? `${row.channelId}:request:${requestId}` : '';
-    const rank = row.kind === 'work_item' ? 0 : row.kind === 'turn' ? 2 : 9;
+    const rank = row.kind === 'work_item' ? 0 : row.kind === 'operation' ? 1 : row.kind === 'turn' ? 2 : 9;
     const previousFact = identity ? requestFacts.get(identity) : null;
     if (previousFact && (previousFact.rank < rank
       || (previousFact.rank === rank && previousFact.updatedAt >= Number(row.updatedAt || 0)))) continue;

@@ -1341,13 +1341,6 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       .filter((channel) => isMemberAccess(channel.access))
       .map((channel) => [channel.id, roster.rosters.get(channel.id) || EMPTY_ARRAY]),
   ), [roster.rosters, searchableChannels]);
-  const searchIndex = useMemo(() => selectFeatureSearchIndex({
-    states: searchableStates,
-    channels: searchableChannels,
-    rosters: searchableRosters,
-    tasks: new Map([[navigation.activeChannelId, contentVisible ? taskItems : EMPTY_ARRAY]]),
-    files: new Map([[navigation.activeChannelId, contentVisible ? attachments.entries : EMPTY_ARRAY]]),
-  }), [attachments.entries, contentVisible, navigation.activeChannelId, searchableChannels, searchableRosters, searchableStates, taskItems]);
   const panelKind = typeof panel === 'string' ? panel : panel?.kind || '';
   const selectedActor = panelKind === 'actor' ? panel.actor : null;
   const selectedActorChannelId = panelKind === 'actor' ? panel.channelId : navigation.activeChannelId;
@@ -1818,6 +1811,23 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       commands: Object.freeze({ open: openWorkspaceSource }),
     });
   }, [feed, navigation.channels, navigation.selfFor, openWorkspaceSource]);
+  const searchIndex = useMemo(() => selectFeatureSearchIndex({
+    states: searchableStates,
+    channels: searchableChannels,
+    rosters: searchableRosters,
+    tasks: new Map([[navigation.activeChannelId, contentVisible ? taskItems : EMPTY_ARRAY]]),
+    files: new Map([[navigation.activeChannelId, contentVisible ? attachments.entries : EMPTY_ARRAY]]),
+    operations: activityPort.operations,
+  }), [
+    activityPort.operations,
+    attachments.entries,
+    contentVisible,
+    navigation.activeChannelId,
+    searchableChannels,
+    searchableRosters,
+    searchableStates,
+    taskItems,
+  ]);
   // Terminal is a split-surface overlay.  It must not replace the committed
   // Files route: WorkspaceFeatures uses this view only to decide which
   // feature surface to materialize, while navigation remains the sole route

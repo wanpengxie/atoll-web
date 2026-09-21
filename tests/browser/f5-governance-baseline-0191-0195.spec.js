@@ -98,6 +98,23 @@ test('TC-0194 F5-004 创建操作进入 Operation Center 并可回到原频道�
   await expect(page.locator('main h1')).toHaveText('c0');
 });
 
+test('AD-004 全局搜索投影未收敛 Operation 并保留公开来源', async ({ page, request }) => {
+  await reset(request, 'long-running', 1506); await login(page);
+  await page.getByRole('button', { name: '选择 Agent' }).click();
+  await page.getByRole('menu', { name: '选择目标 Agent' })
+    .getByRole('menuitem', { name: 'steward' }).click();
+  const editor = page.getByRole('textbox', { name: '消息', exact: true });
+  await editor.fill('全局搜索中的运行操作');
+  await editor.press('Enter');
+  await expect(page.locator('.channel-agent-timer')).toHaveCount(1);
+  await page.getByRole('button', { name: '全局搜索', exact: true }).click();
+  const search = page.getByRole('dialog', { name: '全局搜索' });
+  await search.getByLabel('搜索频道、消息、文件、任务或成员').fill('全局搜索中的运行操作');
+  const result = search.getByRole('button', { name: /全局搜索中的运行操作/ });
+  await expect(result).toHaveCount(1);
+  await expect(result).toContainText('任务');
+});
+
 test('TC-0195 F5-005 全局搜索恢复频道、视图和 focus，权限撤销后不泄漏缓存', async ({ page, request }) => {
   await reset(request, 'multi-channel', 1505); await login(page);
   await page.getByRole('button', { name: '全局搜索' }).click();

@@ -158,6 +158,7 @@ const tasks = [{
   kind: 'approval',
   title: '批准上线',
   state: 'failed',
+  requestId: 'approval-1',
   updatedAt: 6,
   source: {
     channelId: 'c1', view: 'tasks', objectType: 'work_item', objectId: 'approval:c1:approval-1',
@@ -501,7 +502,14 @@ describe('A-D round 25 public-owner evidence', () => {
     const index = selectFeatureSearchIndex({
       states: [['c1', approvalState()]], channels, tasks, operations,
     });
-    expect(index.filter((entry) => entry.kind === 'operation')).toHaveLength(1);
+    expect(index.filter((entry) => entry.kind === 'operation')).toHaveLength(0);
+    expect(index.filter((entry) => entry.kind === 'work_item')).toEqual([
+      expect.objectContaining({
+        id: 'approval:c1:approval-1',
+        requestId: 'approval-1',
+        source: expect.objectContaining({ view: 'tasks' }),
+      }),
+    ]);
   });
 
   it('[AD-003] deduplicates Operation by channel/native id and retains latest unsettled state', () => {
