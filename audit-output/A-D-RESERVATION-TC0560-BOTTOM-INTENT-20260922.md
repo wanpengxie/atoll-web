@@ -57,3 +57,29 @@ committed.
 This is an atomic claim: this reservation report is committed before changing
 the test declaration. Closeout will append focused, adjacent, and build
 evidence plus the final PASS or bounded regression disposition.
+
+## Closeout — 2026-09-22
+
+- **Reservation commit:** `005f665` (`chore(a-d): reserve TC0560 bottom intent epoch fence`).
+- **Migration:** the retained declaration is tagged `[TC-0560][AD-266]`; its
+  `latest` request metadata, stale-activation rejection, matching activation
+  consume, one-shot clearing, and following-mode assertions remain unchanged.
+  No test was deleted/skipped and no private oracle, second store, or product
+  code was introduced.
+- **Focused:**
+  `npm test -- tests/conversation-viewport.test.js --run -t 'TC-0560' --reporter=verbose`
+  — **1 passed, 20 selection skips**; the skips are Vitest selection output,
+  not skipped declarations.
+- **Owner suite:**
+  `npm test -- tests/conversation-viewport.test.js --run --reporter=dot`
+  — **21 passed, 0 failed**.
+- **Adjacent reading suites:**
+  `npm test -- tests/reading-session-ports.test.js tests/reading-navigation-coordinator.test.js tests/reading-geometry.test.js --run --reporter=dot`
+  — **17 passed, 0 failed**.
+- **Build:** `npm run build` — **passed**; Vite emitted only the existing
+  large-chunk advisory.
+- **Disposition:** **PASS / MIGRATED**, credit `1`. The public reading-session
+  owner binds the explicit bottom intent to its activation/input epoch and
+  consumes it exactly once, while stale activation cannot clear it; no product
+  change or semantic weakening was required.
+- **Final commit:** recorded below after this closeout and test-only tag.

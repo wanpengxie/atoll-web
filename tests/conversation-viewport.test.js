@@ -335,7 +335,7 @@ describe('reading session authority', () => {
     expect(browsing.contentAnchor).toBeNull();
   });
 
-  it('consumes the one bottom intent only in its activation and input epoch', () => {
+  it('[TC-0560][AD-266] consumes the one bottom intent only in its activation and input epoch', () => {
     const requested = requestLatest(session(), 'latest', {
       afterPresentationRevision: 41,
       baselineTailID: 'm41',
