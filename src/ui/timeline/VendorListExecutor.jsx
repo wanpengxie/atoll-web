@@ -137,31 +137,78 @@ function isComposerSendIntent(intent) {
   return String(intent?.id || '').startsWith('composer:send-start:');
 }
 
-function isWaitingComposerTarget(row) {
-  const localState = String(row?.localState || '').toLowerCase();
-  const bodyState = String(row?.body?.state || '').toLowerCase();
-  const bodyLocalState = String(row?.body?.local_submission_state || '').toLowerCase();
-  return localState === 'waiting' || bodyState === 'waiting' || bodyLocalState === 'waiting';
-}
-
-// A send-start intent is a join between the explicit user action and the
-// committed destination rows. A role-only height callback must not stand in
-// for that join, and an unaccepted intent (with no durable target IDs yet)
-// must not consume itself against the old tail. A stale presentation revision
-// is equally unmeasured for this intent and remains pending until a current
-// public Presentation delivery arrives.
-function composerSendTargetsCommitted(intent, rows = [], presentationRevision = 0) {
-  if (!isComposerSendIntent(intent)) return true;
-  const targets = Array.isArray(intent.targetMessageIDs)
+function composerSendTargetIDs(intent) {
+  return Array.isArray(intent?.targetMessageIDs)
     ? intent.targetMessageIDs.map(String).filter(Boolean)
     : [];
-  const requiredRevision = Math.max(0, Number(intent.afterPresentationRevision) || 0);
-  const currentRevision = Number(presentationRevision);
-  if (!Number.isFinite(currentRevision) || currentRevision < requiredRevision) return false;
-  return targets.length > 0
-    && targets.every((targetID) => rows.some((row) => (
-      String(row?.id || '') === targetID && !isWaitingComposerTarget(row)
-    )));
+}
+
+function sameIDs(left = [], right = []) {
+  const a = [...new Set(left.map(String).filter(Boolean))];
+  const b = [...new Set(right.map(String).filter(Boolean))];
+  return a.length === b.length && a.every((id) => b.includes(id));
+}
+
+function currentBottomPresentation(receipt, intent, current, snapshot) {
+  if (!receipt || receipt.kind !== 'bottom-intent-presentation' || !intent) return null;
+  const targetIDs = composerSendTargetIDs(intent);
+  const destinations = Array.isArray(receipt.destinations) ? receipt.destinations : null;
+  if (!targetIDs.length
+    || receipt.intentID !== intent.id
+    || receipt.activationID !== current.activationID
+    || Number(receipt.inputEpoch) !== Number(current.inputEpoch)
+    || !Number.isSafeInteger(Number(receipt.inputEpoch))
+    || !Number.isSafeInteger(Number(receipt.intentRevision))
+    || Number(receipt.intentRevision) !== Number(current.intentRevision || 0)
+    || Number(receipt.presentationRevision) !== Number(snapshot?.revision || 0)
+    || Number(snapshot?.revision || 0) < Math.max(0, Number(intent.afterPresentationRevision) || 0)
+    || typeof receipt.ready !== 'boolean'
+    || !destinations
+    || !Array.isArray(receipt.targetIDs)
+    || !sameIDs(receipt.targetIDs, targetIDs)
+    || destinations.length > targetIDs.length
+    || new Set(destinations.map((destination) => String(destination?.messageID || ''))).size !== destinations.length
+    || destinations.some((destination) => (
+      !destination
+      || !targetIDs.includes(String(destination.messageID || ''))
+      || !['timeline', 'waiting'].includes(destination.destination)
+      || (destination.targetListRevision != null
+        && Number(destination.targetListRevision) !== Number(snapshot?.revision || 0))
+    ))
+    || (receipt.ready === true && !sameIDs(
+      destinations.map((destination) => destination.messageID), targetIDs,
+    ))) return null;
+  return receipt;
+}
+
+function hasIndependentTailAppend(snapshot, intent) {
+  const targetIDs = new Set(composerSendTargetIDs(intent));
+  const changes = snapshot?.changes;
+  const appended = Array.isArray(changes?.backInsertedIDs)
+    ? changes.backInsertedIDs.map(String).filter(Boolean)
+    : [];
+  return appended.length > 0
+    && (changes?.kind === 'append' || changes?.kind === 'mixed')
+    && appended.every((id) => !targetIDs.has(id));
+}
+
+function emptyBottomMeasurement() {
+  return {
+    root: null,
+    rootIdentity: 0,
+    generation: 0,
+    activationID: '',
+    inputEpoch: 0,
+    intentRevision: 0,
+    intentID: '',
+    presentationRevision: 0,
+    roleRevision: 0,
+    height: NaN,
+    clientHeight: NaN,
+    rowIDs: Object.freeze([]),
+    ackSeq: 0,
+    readyAtAck: false,
+  };
 }
 
 function observationIdentity(owner, data, rootIdentity = 0) {
@@ -264,6 +311,7 @@ export function VendorListExecutor({
   snapshot,
   reading,
   surfaceVisible = false,
+  bottomIntentPresentation = null,
   historyStartBoundary = null,
   rowRevision,
   rowPresentationState,
@@ -310,6 +358,10 @@ export function VendorListExecutor({
   // consuming the intent cannot immediately issue the same tail write again
   // before the first write is observed.
   const tailWriteRef = useRef(null);
+  // This is physical list evidence only. Presentation readiness remains an
+  // explicit typed receipt; this ref joins that receipt to the next committed
+  // Virtuoso height without creating a second semantic owner.
+  const bottomMeasurementRef = useRef(emptyBottomMeasurement());
   // A history lease is terminal after its actual-paint fence succeeds or
   // fails. Keep that outcome for the current input epoch so the ordinary
   // bookmark path cannot replay a second position-row command in the same
@@ -334,6 +386,7 @@ export function VendorListExecutor({
   const { navigationPolicy, reportDomEvidence } = readingController;
   const readingRef = useRef(reading);
   const snapshotRef = useRef(snapshot);
+  const bottomIntentPresentationRef = useRef(bottomIntentPresentation);
   // Virtuoso retains the callback from the render that installed it. A late
   // height notification must not resolve through readingRef into a successor
   // activation or history generation; that would let an old owner write a
@@ -351,6 +404,7 @@ export function VendorListExecutor({
     // while the existing RAF/event cleanup already retires the old root.
     if (!node) {
       tailWriteRef.current = null;
+      bottomMeasurementRef.current = emptyBottomMeasurement();
       tailGeometryRef.current = { root: null, scrollHeight: NaN, clientHeight: NaN };
       rootMountedRef.current = false;
       rootRef.current = null;
@@ -359,6 +413,7 @@ export function VendorListExecutor({
     rootMountedRef.current = true;
     if (rootIdentityRef.current.node !== node) {
       tailWriteRef.current = null;
+      bottomMeasurementRef.current = emptyBottomMeasurement();
       tailGeometryRef.current = { root: null, scrollHeight: NaN, clientHeight: NaN };
       const generation = rootIdentityRef.current.generation + 1;
       rootIdentityRef.current = {
@@ -389,7 +444,8 @@ export function VendorListExecutor({
   useLayoutEffect(() => {
     readingRef.current = reading;
     snapshotRef.current = snapshot;
-  }, [reading, snapshot]);
+    bottomIntentPresentationRef.current = bottomIntentPresentation;
+  }, [bottomIntentPresentation, reading, snapshot]);
 
   const publishCoverageEvidence = useCallback((evidence) => {
     const owner = readingRef.current;
@@ -795,8 +851,11 @@ export function VendorListExecutor({
       || current.mode !== READING_MODE.following
       // A composer send owns the first committed destination join. Until its
       // typed intent is consumed, a role-only/list-height callback is not an
-      // independent tail authorization.
-      || (intent && isComposerSendIntent(intent))
+      // independent tail authorization. A Presentation append unrelated to
+      // the target is the ordinary-following exception and does not consume
+      // the send intent.
+      || (intent && isComposerSendIntent(intent)
+        && !hasIndependentTailAppend(snapshotRef.current, intent))
       // A newer-direction native gesture that has already reached the physical
       // tail is the same reading intent as following. Keep that intent alive if
       // an append lands before the coordinator's quiet deadline; older input
@@ -819,10 +878,42 @@ export function VendorListExecutor({
     const current = owner?.getSession?.();
     const intent = currentBottomIntent(current);
     if (!root || !current || current.mode !== READING_MODE.following || !data?.rows?.length || !intent
-      || (isComposerSendIntent(intent) && !composerSendTargetsCommitted(intent, data.rows, data.revision))
       || Number(root.clientHeight) <= 0 || Number(root.scrollHeight) <= 0) return false;
     const key = `tail:${current.activationID}:${intent.id}`;
     if (consumedCommandRef.current === key) return false;
+    if (isComposerSendIntent(intent)) {
+      const receipt = currentBottomPresentation(
+        bottomIntentPresentationRef.current,
+        intent,
+        current,
+        data,
+      );
+      const targetIDs = composerSendTargetIDs(intent);
+      const timelineTargets = receipt?.destinations?.filter(
+        (destination) => destination.destination === 'timeline',
+      ) || [];
+      const measurement = bottomMeasurementRef.current;
+      const rootIdentity = currentRootIdentity(root);
+      const generation = Number(owner.status?.generation || 0);
+      const measuredRows = new Set(measurement.rowIDs || []);
+      const measurementCurrent = measurement.root === root
+        && Number(measurement.rootIdentity) === Number(rootIdentity)
+        && Number(measurement.generation) === generation
+        && String(measurement.activationID) === String(current.activationID)
+        && Number(measurement.inputEpoch) === Number(current.inputEpoch)
+        && Number(measurement.intentRevision) === Number(current.intentRevision || 0)
+        && String(measurement.intentID) === String(intent.id)
+        && Number(measurement.presentationRevision) === Number(data.revision || 0)
+        && Number(measurement.roleRevision) === Number(data.roleRevision || 0)
+        && measurement.ackSeq > 0
+        && measurement.readyAtAck === true
+        && timelineTargets.every((destination) => measuredRows.has(String(destination.messageID)));
+      // The Presentation receipt and the physical height ack are separate
+      // local UI facts. A role-only callback, an equal-height baseline, or a
+      // stale root cannot authorize this send join.
+      if (!receipt?.ready
+        || !measurementCurrent) return false;
+    }
     const atTail = Number(root.scrollHeight) - Number(root.clientHeight) - Number(root.scrollTop) <= FOLLOWING_TAIL_GAP_TOLERANCE_PX;
     // A send-start join still needs its committed target-height fence even if
     // the old root happens to be at the physical tail. Explicit latest has no
@@ -838,7 +929,7 @@ export function VendorListExecutor({
     consumedCommandRef.current = key;
     owner.consumeBottomIntent(intent);
     return true;
-  }, [writeTailOnce]);
+  }, [currentRootIdentity, scheduleObserve, writeTailOnce]);
 
   const scheduleFollowingHeightRetry = useCallback(() => {
     const owner = readingRef.current;
@@ -1672,6 +1763,49 @@ export function VendorListExecutor({
       if (!callbackRoot || rootRef.current !== callbackRoot
         || String(liveOwner?.activationID || liveSession?.activationID || '') !== callbackActivationID
         || Number(liveOwner?.status?.generation || 0) !== callbackGeneration) return;
+      const liveSnapshot = snapshotRef.current || {};
+      const liveIntent = currentBottomIntent(liveSession);
+      const livePresentation = currentBottomPresentation(
+        bottomIntentPresentationRef.current,
+        liveIntent,
+        liveSession,
+        liveSnapshot,
+      );
+      const liveRootIdentity = currentRootIdentity(callbackRoot);
+      const mountedRows = typeof callbackRoot.querySelectorAll === 'function'
+        ? callbackRoot.querySelectorAll('[data-presentation-row-id]')
+        : [];
+      const liveRowIDs = Object.freeze([
+        ...new Set([...mountedRows]
+          .map((node) => String(node.dataset?.presentationRowId || ''))
+          .filter(Boolean)),
+      ]);
+      const previousMeasurement = bottomMeasurementRef.current;
+      const sameMeasurementTuple = previousMeasurement.root === callbackRoot
+        && Number(previousMeasurement.rootIdentity) === Number(liveRootIdentity)
+        && Number(previousMeasurement.generation) === Number(liveOwner?.status?.generation || 0)
+        && String(previousMeasurement.activationID) === String(liveSession?.activationID || liveOwner?.activationID || '')
+        && Number(previousMeasurement.inputEpoch) === Number(liveSession?.inputEpoch || 0)
+        && Number(previousMeasurement.intentRevision) === Number(liveSession?.intentRevision || 0)
+        && String(previousMeasurement.intentID) === String(liveIntent?.id || '')
+        && Number(previousMeasurement.presentationRevision) === Number(liveSnapshot.revision || 0)
+        && Number(previousMeasurement.roleRevision) === Number(liveSnapshot.roleRevision || 0);
+      bottomMeasurementRef.current = Object.freeze({
+        root: callbackRoot,
+        rootIdentity: liveRootIdentity,
+        generation: Number(liveOwner?.status?.generation || 0),
+        activationID: String(liveSession?.activationID || liveOwner?.activationID || ''),
+        inputEpoch: Number(liveSession?.inputEpoch || 0),
+        intentRevision: Number(liveSession?.intentRevision || 0),
+        intentID: String(liveIntent?.id || ''),
+        presentationRevision: Number(liveSnapshot.revision || 0),
+        roleRevision: Number(liveSnapshot.roleRevision || 0),
+        height: Number(callbackRoot.scrollHeight),
+        clientHeight: Number(callbackRoot.clientHeight),
+        rowIDs: liveRowIDs,
+        ackSeq: sameMeasurementTuple ? Number(previousMeasurement.ackSeq || 0) + 1 : 1,
+        readyAtAck: livePresentation?.ready === true,
+      });
       const nextGeometry = {
         root: callbackRoot,
         scrollHeight: Number(callbackRoot.scrollHeight),

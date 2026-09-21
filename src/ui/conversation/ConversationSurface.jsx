@@ -19,6 +19,59 @@ import { ReadingIntentProvider } from './ReadingIntentContext.jsx';
 const EMPTY_CAPABILITY_INDEX = new Map();
 const SHOW_CHANNEL_NARRATION = true;
 
+function waitingDestination(row) {
+  const localState = String(row?.localState || '').toLowerCase();
+  const bodyState = String(row?.body?.state || '').toLowerCase();
+  const bodyLocalState = String(row?.body?.local_submission_state || '').toLowerCase();
+  return localState === 'waiting' || bodyState === 'waiting' || bodyLocalState === 'waiting';
+}
+
+// Presentation publishes this local UI readiness receipt after the Composer's
+// explicit send intent has bound target identities. It is not backend
+// acceptance and carries no business truth: Vendor joins it to its own
+// physical height/root measurement before issuing the sole DOM command.
+function bottomIntentPresentationOf({ intent, activationID, inputEpoch, intentRevision, snapshot, queuedTurns }) {
+  const targetIDs = Array.isArray(intent?.targetMessageIDs)
+    ? [...new Set(intent.targetMessageIDs.map(String).filter(Boolean))]
+    : [];
+  if (!intent?.id || !targetIDs.length) return null;
+  const revision = Number(snapshot?.revision || 0);
+  const rows = Array.isArray(snapshot?.rows) ? snapshot.rows : [];
+  const queued = new Set((queuedTurns || []).map((turn) => String(turn?.requestId || '')).filter(Boolean));
+  let blockedWaiting = false;
+  const destinations = targetIDs.flatMap((messageID) => {
+    const row = rows.find((candidate) => String(candidate?.id || '') === messageID);
+    if (row) {
+      const waiting = waitingDestination(row);
+      if (waiting) blockedWaiting = true;
+      return [{
+        messageID,
+        destination: waiting || row.local === true || row.localState ? 'waiting' : 'timeline',
+        targetListRevision: revision,
+      }];
+    }
+    if (queued.has(messageID)) return [{
+      messageID,
+      destination: 'waiting',
+      targetListRevision: revision,
+    }];
+    return [];
+  });
+  const ready = destinations.length === targetIDs.length
+    && !blockedWaiting;
+  return Object.freeze({
+    kind: 'bottom-intent-presentation',
+    intentID: String(intent.id),
+    activationID: String(activationID || ''),
+    inputEpoch: Number(inputEpoch ?? intent.inputEpoch ?? 0),
+    intentRevision: Number(intentRevision || 0),
+    presentationRevision: revision,
+    targetIDs: Object.freeze(targetIDs),
+    ready,
+    destinations: Object.freeze(destinations.map((destination) => Object.freeze(destination))),
+  });
+}
+
 /**
  * The stable shell-facing conversation port.
  *
@@ -165,6 +218,21 @@ export function ConversationSurface({
     queuedTurns,
     projection.presentation.rows,
   );
+  const bottomIntentPresentation = useMemo(() => bottomIntentPresentationOf({
+    intent: viewport.session?.bottomIntent,
+    activationID: viewport.activationID,
+    inputEpoch: viewport.session?.inputEpoch,
+    intentRevision: viewport.session?.intentRevision,
+    snapshot: projection.presentation,
+    queuedTurns,
+  }), [
+    projection.presentation,
+    queuedTurns,
+    viewport.activationID,
+    viewport.session?.bottomIntent,
+    viewport.session?.inputEpoch,
+    viewport.session?.intentRevision,
+  ]);
   const rowPresentationState = useCallback(
     (row) => waitingHandoff.enteringRequestIDs.has(row.id) ? 'handoff-enter' : '',
     [waitingHandoff.enteringRequestIDs],
@@ -348,6 +416,7 @@ export function ConversationSurface({
                   snapshot={projection.presentation}
                   reading={viewport}
                   surfaceVisible={surfaceVisible}
+                  bottomIntentPresentation={bottomIntentPresentation}
                   rowRevision={rowRenderRevision}
                   rowPresentationState={rowPresentationState}
                   livePresentationArrivals={livePresentationArrivals}

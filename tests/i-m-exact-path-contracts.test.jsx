@@ -550,6 +550,68 @@ function setRound35Geometry(node, {
   return node;
 }
 
+// Keep the send-join fixtures tied to the current public handoff. The range
+// receipt is the adapter's typed presentation-ready fact; the height callback
+// below is the separate physical measurement. Neither helper reaches through
+// the Vendor owner or invents a test-only production prop.
+function capturePublicPresentationReady(reading, snapshot) {
+  const firstItemIndex = Number(snapshot.firstItemIndex || 0);
+  const ready = Object.freeze({
+    activationID: reading.activationID,
+    presentationRevision: Number(snapshot.revision || 0),
+    startIndex: firstItemIndex,
+    endIndex: firstItemIndex + snapshot.rows.length - 1,
+  });
+  expect(reading.onPresentationMaterialized).toHaveBeenLastCalledWith(ready);
+  return ready;
+}
+
+function publishPublicPhysicalMeasurement({
+  reading,
+  snapshot,
+  root,
+  presentationReady,
+  clientHeight = 600,
+  scrollHeight,
+  scrollTop = 400,
+}) {
+  expect(presentationReady).toMatchObject({
+    activationID: reading.activationID,
+    presentationRevision: Number(snapshot.revision || 0),
+  });
+  const measurement = Object.freeze({
+    activationID: reading.activationID,
+    presentationRevision: Number(snapshot.revision || 0),
+    clientHeight,
+    scrollHeight,
+    scrollTop,
+  });
+  setRound35Geometry(root, measurement);
+  act(() => vendorHarness.props.totalListHeightChanged());
+  return measurement;
+}
+
+function round36BottomPresentation(reading, snapshot, intent, ready) {
+  const targetIDs = intent.targetMessageIDs.map(String);
+  return Object.freeze({
+    kind: 'bottom-intent-presentation',
+    intentID: intent.id,
+    activationID: reading.activationID,
+    inputEpoch: Number(reading.session.inputEpoch || 0),
+    intentRevision: Number(reading.session.intentRevision || 0),
+    presentationRevision: Number(snapshot.revision || 0),
+    targetIDs: Object.freeze(targetIDs),
+    ready: ready === true,
+    destinations: Object.freeze(ready === true
+      ? targetIDs.map((messageID) => Object.freeze({
+        messageID,
+        destination: 'timeline',
+        targetListRevision: Number(snapshot.revision || 0),
+      }))
+      : []),
+  });
+}
+
 function liveCheckpointOptions() {
   return {
     wireRef: { current: null },
@@ -3492,10 +3554,13 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     reading.session = { ...reading.session, bottomIntent: intent };
     const first = round33Row('ready-first', 1);
     const target = { ...round33Row('round36-target', 2), body: { local: false } };
+    const initialSnapshot = round33Snapshot([first], { revision: 1 });
+    const initialPresentation = round36BottomPresentation(reading, initialSnapshot, intent, false);
     const view = render(
       <VendorListExecutor
-        snapshot={round33Snapshot([first], { revision: 1 })}
+        snapshot={initialSnapshot}
         reading={reading}
+        bottomIntentPresentation={initialPresentation}
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
@@ -3506,10 +3571,13 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     });
     vendorHarness.scrollTo.mockClear();
 
+    const targetSnapshot = round33Snapshot([first, target], { revision: 2 });
+    const targetPresentation = round36BottomPresentation(reading, targetSnapshot, intent, true);
     view.rerender(
       <VendorListExecutor
-        snapshot={round33Snapshot([first, target], { revision: 2 })}
+        snapshot={targetSnapshot}
         reading={reading}
+        bottomIntentPresentation={targetPresentation}
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
@@ -3536,10 +3604,13 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     const reading = installSemanticBottomIntentConsumer(round34Reading({ mode: READING_MODE.following }));
     reading.session = { ...reading.session, bottomIntent: intent };
     const first = round33Row('later-height-first', 1);
+    const initialSnapshot = round33Snapshot([first], { revision: 1 });
+    const initialPresentation = round36BottomPresentation(reading, initialSnapshot, intent, false);
     const view = render(
       <VendorListExecutor
-        snapshot={round33Snapshot([first], { revision: 1 })}
+        snapshot={initialSnapshot}
         reading={reading}
+        bottomIntentPresentation={initialPresentation}
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
@@ -3550,10 +3621,13 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     });
     vendorHarness.scrollTo.mockClear();
 
+    const targetSnapshot = round33Snapshot([first, { ...round33Row('round36-target-later', 2), body: { local: false } }], { revision: 2 });
+    const pendingPresentation = round36BottomPresentation(reading, targetSnapshot, intent, false);
     view.rerender(
       <VendorListExecutor
-        snapshot={round33Snapshot([first, { ...round33Row('round36-target-later', 2), body: { local: false } }], { revision: 2 })}
+        snapshot={targetSnapshot}
         reading={reading}
+        bottomIntentPresentation={pendingPresentation}
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
@@ -3562,6 +3636,15 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
     expect(reading.getSession().bottomIntent.id).toBe(intent.id);
 
+    const readyPresentation = round36BottomPresentation(reading, targetSnapshot, intent, true);
+    view.rerender(
+      <VendorListExecutor
+        snapshot={targetSnapshot}
+        reading={reading}
+        bottomIntentPresentation={readyPresentation}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
     setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_200, scrollTop: 400 });
     act(() => vendorHarness.props.totalListHeightChanged());
     expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
@@ -3834,10 +3917,12 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     const first = round33Row('round37-pending-first', 1);
     const unrelated = round33Row('round37-waiting-a', 2);
     const target = { ...round33Row('round37-target-b', 3), localState: 'queued', body: { local: true } };
+    const initialSnapshot = round33Snapshot([first], { revision: 1 });
     const view = render(
       <VendorListExecutor
-        snapshot={round33Snapshot([first], { revision: 1 })}
+        snapshot={initialSnapshot}
         reading={reading}
+        bottomIntentPresentation={round36BottomPresentation(reading, initialSnapshot, intent, false)}
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
@@ -3848,10 +3933,22 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     });
     vendorHarness.scrollTo.mockClear();
 
+    const unrelatedSnapshot = {
+      ...round33Snapshot([first, unrelated], { revision: 2 }),
+      changes: {
+        kind: 'append',
+        inserted: [unrelated.id],
+        frontInsertedIDs: [],
+        backInsertedIDs: [unrelated.id],
+        updated: [],
+        removed: [],
+      },
+    };
     view.rerender(
       <VendorListExecutor
-        snapshot={round33Snapshot([first, unrelated], { revision: 2 })}
+        snapshot={unrelatedSnapshot}
         reading={reading}
+        bottomIntentPresentation={round36BottomPresentation(reading, unrelatedSnapshot, intent, false)}
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
@@ -3861,10 +3958,12 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_132, behavior: 'auto' });
     expect(reading.getSession().bottomIntent.id).toBe(intent.id);
 
+    const queuedSnapshot = round33Snapshot([first, unrelated, target], { revision: 3 });
     view.rerender(
       <VendorListExecutor
-        snapshot={round33Snapshot([first, unrelated, target], { revision: 3 })}
+        snapshot={queuedSnapshot}
         reading={reading}
+        bottomIntentPresentation={round36BottomPresentation(reading, queuedSnapshot, intent, false)}
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
