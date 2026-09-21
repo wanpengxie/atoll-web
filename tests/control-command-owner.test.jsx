@@ -23,7 +23,10 @@ function turn() {
   };
 }
 
-function harness({ submit = vi.fn().mockResolvedValue({ message_id: 'stop-1' }) } = {}) {
+function harness({
+  submit = vi.fn().mockResolvedValue({ message_id: 'stop-1' }),
+  resolve = vi.fn().mockResolvedValue({ request_id: 'request-1' }),
+} = {}) {
   const store = createOutboxStore({ databaseName: databaseName() });
   const access = {
     relationship: 'member', existence: 'present', runtime: 'open', freshness: 'fresh',
@@ -34,12 +37,13 @@ function harness({ submit = vi.fn().mockResolvedValue({ message_id: 'stop-1' }) 
     principalId: 'human:root:1',
     producerOwnerToken: 'owner-1',
     wireState: 'open',
-    wireRef: { current: { submit } },
+    wireRef: { current: { submit, resolve } },
     accessRef: { current: { state: () => access } },
     rosterRef: { current: { recordSubmission: vi.fn(), forgetSubmission: vi.fn() } },
     onError: vi.fn(), onNotice: vi.fn(), onFeedChanged: vi.fn(), onAccessChanged: vi.fn(),
     outboxFactory: () => store,
     submit,
+    resolve,
     store,
   };
 }
@@ -155,6 +159,31 @@ describe('submission control owner', () => {
       },
     }))).rejects.toMatchObject({ code: 'control_authority_stale' });
     expect(config.submit).not.toHaveBeenCalled();
+    unmount();
+    config.store.close();
+  });
+
+  it('projects a resolve rejection as serializable approval error data', async () => {
+    const failure = Object.assign(new Error('raw backend wording must stay private'), {
+      code: 'resolve_rejected',
+      detail: '服务端拒绝审批结果',
+    });
+    const config = harness({ resolve: vi.fn().mockRejectedValue(failure) });
+    const { result, unmount } = renderHook(() => useComposerSubmissionRuntime(config));
+    await waitFor(() => expect(result.current.pending).toEqual([]));
+
+    await act(async () => {
+      await expect(result.current.resolve('c0', 'request-1', 'approve')).rejects.toBe(failure);
+    });
+    await waitFor(() => expect(result.current.approvalStates['request-1']).toEqual({
+      error: { code: 'resolve_rejected', detail: '服务端拒绝审批结果' },
+    }));
+    expect(result.current.approvalStates['request-1'].error).not.toBeInstanceOf(Error);
+    expect(JSON.parse(JSON.stringify(result.current.approvalStates['request-1'])))
+      .toEqual({ error: { code: 'resolve_rejected', detail: '服务端拒绝审批结果' } });
+    expect(config.resolve).toHaveBeenCalledWith({
+      channel_id: 'c0', req_id: 'request-1', decision: 'approve',
+    });
     unmount();
     config.store.close();
   });

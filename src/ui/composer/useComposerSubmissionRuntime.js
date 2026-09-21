@@ -1036,7 +1036,10 @@ export function useComposerSubmissionRuntime({
       setApprovalStates((current) => ({ ...current, [reqId]: 'resolved' }));
       return value;
     } catch (error) {
-      setApprovalStates((current) => ({ ...current, [reqId]: { error } }));
+      setApprovalStates((current) => ({
+        ...current,
+        [reqId]: { error: serializedControlError(error) },
+      }));
       throw error;
     }
   }, [ownedWireCommand]);
