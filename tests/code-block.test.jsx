@@ -15,7 +15,7 @@ describe('围栏代码块', () => {
     expect(prismLanguageOf('bash')).toBe('plain');
   });
 
-  it('渲染顶栏（语言 + 复制）、高亮 token，并保留 pre > code 结构与原文', async () => {
+  it('[TC-0512][AD-218] 渲染顶栏（语言 + 复制）、高亮 token，并保留 pre > code 结构与原文', async () => {
     const source = '```go\nfunc main() {\n\tfmt.Println("hi")\n}\n```';
     const { container } = render(<MarkdownContent text={source} />);
     const block = container.querySelector('figure.code-block');
