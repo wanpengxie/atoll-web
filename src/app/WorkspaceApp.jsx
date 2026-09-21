@@ -1373,6 +1373,8 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     busy: attachments.filesBusy,
     uploading: attachments.filesUploading,
     error: attachments.filesError,
+    resourceAvailable: contentVisible && wire.state === 'open' && typeof attachments.resource === 'function',
+    resourceWriteDisabled: !canWrite,
     recent: attachments.recentFiles,
     next: attachments.filesNext,
     scrollTop: attachments.filesScrollTop,
@@ -1406,6 +1408,9 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
         media_type: entry.mediaType || 'application/octet-stream',
         size: Number(entry.size || 0),
       }),
+      // Advanced resources use the same authority-fenced resource owner as
+      // the Files surface. The feature never reaches through to wire.
+      resource: attachments.resource,
       createDirectory: attachments.createDirectory,
       download: attachments.downloadFile,
       navigate: attachments.navigateFiles,
@@ -1908,6 +1913,16 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     return openChannelAdministration();
   }, [memberVisible, navigation.activeChannelId, navigation.setFocus, openChannelAdministration]);
 
+  const openResources = () => {
+    if (!contentVisible) {
+      setChannelNotice(ACCESS_NOTICE[activeAccess] || '当前频道不可访问。');
+      return false;
+    }
+    setPanel('resources');
+    return true;
+  };
+  const channelRestartReason = '当前会话没有频道级 system.member.restart_all 命令端口；可使用 Composer 的 /restart 定向重启 Agent。';
+
   if (wire.incompatible) return <VersionIncompatible
     expectedVersion={wire.incompatible.expected_version ?? wire.incompatible.expected}
     receivedVersion={wire.incompatible.received_version ?? wire.incompatible.received}
@@ -1952,6 +1967,29 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       openActivity: () => setPanel('activity'),
       update: wire.update,
       openReadingHistory: contentVisible ? () => setPanel('reading-history') : undefined,
+      openResources,
+      channelRestart: {
+        available: false,
+        reason: channelRestartReason,
+        invoke: () => {
+          setChannelNotice(channelRestartReason);
+          return false;
+        },
+      },
+      // Keep the old menu item visible even when the current access projection
+      // cannot open the create owner. The member-gated callback is still the
+      // only owner of the modal; this fallback only publishes a truthful
+      // unavailable notice.
+      openChannelCreate: (initialTab = 'overview') => {
+        if (!memberVisible) {
+          setChannelNotice(activeAccess === 'loading'
+            ? ACCESS_NOTICE.loading
+            : ACCESS_NOTICE[activeAccess] || '当前频道不可写。');
+          return false;
+        }
+        openChannelAdministration(initialTab);
+        return true;
+      },
       openChannelAdministration: memberVisible ? openChannelAdministration : undefined,
       openChannelDetails: memberVisible ? openChannelDetails : undefined,
       openSpaceAdministration: () => setPanel('space-administration'),

@@ -92,6 +92,8 @@
 .advanced-resources > p { margin: 6px 0 10px; font-size: 11px; }
 .embedded-resources > .panel-tabs { padding-right: 0; padding-left: 0; }
 .embedded-resources .panel-card { box-shadow: none; }
+.resource-files-embed { min-width: 0; min-height: 0; height: 100%; margin: -10px; }
+.resource-files-embed > .channel-files-view { height: 100%; }
 .artifact-context .side-panel-scroll { display: grid; padding: 0; overflow: hidden; }
 .artifact-context-preview { width: 100%; height: 100%; min-height: 0; display: grid; place-items: center; overflow: hidden; background: var(--raised); }
 .artifact-context-preview p { color: var(--text-muted); font-size: 11px; }

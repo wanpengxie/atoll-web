@@ -649,8 +649,18 @@ export function WorkspaceLayout({
             {channelMenuOpen && <div className="channel-menu-popover" role="menu" aria-label="频道操作菜单" onKeyDown={moveChannelMenu}>
               {(navigation.openChannelDetails || navigation.openChannelAdministration) && <button type="button" role="menuitem" onClick={() => runChannelMenuAction(navigation.openChannelDetails || navigation.openChannelAdministration)}>频道详情</button>}
               {navigation.openAutomation && <button type="button" role="menuitem" onClick={() => runChannelMenuAction(navigation.openAutomation)}>定时动作</button>}
+              {navigation.openResources && <button type="button" role="menuitem" onClick={() => runChannelMenuAction(navigation.openResources)}>高级资源工具</button>}
+              {(navigation.openChannelCreate || navigation.openChannelAdministration) && <button type="button" role="menuitem" onClick={() => runChannelMenuAction(navigation.openChannelCreate || (() => navigation.openChannelAdministration('overview')))}>新建子频道</button>}
               <button type="button" role="menuitem" className="mobile-channel-menu-action" onClick={() => runChannelMenuAction(toggleFiles)}>{filesOpen ? '关闭文件' : '打开文件'}</button>
               {navigation.openTerminal && <button type="button" role="menuitem" className="mobile-channel-menu-action" disabled={!channel || terminalTransitionPending} onClick={() => runChannelMenuAction(toggleTerminal)}>{navigation.terminalVisible ? '关闭终端' : '打开终端'}</button>}
+              {navigation.channelRestart && <button
+                type="button"
+                role="menuitem"
+                data-capability-state={navigation.channelRestart.available === false ? 'unsupported' : 'available'}
+                title={navigation.channelRestart.reason || '重启频道'}
+                disabled={!channel || typeof navigation.channelRestart.invoke !== 'function'}
+                onClick={() => runChannelMenuAction(navigation.channelRestart.invoke)}
+              >重启频道</button>}
             </div>}
           </div>
         </div>
@@ -671,6 +681,15 @@ export function WorkspaceLayout({
       <div className="workspace-quick-actions">
         <button ref={filesToggleRef} id="workspace-files-toggle" type="button" className={`terminal-split-toggle${filesOpen ? ' active' : ''}`} aria-pressed={filesOpen} disabled={!channel} onClick={toggleFiles}><span aria-hidden="true">▤</span>文件</button>
         {navigation.openTerminal && <button id="workspace-terminal-toggle" type="button" className={`terminal-split-toggle${navigation.terminalVisible ? ' active' : ''}`} aria-pressed={navigation.terminalVisible} disabled={!channel || terminalTransitionPending} onClick={toggleTerminal}><span aria-hidden="true">▥</span>终端</button>}
+        {navigation.channelRestart && <button
+          id="workspace-channel-restart"
+          type="button"
+          className="channel-restart-action"
+          data-capability-state={navigation.channelRestart.available === false ? 'unsupported' : 'available'}
+          title={navigation.channelRestart.reason || '重启频道'}
+          disabled={!channel || typeof navigation.channelRestart.invoke !== 'function'}
+          onClick={() => navigation.channelRestart.invoke?.()}
+        ><span aria-hidden="true">⟳</span>重启频道</button>}
       </div>
       <div className="status-stack">
         {notices.error && <div className="top-error" role="alert"><span>{notices.error}</span><button type="button" onClick={notices.dismissError} aria-label="关闭错误">×</button></div>}

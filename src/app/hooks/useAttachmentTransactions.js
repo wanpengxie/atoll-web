@@ -499,6 +499,27 @@ export function useAttachmentTransactions({
     }
   }, [accessRef, assessFileOperation, committedOwnerRef, drafts, sendResource, serverWorldCommittedRef, wireRef]);
 
+  // The resource frame is still owned by this hook even when the caller is a
+  // KV/resource tool rather than the Files surface. Keep the same channel,
+  // authority, world and transport fences as file operations; exposing the
+  // method does not create a second resource store or a raw wire escape hatch.
+  const resource = useCallback((payload = {}) => {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      return Promise.reject(new TypeError('资源操作请求格式不正确'));
+    }
+    const requestedChannelId = String(payload.channel_id || '');
+    const channelId = requestedChannelId || String(activeChannelRef.current || '');
+    if (!channelId || (requestedChannelId && requestedChannelId !== String(activeChannelRef.current || ''))) {
+      return Promise.reject(new TypeError('资源操作频道已切换'));
+    }
+    const operation = String(payload.op || '');
+    const access = ['create', 'write', 'delete'].includes(operation) ? 'write' : 'read';
+    return runFileOperation({ channelId, access }, (request) => request.resource({
+      ...payload,
+      channel_id: channelId,
+    }));
+  }, [activeChannelRef, runFileOperation]);
+
   const refreshDevices = useCallback(async (channelId = activeChannelRef.current) => {
     if (!channelId || !obsRef?.current) return [];
     const request = beginRequest(deviceRequestRef, channelId);
@@ -1170,6 +1191,7 @@ export function useAttachmentTransactions({
     refreshDirectoryReceipt,
     rememberFilesScroll,
     removeFile,
+    resource,
     reset,
     selectDevice,
     selectedArtifact,
