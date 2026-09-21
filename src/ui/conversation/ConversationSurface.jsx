@@ -213,6 +213,10 @@ export function ConversationSurface({
   const readingIntent = useMemo(() => ({
     composerSendStarted(channelID) {
       if (channelID !== state.channelId) return null;
+      // Composer send is an explicit latest intent even when no bottom token
+      // can be captured. Cancel the ephemeral scope successor first so a
+      // rejected/late send cannot restore the old browsing row.
+      viewport.cancelScopeHandoff?.('composer-send-start');
       const token = viewport.captureBottomIntent();
       // Sending is an explicit user intent, unlike a passive arrival. It may
       // promote a browsing reader to following and install one bottom intent
