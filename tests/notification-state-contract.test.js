@@ -62,6 +62,22 @@ function relatedRequest(channelId, id, selfId) {
   };
 }
 
+function otherChannelRequest(channelId, id, selfId) {
+  return {
+    channel_id: channelId,
+    source: 'live',
+    envelope: {
+      id,
+      channel_id: channelId,
+      kind: 'request',
+      type: 'human.approve',
+      sender: { kind: 'agent', id: 'agent:reviewer:2' },
+      audience: [selfId],
+      payload: { body: { text: 'approval in another channel' } },
+    },
+  };
+}
+
 function confirmationFor(channelId, status, boundary, overrides = {}) {
   return {
     authority: status.authority,
@@ -129,6 +145,48 @@ describe('notification confirmation contract', () => {
     expect(feed.markRead(channelId, { ...confirmation, physicalSeq: 1 })).toBe(1);
     expect(feed.unreadFor(channelId, selfId)).toMatchObject({ related: 1, other: 0, pending: false, unknown: false });
     expect(feed.acknowledgeNotifications(confirmation)).toBe(1);
+  });
+
+  it('clears only the active channel and leaves other channels or non-caught-up state unchanged', async () => {
+    const { runtime, channelId, selfId, boot } = await readyRuntime();
+    const feed = runtime.getSnapshot();
+    const otherChannelId = 'c1.project';
+    await feed.setHistoryGrants([
+      { channel_id: channelId, head_seq: 0 },
+      { channel_id: otherChannelId, head_seq: 0 },
+    ], { generation: 1, boot });
+    feed.enqueue({ ...relatedRequest(channelId, 'active-channel-root', selfId), seq: 1 });
+    feed.enqueue({ ...otherChannelRequest(otherChannelId, 'other-channel-root', selfId), seq: 1 });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({
+      related: 1, other: 0, pending: false, unknown: false,
+    });
+    expect(feed.unreadFor(otherChannelId, selfId)).toEqual({
+      related: 1, other: 0, pending: false, unknown: false,
+    });
+
+    const status = feed.historyFor(channelId);
+    const notCaughtUp = confirmationFor(channelId, status, 0, {
+      caughtUp: false,
+      atTail: false,
+      following: false,
+      surfaceVisible: false,
+      cause: '',
+    });
+    expect(feed.acknowledgeNotifications(notCaughtUp)).toBe(false);
+    expect(feed.unreadFor(channelId, selfId)).toEqual({
+      related: 1, other: 0, pending: false, unknown: false,
+    });
+    expect(feed.unreadFor(otherChannelId, selfId)).toEqual({
+      related: 1, other: 0, pending: false, unknown: false,
+    });
+
+    expect(feed.acknowledgeNotifications(confirmationFor(channelId, status, 1))).toBe(1);
+    expect(feed.unreadFor(channelId, selfId)).toEqual({
+      related: 0, other: 0, pending: false, unknown: false,
+    });
+    expect(feed.unreadFor(otherChannelId, selfId)).toEqual({
+      related: 1, other: 0, pending: false, unknown: false,
+    });
   });
 
   it('holds a following observation lease without persisting an unpresented live row', async () => {
