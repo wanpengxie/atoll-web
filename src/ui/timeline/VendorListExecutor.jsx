@@ -301,6 +301,11 @@ export function VendorListExecutor({
   const historyStartEvidenceRef = useRef(null);
   const lastScrollTopRef = useRef(0);
   const consumedCommandRef = useRef('');
+  // Both the explicit Reading intent and the following-layout callback can
+  // observe the same committed extent. Keep one short-lived physical fence so
+  // consuming the intent cannot immediately issue the same tail write again
+  // before the first write is observed.
+  const tailWriteRef = useRef(null);
   // A history lease is terminal after its actual-paint fence succeeds or
   // fails. Keep that outcome for the current input epoch so the ordinary
   // bookmark path cannot replay a second position-row command in the same
@@ -341,12 +346,14 @@ export function VendorListExecutor({
     // state toggle: the next concrete root callback is the replacement fence,
     // while the existing RAF/event cleanup already retires the old root.
     if (!node) {
+      tailWriteRef.current = null;
       rootMountedRef.current = false;
       rootRef.current = null;
       return;
     }
     rootMountedRef.current = true;
     if (rootIdentityRef.current.node !== node) {
+      tailWriteRef.current = null;
       const generation = rootIdentityRef.current.generation + 1;
       rootIdentityRef.current = {
         node,
@@ -489,6 +496,7 @@ export function VendorListExecutor({
       tailID: currentIdentity.tailID,
       geometryRevision: geometryRevisionRef.current,
     })) === true;
+    if (accepted) tailWriteRef.current = null;
     return accepted && (!fence || settledReceipt);
   }, [currentRootIdentity, reportDomEvidence, surfaceVisible]);
 
@@ -537,6 +545,38 @@ export function VendorListExecutor({
       }
     }) || 0;
   }, [currentRootIdentity, observe]);
+
+  // All following-tail DOM writes pass through this one physical gate. The
+  // semantic intent remains in Reading; this ref only suppresses a same-root,
+  // same-geometry, same-target re-entry until the next observation (or an
+  // explicit authority/root/geometry boundary) retires it.
+  const writeTailOnce = useCallback((source = 'layout') => {
+    const root = rootRef.current;
+    if (!root) return false;
+    const rootIdentity = currentRootIdentity(root);
+    const geometryRevision = geometryRevisionRef.current;
+    const targetTop = Number(root.scrollHeight);
+    if (!Number.isFinite(targetTop)) return false;
+    const previous = tailWriteRef.current;
+    if (previous
+      && previous.root === root
+      && previous.rootIdentity === rootIdentity
+      && previous.geometryRevision === geometryRevision
+      && previous.targetTop === targetTop) return false;
+    const executed = executeReadingDOMCommand(
+      Object.freeze({ type: 'scroll-tail' }),
+      { virtuoso: virtuosoRef.current, root },
+    );
+    if (!executed) return false;
+    tailWriteRef.current = Object.freeze({
+      root,
+      rootIdentity,
+      geometryRevision,
+      targetTop,
+    });
+    scheduleObserve(source, true);
+    return true;
+  }, [currentRootIdentity, scheduleObserve]);
 
   // Home has one typed physical write after the semantic history walk reaches
   // EOF. Evidence may wait for a few real paints, but the command identity is
@@ -700,6 +740,7 @@ export function VendorListExecutor({
     // through the coordinator's bounded deadline.
     quietMs: { wheel: 300 },
     onBegin(transaction) {
+      tailWriteRef.current = null;
       const result = readingRef.current.beginNavigation({
         direction: transaction.direction,
         gestureID: transaction.id,
@@ -762,13 +803,8 @@ export function VendorListExecutor({
       // only the residual post-layout gap, so leave sub-pixel rounding alone
       // but close every real extent delta here.
       || root.scrollHeight - root.clientHeight - root.scrollTop <= FOLLOWING_TAIL_GAP_TOLERANCE_PX) return false;
-    const executed = executeReadingDOMCommand(
-      Object.freeze({ type: 'scroll-tail' }),
-      { virtuoso: virtuosoRef.current, root },
-    );
-    if (executed) scheduleObserve(source, true);
-    return executed;
-  }, [navigationPolicy, scheduleObserve]);
+    return writeTailOnce(source);
+  }, [navigationPolicy, writeTailOnce]);
 
   const issueBottomIntent = useCallback(() => {
     const root = rootRef.current;
@@ -791,16 +827,12 @@ export function VendorListExecutor({
       scheduleObserve('layout', true);
       return true;
     }
-    const executed = executeReadingDOMCommand(
-      Object.freeze({ type: 'scroll-tail' }),
-      { virtuoso: virtuosoRef.current, root },
-    );
+    const executed = writeTailOnce('layout');
     if (!executed) return false;
     consumedCommandRef.current = key;
     owner.consumeBottomIntent(intent);
-    scheduleObserve('layout', true);
     return true;
-  }, [scheduleObserve]);
+  }, [writeTailOnce]);
 
   const scheduleFollowingHeightRetry = useCallback(() => {
     const owner = readingRef.current;
@@ -1186,6 +1218,7 @@ export function VendorListExecutor({
   // that queued work before the coordinator mints the new input epoch, so a
   // wheel/key/touch event cannot be followed by the old typed writer.
   const cancelPendingPositionRestore = useCallback((reason = 'native-input') => {
+    tailWriteRef.current = null;
     const pending = positionRestoreRef.current;
     if (pending?.frameID) globalThis.cancelAnimationFrame?.(pending.frameID);
     positionRestoreRef.current = null;
@@ -1335,6 +1368,7 @@ export function VendorListExecutor({
       touchRef.current = null;
     };
     const scroll = () => {
+      tailWriteRef.current = null;
       const top = Number(root.scrollTop || 0);
       const direction = top < lastScrollTopRef.current ? 'older' : top > lastScrollTopRef.current ? 'newer' : '';
       lastScrollTopRef.current = top;
