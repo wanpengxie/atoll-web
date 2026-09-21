@@ -1,9 +1,9 @@
 # SZ-181 — local-only exhaustion and real supply progress
 
-Date: 2026-09-21  
-Base: `5f01af33508c08cc256b43277cf1844c8cee0945`  
+Date: 2026-09-21
+Base: `5f01af33508c08cc256b43277cf1844c8cee0945`
 Owner: `useConversationProjection` → `useHistoryConsumer` viewport; Feed
-publishes source/generation/supply facts.  
+publishes source/generation/supply facts.
 Test: `tests/sz181-local-only-exhaustion-public-owner.test.jsx`
 
 ## Contract
