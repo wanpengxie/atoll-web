@@ -2424,6 +2424,16 @@ export function createChannelFeedRuntime(options = {}) {
     }
   }
 
+  // Cache recovery remains a Feed command: the caller can request another
+  // selection of the already committed principal, but it cannot supply a
+  // principal or create a second cache owner.  prepareLocalReplica advances
+  // principalEpoch and fences every late ensure/read result before it can
+  // publish an error or readiness fact.
+  function retryLocalReplica({ focus = activeChannelRef.current || '' } = {}) {
+    if (destroyed || !principal) return Promise.resolve({ resume: {}, skipped: true });
+    return prepareLocalReplica(principal, { focus });
+  }
+
   async function setHistoryGrants(entries = [], detail = {}, requestEpoch = lifecycleEpoch) {
     const nextGeneration = historyNumeric(detail.generation);
     if (destroyed || requestEpoch !== lifecycleEpoch
@@ -3120,7 +3130,7 @@ export function createChannelFeedRuntime(options = {}) {
       bump: () => destroyed ? false : publish({ index: true }),
       enqueue, pageEnd, liveCheckpoint,
       setHistoryGrants: (entries, detail) => setHistoryGrants(entries, detail, snapshotEpoch),
-      prepareLocalReplica, resumeLocalReplica,
+      prepareLocalReplica, retryLocalReplica, resumeLocalReplica,
       disconnectHistory, stopIncompatible, cancel: disconnectHistory, clear, resetPersistent,
       stateFor: (channelId) => replica.state(channelId),
       stateEntries: () => Object.freeze([...replica.states().entries()]),

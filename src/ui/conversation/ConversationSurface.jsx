@@ -402,6 +402,20 @@ export function ConversationSurface({
                     data-scope-state="partial"
                   ><span>@</span><h2>当前已加载的动态里没有符合筛选的往来</h2><p>会继续读取更早内容，找到后自动显示。</p></div>}
                   {emptyFeedbackKind === 'channel' && !emptyFeedbackSettled && <div className="timeline-history-status" role="status">正在准备频道内容…</div>}
+                  {viewport.cache?.phase === 'pending' && <div
+                    className="timeline-history-status timeline-cache-status"
+                    data-cache-phase="pending"
+                    role="status"
+                  >正在准备本地缓存…</div>}
+                  {viewport.cache?.phase === 'error' && <div
+                    className="timeline-history-status timeline-history-demand timeline-cache-status"
+                    data-cache-phase="error"
+                    data-phase="error"
+                    role="alert"
+                  >
+                    <span>{viewport.cache.error || '本地缓存初始化失败'}</span>
+                    <button type="button" onClick={viewport.retryAvailability}>重试</button>
+                  </div>}
                   {viewport.availability === 'error' && <div className="timeline-history-status timeline-history-demand" role="alert">
                     <span>{viewport.availabilityError || '确认频道内容失败'}</span>
                     <button type="button" onClick={viewport.retryAvailability}>重试</button>

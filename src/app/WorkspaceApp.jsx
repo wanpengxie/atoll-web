@@ -449,6 +449,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     loadHistory: (...args) => callFeed('loadHistory', args),
     pageEnd: (...args) => callFeed('pageEnd', args),
     prepareLocalReplica: (...args) => callFeed('prepareLocalReplica', args),
+    retryLocalReplica: (...args) => callFeed('retryLocalReplica', args),
     reconcileIdentity: (...args) => callFeed('reconcileIdentity', args),
     refreshChannel: (...args) => callFeed('refreshChannel', args),
     // Search may outlive one committed Feed owner during a React handoff. A
@@ -1019,6 +1020,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     status: { ...historyStatus, localReplicaReady: feed.localReplicaReady },
     request: (request) => feedCommands.loadHistory(navigation.activeChannelId, request),
     refreshLatest: () => feedCommands.refreshChannel(navigation.activeChannelId),
+    retryLocalReplica: () => feedCommands.retryLocalReplica({ focus: navigation.activeChannelId }),
     debugSnapshot: () => feed.coldEntryDiagnosticsFor(navigation.activeChannelId),
   } : null;
   const rosterAuthority = roster.authorities.get(navigation.activeChannelId) || null;

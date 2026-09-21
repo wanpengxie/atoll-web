@@ -413,7 +413,6 @@ function useProjectionReadingOwner({
   const availabilityError = String(
     historyStatus.historyDemand?.error
     || syncStatus.error
-    || historyStatus.localReplicaError
     || historyStatus.error
     || '',
   );
@@ -988,7 +987,13 @@ function useProjectionReadingOwner({
     presentationPending: false,
     availabilityError,
     freshness: Object.freeze({ phase: syncObservationCurrent ? 'current' : availabilityError ? 'error' : 'pending', error: String(syncStatus.error || '') }),
-    cache: Object.freeze({ phase: historyStatus.localReplicaReady === false ? 'pending' : historyStatus.localReplicaError ? 'error' : 'current', error: String(historyStatus.localReplicaError || ''), code: String(historyStatus.localReplicaErrorCode || '') }),
+    cache: Object.freeze({
+      phase: historyStatus.localReplicaError
+        ? 'error'
+        : historyStatus.localReplicaReady === false ? 'pending' : 'current',
+      error: String(historyStatus.localReplicaError || ''),
+      code: String(historyStatus.localReplicaErrorCode || ''),
+    }),
     status: historyStatus,
     historyDemand: ['pending', 'error'].includes(historyStatus.historyDemand?.phase)
       ? historyStatus.historyDemand
