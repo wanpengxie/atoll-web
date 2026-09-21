@@ -252,6 +252,12 @@ it('uses one physical tail writer per geometry and lets a later extent write onc
   // unpainted target. Only the first public DOM writer may run.
   expect(root.scrollTo).toHaveBeenCalledTimes(1);
 
+  // Virtuoso can repeat the callback without changing the mounted root's
+  // physical geometry. That transient callback must not mint a second tail
+  // writer for the same target.
+  act(() => harness.props.totalListHeightChanged());
+  expect(root.scrollTo).toHaveBeenCalledTimes(1);
+
   Object.defineProperty(root, 'scrollHeight', { configurable: true, value: 1_100 });
   act(() => harness.props.totalListHeightChanged());
   // A genuine committed extent change is a new geometry fence and may issue
