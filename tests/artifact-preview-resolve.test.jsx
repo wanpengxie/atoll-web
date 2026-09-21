@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ArtifactPreviewPanel } from '../src/ui/features/files/ArtifactPreviewPanel.jsx';
 import { mountAttachmentTransactions } from './helpers/attachment-transactions-harness.js';
@@ -117,6 +118,27 @@ describe('文件类型判定 (previewDescriptor 经由 previewArtifact)', () => 
 });
 
 describe('预览面板 (useAttachmentTransactions previewArtifact + ArtifactPreviewPanel)', () => {
+  it('EH06-05 Markdown 文件默认渲染文档，切换源码后显示高亮源码', async () => {
+    const user = userEvent.setup();
+    const artifact = { channelId: 'c0', resourceId: 'readme', name: 'README.md', mediaType: 'text/markdown' };
+    render(<ArtifactPreviewPanel
+      channel={{ id: 'c0' }}
+      port={{
+        selectedArtifact: artifact,
+        preview: { status: 'ready', text: '# 标题\n\n```js\nconst ready = true\n```' },
+      }}
+      onClose={() => {}}
+    />);
+
+    expect(await screen.findByRole('heading', { name: '标题' })).toBeTruthy();
+    expect(document.querySelector('.artifact-source-line-number')).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: '源码' }));
+    expect(document.querySelector('.artifact-source-preview')).toBeTruthy();
+    expect(document.querySelector('.artifact-source-preview')?.textContent).toContain('const ready = true');
+    expect(document.querySelectorAll('.artifact-source-preview .token').length).toBeGreaterThan(0);
+  });
+
   it('类型认不出的文件嗅探为文本后按源码预览，并给复制按钮', async () => {
     const wireResource = vi.fn(async (payload) => (payload.op === 'read' ? { ticket: 't' } : { items: [] }));
     vi.stubGlobal('fetch', vi.fn(async () => blobResponse(new TextEncoder().encode('key = value\nname = "atoll"\n'), 'application/octet-stream')));
