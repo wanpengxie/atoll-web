@@ -70,6 +70,62 @@ function nextTick() {
 }
 
 describe('ChannelFeedRuntime ownership', () => {
+  it('[TC-0473][AD-179] keeps replay side-effect free while a live fact updates control evidence', async () => {
+    const principal = `tc0473-replay-principal-${Date.now()}-${Math.random()}`;
+    const boot = `tc0473-replay-boot-${Date.now()}-${Math.random()}`;
+    const seed = createChannelReplicaCache({ indexedDB: null });
+    const cached = {
+      channel_id: 'c0', seq: 1,
+      envelope: {
+        id: 'tc0473-cached-governance', kind: 'response', type: 'system.channel.set',
+        payload: { status: 'completed' },
+      },
+    };
+    await seed.ensureOwner(principal, { world: boot });
+    await seed.clear();
+    await seed.saveRows([cached]);
+
+    const accessLive = vi.fn(() => true);
+    const handleEnvelope = vi.fn();
+    const directoryInvalidated = vi.fn();
+    const options = runtimeOptions();
+    options.accessRef = { current: { live: accessLive } };
+    options.rosterRef = { current: { self: () => '', observeFeed: () => '', handleEnvelope } };
+    options.onDirectoryInvalidated = directoryInvalidated;
+    const runtime = createChannelFeedRuntime(options);
+    runtime.mount();
+
+    try {
+      await runtime.getSnapshot().setHistoryGrants([
+        { channel_id: 'c0', head_seq: 1, has_rows: true },
+      ], { generation: 1, boot, focus: 'c0' });
+      await runtime.getSnapshot().prepareLocalReplica(principal, { focus: 'c0' });
+
+      // Cache replay is a committed ledger fact, not live control evidence.
+      expect(runtime.getSnapshot().stateFor('c0')?.rows.has(1)).toBe(true);
+      expect(accessLive).not.toHaveBeenCalled();
+      expect(directoryInvalidated).not.toHaveBeenCalled();
+      expect(handleEnvelope).not.toHaveBeenCalled();
+
+      expect(runtime.getSnapshot().enqueue({
+        source: 'live', generation: 1, channel_id: 'c0', seq: 2,
+        envelope: {
+          id: 'tc0473-live-governance', kind: 'response', type: 'system.channel.set',
+          payload: { status: 'completed' },
+        },
+      })).toBe(true);
+      expect(accessLive).toHaveBeenCalledOnce();
+      expect(accessLive).toHaveBeenCalledWith('c0');
+      expect(directoryInvalidated).toHaveBeenCalledOnce();
+      expect(handleEnvelope).toHaveBeenCalledOnce();
+      expect(handleEnvelope).toHaveBeenCalledWith('c0', expect.objectContaining({ id: 'tc0473-live-governance' }));
+    } finally {
+      runtime.destroy();
+      await seed.clear();
+      await seed.destroy();
+    }
+  });
+
   it('publishes attach Meta before hydrating the selected cache body', async () => {
     const principal = `ad178-body-principal-${Date.now()}-${Math.random()}`;
     const boot = `ad178-body-boot-${Date.now()}-${Math.random()}`;
