@@ -97,7 +97,7 @@ describe('reading session authority', () => {
     expect(current.bookmark).toMatchObject({ messageID: 'm7', viewportOffset: -18 });
   });
 
-  it('invalidates a pending return-to-bottom synchronously on native input', () => {
+  it('[TC-0559][AD-265] invalidates a pending return-to-bottom synchronously on native input', () => {
     const requested = requestLatest(takeReadingControl(session(), { direction: 'older' }), 'latest');
     const intent = requested.bottomIntent;
     const browsing = takeReadingControl(requested, { direction: 'older', gestureID: 'wheel' });
