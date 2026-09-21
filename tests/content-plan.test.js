@@ -201,7 +201,7 @@ describe('ContentPlan', () => {
     expect(appended.blocks[0].blockID).toBe(first.blocks[0].blockID);
   });
 
-  it('falls back to a full parse when an append introduces a document-wide definition', () => {
+  it('[TC-0541] falls back to a full parse when an append introduces a document-wide definition', () => {
     const first = plan({
       contentKey: 'message:suffix-definition:body',
       source: 'prefix\n\n[reference][target]',
