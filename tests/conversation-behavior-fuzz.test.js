@@ -33,7 +33,7 @@ function commitProjection(owner, entries, options) {
 }
 
 describe('conversation UX state-machine fuzz', () => {
-  it('keeps data/layout events powerless over reading intent and keeps semantic rows unique', () => {
+  it('[TC-0552][AD-258] keeps data/layout events powerless over reading intent and keeps semantic rows unique', () => {
     fc.assert(fc.property(fc.array(eventArb, { minLength: 1, maxLength: 240 }), (events) => {
       let reading = createReadingSession({ key: 'c0:all', activationID: 'active' });
       let low = 0;

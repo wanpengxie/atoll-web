@@ -60,3 +60,31 @@ committed.
 This is an atomic claim: this reservation report is committed before changing
 the test declaration. Closeout will append focused, adjacent, and build
 evidence plus the final PASS or bounded regression disposition.
+
+## Closeout — 2026-09-22
+
+- **Reservation commit:** `6a5779b` (`claim TC0552 reading intent fuzz
+  baseline`).
+- **Migration:** the existing declaration is tagged
+  `[TC-0552][AD-258]`; its event generator, 400-run property, public reading
+  controls, projection commits, mode/epoch assertions, and row/entity
+  uniqueness checks remain unchanged. No test was deleted/skipped and no
+  private oracle or second store was introduced.
+- **Focused:**
+  `npm test -- tests/conversation-behavior-fuzz.test.js --run -t 'TC-0552' --reporter=verbose`
+  — **1 passed, 1 selection skip**; the skip is Vitest selection output, not a
+  skipped declaration.
+- **Adjacent owner suite:**
+  `npm test -- tests/conversation-behavior-fuzz.test.js --run --reporter=verbose`
+  — **2 passed, 0 failed**.
+- **Adjacent owner suites:**
+  `npm test -- tests/reading-session-ports.test.js tests/view-session.test.js tests/conversation-presentation-react.test.jsx --run --reporter=dot`
+  — **14 passed, 0 failed**.
+- **Build:** `npm run build` — **passed**; Vite emitted only the existing
+  large-chunk advisory.
+- **Disposition:** **PASS / MIGRATED**, credit `1`. Across the deterministic
+  event model, only explicit user evidence changes reading intent, stale
+  latest consumption is fenced, and presentation rows remain uniquely and
+  consistently identified. No product change or semantic weakening was
+  required.
+- **Final commit:** recorded below after this closeout and test-only tag.
