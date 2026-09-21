@@ -11,7 +11,7 @@ import {
 
 const TIMER_WAKE_TYPE = 'agent.timer.wake';
 
-function isCanonicalAgentTimerFire(envelope) {
+export function isCanonicalAgentTimerFire(envelope) {
   const sender = envelope?.sender;
   return envelope?.kind === 'event'
     && typeof envelope.id === 'string'

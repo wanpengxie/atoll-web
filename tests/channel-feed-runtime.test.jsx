@@ -70,6 +70,28 @@ function nextTick() {
 }
 
 describe('ChannelFeedRuntime ownership', () => {
+  it('does not treat an ordinary agent event sharing a timer id as a firing', async () => {
+    const timerID = 'timer:shared-id';
+    const runtime = createChannelFeedRuntime(runtimeOptions());
+    runtime.mount();
+    await runtime.getSnapshot().setHistoryGrants([], { generation: 1, boot: 'timer-predicate' });
+    const ordinary = {
+      id: timerID, kind: 'event', type: 'agent.note', correlation_id: 'ordinary-event',
+      sender: { kind: 'agent', id: 'agent:worker:1' }, audience: ['agent:worker:1'],
+    };
+    expect(runtime.getSnapshot().enqueue({
+      channel_id: 'c0', seq: 1, source: 'live', generation: 1, envelope: ordinary,
+    })).toBe(true);
+    expect(runtime.getSnapshot().timerFirings.events).toHaveLength(0);
+    expect(runtime.getSnapshot().enqueue({
+      channel_id: 'c0', seq: 2, source: 'live', generation: 1, envelope: {
+        ...ordinary, correlation_id: timerID,
+      },
+    })).toBe(true);
+    expect(runtime.getSnapshot().timerFirings.events).toHaveLength(1);
+    runtime.destroy();
+  });
+
   it('[TC-0473][AD-179] keeps replay side-effect free while a live fact updates control evidence', async () => {
     const principal = `tc0473-replay-principal-${Date.now()}-${Math.random()}`;
     const boot = `tc0473-replay-boot-${Date.now()}-${Math.random()}`;

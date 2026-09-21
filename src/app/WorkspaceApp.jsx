@@ -35,6 +35,7 @@ import {
 import { selectFeatureSearchIndex } from '../model/feature-search.js';
 import { terminalResultPayload, terminalResultState } from '../model/terminal-result.js';
 import { argsOf } from '../protocol/envelope.js';
+import { isCanonicalAgentTimerFire } from '../model/notification-policy.js';
 import { isManageableDeclaration, isVisibleActor } from '../model/actor-visibility.js';
 import { SYSTEM_ACTOR_ID, TYPES } from '../protocol/vocab.js';
 import { Auth } from '../ui/Auth.jsx';
@@ -1005,6 +1006,58 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       message: `${count} 个定时任务已触发${labels.length ? ` · ${labels.join('、')}` : ''}`,
     });
   }, [feed.timerFirings, navigation.channels]);
+  useEffect(() => {
+    const events = feed.timerFirings?.events || EMPTY_ARRAY;
+    const firedByKey = new Map();
+    const addFiring = (candidate) => {
+      const key = `${String(candidate.channelId || '')}\u0000${String(candidate.timerId || '')}`;
+      const existing = firedByKey.get(key) || [];
+      existing.push(candidate);
+      firedByKey.set(key, existing);
+    };
+    for (const event of events) addFiring({ ...event, canonical: true });
+    // The feed's notification projection intentionally only exposes live
+    // timer events. A timer may be observed after a view switch through the
+    // same canonical Replica timeline, so join that exact event identity to
+    // the browser receipt as well; never infer firing from elapsed time. The
+    // local after command currently lands a system-authored event, so retain
+    // that older public contract only with the exact recorded timer id/type;
+    // an ordinary agent event sharing the id remains ineligible.
+    if (typeof feed.stateEntries === 'function') {
+      for (const [channelId, channelState] of feed.stateEntries()) {
+        for (const entry of channelState?.timeline || EMPTY_ARRAY) {
+          const envelope = entry?.kind === 'standalone' ? entry.envelope : null;
+          const canonical = isCanonicalAgentTimerFire(envelope);
+          const localReceipt = envelope?.kind === 'event' && envelope?.sender?.kind === 'system';
+          if (!canonical && !localReceipt) continue;
+          const timestamp = new Date(envelope.ts).getTime();
+          addFiring({
+            channelId,
+            timerId: envelope.id,
+            firedAt: Number.isFinite(timestamp) ? timestamp : Date.now(),
+            canonical,
+            senderKind: envelope.sender?.kind || '',
+            msgType: envelope.type || '',
+          });
+        }
+      }
+    }
+    if (!firedByKey.size) return;
+    setAutomationRecords((current) => {
+      let changed = false;
+      const next = current.map((row) => {
+        if (String(row?.state || 'scheduled') !== 'scheduled') return row;
+        const key = `${String(row?.channelId || row?.channel_id || '')}\u0000${String(row?.timerId || row?.timer_id || row?.id || '')}`;
+        const expectedType = String(row?.msgType || row?.msg_type || '');
+        const event = firedByKey.get(key)?.find((candidate) => candidate.canonical
+          || (candidate.senderKind === 'system' && candidate.msgType === expectedType));
+        if (!event) return row;
+        changed = true;
+        return { ...row, state: 'fired', firedAt: event.firedAt || Date.now() };
+      });
+      return changed ? Object.freeze(next) : current;
+    });
+  }, [feed.stateEntries, feed.timerFirings, feed.version]);
   useEffect(() => {
     if (timerNotice) setChannelNotice(timerNotice.message);
   }, [timerNotice]);

@@ -11,7 +11,11 @@ import { createHistoryPresentationAdmission } from './history-presentation-admis
 import { createHistoryBoundedExecutor } from './history-bounded-executor.js';
 import { createHistorySourceAdapters } from './history-source-adapters.js';
 import { HISTORY_INTENT, HISTORY_URGENCY } from './history-demand.js';
-import { isRailNotifiableDisposition, notificationDisposition } from './notification-policy.js';
+import {
+  isCanonicalAgentTimerFire,
+  isRailNotifiableDisposition,
+  notificationDisposition,
+} from './notification-policy.js';
 import { diagnostic, registerRailDiagnosticProvider } from './diagnostics.js';
 import { isMobileProfile } from './device-profile.js';
 
@@ -284,18 +288,6 @@ function isTerminalActivity(envelope) {
   return envelope?.kind === 'response'
     && ACTIVITY_TYPES.has(envelope.type)
     && FINAL.has(argsOf(envelope)?.status);
-}
-
-function isCanonicalTimerFiring(envelope) {
-  const senderID = String(envelope?.sender?.id || '');
-  return envelope?.kind === 'event'
-    && String(envelope?.id || '').startsWith('timer:')
-    && !envelope.parent_id
-    && envelope.correlation_id === envelope.id
-    && envelope.sender?.kind === 'agent'
-    && Boolean(senderID)
-    && envelope.audience?.length === 1
-    && envelope.audience[0] === senderID;
 }
 
 function createCursorOwner(storage = globalThis.localStorage) {
@@ -840,7 +832,7 @@ export function createChannelFeedRuntime(options = {}) {
 
   function observeTimerFiring(row, source) {
     if (source !== 'live' || historyNumeric(row?.generation) !== generation
-      || !isCanonicalTimerFiring(row?.envelope)) return false;
+      || !isCanonicalAgentTimerFire(row?.envelope)) return false;
     timerRevision += 1;
     timerEvents.push(Object.freeze({
       revision: timerRevision,
