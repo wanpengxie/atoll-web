@@ -55,9 +55,9 @@ focused, adjacent, and build evidence with the final disposition.
 
 ## Closeout
 
-- **Reservation commit:** pending.
-- **Focused:** pending.
-- **Adjacent protocol suites:** pending.
-- **Build:** pending.
-- **Diff hygiene:** pending closeout verification; the allowed boundary is the one test declaration plus this report.
-- **Disposition:** pending focused verification; no unresolved case is hidden by this reservation.
+- **Reservation commit:** `f97565e` (`claim TC0674 envelope correlation baseline`).
+- **Focused:** `npm test -- tests/envelope.test.js --run -t 'TC-0674' --reporter=verbose` — `1 passed`, with the three unrelated declarations selection-skipped by the grep (no declaration was changed to skip).
+- **Adjacent protocol suites:** `npm test -- tests/envelope.test.js tests/frame-fields.test.js tests/frame.test.js --run --reporter=dot` — `14 passed`.
+- **Build:** `npm run build` — passed; Vite retained its existing advisory about chunks larger than 500 kB.
+- **Diff hygiene:** final source diff is limited to this report and the one `[TC-0674][EH02-03]` declaration in `tests/envelope.test.js`; the explicit correlation and id-fallback inputs and expected identities are unchanged in meaning. No product, package, lockfile, protocol, fixture, skip/filter, private oracle, or compatibility change was introduced.
+- **Disposition:** **PASS / MIGRATED**; **credit: 1**. The public `correlationOf` owner preserves deterministic explicit-correlation precedence with a stable id fallback for envelopes that omit the optional field.
