@@ -40,7 +40,7 @@ describe('ContentPlanBlocks', () => {
     expect(renderBlock).toHaveBeenCalledTimes(4);
   });
 
-  it('seals a completed tail without rerendering or remounting that unchanged block', () => {
+  it('[TC-0518][AD-224] seals a completed tail without rerendering or remounting that unchanged block', () => {
     const renderBlock = vi.fn((block) => <p>{block.source}</p>);
     const first = createContentPlan({ contentKey: 'message:seal:body', source: 'first\n\nfinishing' });
     const view = render(<ContentPlanBlocks plan={first} renderBlock={renderBlock} />);
