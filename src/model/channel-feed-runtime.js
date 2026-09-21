@@ -1029,6 +1029,7 @@ export function createChannelFeedRuntime(options = {}) {
     const closedRequestIDs = new Set();
     const landedSubmissionIdentities = new Map();
     const discoveredChannels = new Set();
+    const newlyDiscoveredChannels = new Set();
     let accessChanged = false;
     let directoryInvalidatedEnvelope = null;
     for (const row of rows || []) {
@@ -1037,6 +1038,7 @@ export function createChannelFeedRuntime(options = {}) {
       if (!result.accepted) continue;
       accepted.push(result.row);
       discoveredChannels.add(row.channel_id);
+      if (!histories.has(row.channel_id)) newlyDiscoveredChannels.add(row.channel_id);
       const status = histories.get(row.channel_id);
       // An inactive grant with no local Meta/rows must not advance its
       // notification boundary merely because the server advertised a head.
@@ -1132,12 +1134,26 @@ export function createChannelFeedRuntime(options = {}) {
       if (status) refreshControlCurrent(channelId, status);
     }
     if (accepted.length) {
-      callback('onChannelsDiscovered', discoveredChannels);
+      // A live row for an already-granted channel is not a channel discovery.
+      // Re-notifying the shell for every progress frame bumps navigation and
+      // recreates its channel projection, which can recursively restart
+      // unrelated resource reads while Replica admits the live burst.
+      if (newlyDiscoveredChannels.size) callback('onChannelsDiscovered', newlyDiscoveredChannels);
       if (producerToken === ownerToken) {
+        let ownedSubmissionLanded = false;
         for (const identity of landedSubmissionIdentities.values()) {
-          markOwnedSubmissionLanded(bindings.submissionCorrelationPort, identity.channelId, identity.messageId);
+          ownedSubmissionLanded = markOwnedSubmissionLanded(
+            bindings.submissionCorrelationPort,
+            identity.channelId,
+            identity.messageId,
+          ) || ownedSubmissionLanded;
         }
-        callback('onSubmissionFeed', landedMessageIDs, closedRequestIDs, producerToken);
+        // Passive progress is not evidence that one of the caller's pending
+        // submissions changed. Terminal closures still cross this seam for
+        // Composer-owned control state keyed by a closed request.
+        if (ownedSubmissionLanded || closedRequestIDs.size) {
+          callback('onSubmissionFeed', landedMessageIDs, closedRequestIDs, producerToken);
+        }
       }
       if (accessChanged) callback('onAccessChanged');
       if (directoryInvalidatedEnvelope) callback('onDirectoryInvalidated', directoryInvalidatedEnvelope);
