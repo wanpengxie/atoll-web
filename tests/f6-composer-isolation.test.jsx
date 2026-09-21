@@ -12,7 +12,7 @@
 // 判定逐条记在 audit-output/RESTORE-MATRIX.md。
 import 'fake-indexeddb/auto';
 import React, { useLayoutEffect } from 'react';
-import { act, cleanup, render, renderHook, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useComposerCommands } from '../src/ui/composer/useComposerCommands.js';
@@ -154,6 +154,112 @@ describe('Composer 渲染隔离（F6-PERF-06，轻量版：不拉起 5000 行 Ti
     await user.type(screen.getByRole('textbox', { name: '消息' }), '这段输入不应驱动兄弟组件重渲染');
     expect(commands.changeDraft).toHaveBeenCalled();
     expect(siblingRenders).toBe(before);
+  });
+});
+
+describe('AD-361 composition draft persistence contract', () => {
+  function manualAnimationFrames() {
+    const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
+    const originalCancelAnimationFrame = globalThis.cancelAnimationFrame;
+    let nextFrameId = 1;
+    const frames = [];
+    globalThis.requestAnimationFrame = (callback) => {
+      const id = nextFrameId++;
+      frames.push({ id, callback, cancelled: false });
+      return id;
+    };
+    globalThis.cancelAnimationFrame = (id) => {
+      const frame = frames.find((row) => row.id === id);
+      if (frame) frame.cancelled = true;
+    };
+    const runFrame = () => {
+      const frame = frames.shift();
+      if (frame && !frame.cancelled) frame.callback(performance.now());
+    };
+    const restore = () => {
+      globalThis.requestAnimationFrame = originalRequestAnimationFrame;
+      globalThis.cancelAnimationFrame = originalCancelAnimationFrame;
+    };
+    return { frames, runFrame, restore };
+  }
+
+  it('lets confirmed IME text paint before serializing the draft', async () => {
+    const animation = manualAnimationFrames();
+    const changeDraft = vi.fn();
+    const send = vi.fn().mockResolvedValue(['message-1']);
+    try {
+      const user = userEvent.setup();
+      const model = buildComposerModel({
+        activeChannelId: 'c0',
+        draft: { text: '', recipients: [] },
+        roster: ROSTER,
+        access: 'member_active',
+      });
+      render(<Composer model={model} commands={{ changeDraft, send }} />);
+      animation.frames.length = 0;
+      const input = screen.getByRole('textbox', { name: '消息' });
+      fireEvent.compositionStart(input, { data: '中' });
+      await user.type(input, '中');
+      fireEvent.compositionEnd(input, { data: '中' });
+      expect(input.textContent).toContain('中');
+      expect(changeDraft).not.toHaveBeenCalled();
+
+      // First frame waits for ProseMirror's composing flag to settle; the
+      // second frame publishes the already-painted text, and only its idle
+      // callback is allowed to serialize the durable draft.
+      act(animation.runFrame);
+      expect(changeDraft).not.toHaveBeenCalled();
+      act(animation.runFrame);
+      expect(changeDraft).not.toHaveBeenCalled();
+      await waitFor(() => expect(changeDraft).toHaveBeenCalledWith(expect.objectContaining({ text: '中' })));
+
+      changeDraft.mockClear();
+      fireEvent.compositionStart(input, { data: '文' });
+      await user.type(input, '文');
+      fireEvent.compositionEnd(input, { data: '文' });
+      act(animation.runFrame); // consume the first RAF, leaving the second queued
+      expect(animation.frames).toHaveLength(1);
+      await user.keyboard('{Enter}');
+      expect(send).toHaveBeenCalledWith(expect.objectContaining({ draft: expect.objectContaining({ text: '中文' }) }));
+      act(animation.runFrame); // the canceled second RAF must be a no-op
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(changeDraft).not.toHaveBeenCalled();
+    } finally {
+      animation.restore();
+    }
+  });
+
+  it('cancels stale composition work and clears the composing guard on channel editor handoff', async () => {
+    const animation = manualAnimationFrames();
+    const changeDraft = vi.fn();
+    const commands = { changeDraft, send: vi.fn().mockResolvedValue(['message-1']) };
+    const modelFor = (channelId) => buildComposerModel({
+      activeChannelId: channelId,
+      draft: { text: '', recipients: [] },
+      roster: ROSTER,
+      access: 'member_active',
+    });
+    try {
+      const user = userEvent.setup();
+      const { rerender } = render(<Composer model={modelFor('c0')} commands={commands} />);
+      animation.frames.length = 0;
+      const oldInput = screen.getByRole('textbox', { name: '消息' });
+      fireEvent.compositionStart(oldInput, { data: '旧' });
+      await user.type(oldInput, '旧');
+      fireEvent.compositionEnd(oldInput, { data: '旧' });
+      expect(animation.frames).toHaveLength(1);
+
+      rerender(<Composer model={modelFor('c1')} commands={commands} />);
+      act(animation.runFrame);
+      expect(changeDraft).not.toHaveBeenCalled();
+
+      const newInput = screen.getByRole('textbox', { name: '消息' });
+      await user.type(newInput, '新');
+      await waitFor(() => expect(changeDraft).toHaveBeenCalledWith(expect.objectContaining({ text: '新' })));
+      expect(changeDraft.mock.calls.map(([value]) => value.text)).not.toContain('旧');
+    } finally {
+      animation.restore();
+    }
   });
 });
 

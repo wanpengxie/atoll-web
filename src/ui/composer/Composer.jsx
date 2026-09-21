@@ -205,6 +205,8 @@ export const Composer = memo(function Composer({ model, commands, className = ''
   const latestRef = useRef({ model, commands, readingIntent });
   const applyingRef = useRef(false);
   const composingRef = useRef(false);
+  const compositionFrameRef = useRef(0);
+  const draftIdleRef = useRef(null);
   const pendingTextRef = useRef(null);
   const dragDepthRef = useRef(0);
   const uploadJobsRef = useRef(0);
@@ -233,6 +235,70 @@ export const Composer = memo(function Composer({ model, commands, className = ''
       return Promise.resolve(undefined);
     }
   }, []);
+
+  const cancelDraftIdle = useCallback(() => {
+    const pending = draftIdleRef.current;
+    if (!pending) return;
+    if (pending.kind === 'idle') globalThis.cancelIdleCallback?.(pending.id);
+    else globalThis.clearTimeout(pending.id);
+    draftIdleRef.current = null;
+  }, []);
+
+  const cancelCompositionWork = useCallback(() => {
+    if (compositionFrameRef.current) globalThis.cancelAnimationFrame?.(compositionFrameRef.current);
+    compositionFrameRef.current = 0;
+    composingRef.current = false;
+    cancelDraftIdle();
+  }, [cancelDraftIdle]);
+
+  const syncEditorPresentation = useCallback((current) => {
+    if (!current || current !== editorRef.current || current.isDestroyed) return;
+    const value = editorText(current);
+    pendingTextRef.current = value;
+    setHasText(Boolean(value.trim()));
+    setDismissedMentionText('');
+    setDismissedCommandText('');
+  }, []);
+
+  const persistDraftWhenIdle = useCallback((current) => {
+    cancelDraftIdle();
+    const persist = () => {
+      draftIdleRef.current = null;
+      if (!current || current !== editorRef.current || current.isDestroyed || composingRef.current || current.view.composing) return;
+      const value = editorText(current);
+      invoke(latestRef.current.commands.changeDraft, { text: value, doc: current.getJSON() });
+    };
+    if (typeof globalThis.requestIdleCallback === 'function') {
+      draftIdleRef.current = {
+        kind: 'idle',
+        id: globalThis.requestIdleCallback(persist, { timeout: 300 }),
+      };
+    } else {
+      draftIdleRef.current = { kind: 'timeout', id: globalThis.setTimeout(persist, 0) };
+    }
+  }, [cancelDraftIdle, invoke]);
+
+  const syncAfterComposition = useCallback((current) => {
+    if (compositionFrameRef.current) globalThis.cancelAnimationFrame?.(compositionFrameRef.current);
+    const waitForEditor = () => {
+      if (!current || current !== editorRef.current || current.isDestroyed) return;
+      if (current.view.composing) {
+        compositionFrameRef.current = globalThis.requestAnimationFrame(waitForEditor);
+        return;
+      }
+      compositionFrameRef.current = globalThis.requestAnimationFrame(() => {
+        compositionFrameRef.current = 0;
+        composingRef.current = false;
+        syncEditorPresentation(current);
+        persistDraftWhenIdle(current);
+      });
+    };
+    compositionFrameRef.current = globalThis.requestAnimationFrame(waitForEditor);
+  }, [persistDraftWhenIdle, syncEditorPresentation]);
+
+  useEffect(() => () => {
+    cancelCompositionWork();
+  }, [cancelCompositionWork]);
 
   const editor = useEditor({
     extensions: [StarterKit.configure({ blockquote: false, bulletList: false, codeBlock: false, heading: false, horizontalRule: false, listItem: false, orderedList: false }), Placeholder.configure({ placeholder: '输入消息；@ 选择成员，/ 使用命令' })],
@@ -278,6 +344,11 @@ export const Composer = memo(function Composer({ model, commands, className = ''
           });
           return true;
         }
+        // Enter may arrive before the deferred post-composition callback. Read
+        // the live editor snapshot, but cancel that callback synchronously so
+        // it cannot write the consumed composition back into the draft after
+        // the send has accepted it.
+        cancelCompositionWork();
         const text = view.state.doc.textBetween(0, view.state.doc.content.size, '\n');
         const snapshot = { ...current.draft, text, doc: view.state.doc.toJSON(), editorRevision: current.draft.editorRevision + (text === current.draft.text ? 0 : 1) };
         invoke(current.edit ? owner.edit : owner.send, current.edit ? { newText: text } : { readingIntent: intent, draft: snapshot }).then((result) => {
@@ -300,6 +371,16 @@ export const Composer = memo(function Composer({ model, commands, className = ''
   editorRef.current = editor;
   latestRef.current = { model, commands, readingIntent };
 
+  const presentationKey = `${model.channelId}\u0000${model.editSession?.targetId || ''}`;
+  const compositionOwnerRef = useRef({ editor, presentationKey });
+  useLayoutEffect(() => {
+    const previous = compositionOwnerRef.current;
+    const editorChanged = previous.editor !== editor;
+    const ownerChanged = previous.presentationKey !== presentationKey;
+    compositionOwnerRef.current = { editor, presentationKey };
+    if (editorChanged || ownerChanged) cancelCompositionWork();
+  }, [cancelCompositionWork, editor, presentationKey]);
+
   useEffect(() => {
     // `useEditor` recreates the instance when the channel owner changes, but
     // its passive effect may publish the new instance before EditorContent has
@@ -320,7 +401,6 @@ export const Composer = memo(function Composer({ model, commands, className = ''
     dom.disabled = !editable;
   }, [editMode, editor, model.busy, model.channelId, model.permissions.canEditDraft, model.permissions.canTransmit]);
 
-  const presentationKey = `${model.channelId}\u0000${model.editSession?.targetId || ''}`;
   const lastPresentationKeyRef = useRef(presentationKey);
   useEffect(() => {
     // The editor returned for the previous channel can be synchronously
@@ -402,6 +482,7 @@ export const Composer = memo(function Composer({ model, commands, className = ''
   };
   const submit = (event) => {
     event?.preventDefault?.();
+    cancelCompositionWork();
     const snapshot = liveSnapshot();
     if (!snapshot.text.trim() && !snapshot.attachments.length) return;
     invoke(editMode ? commands.edit : commands.send, editMode ? { newText: snapshot.text } : { readingIntent, draft: snapshot }).then(clearAccepted);
@@ -452,7 +533,7 @@ export const Composer = memo(function Composer({ model, commands, className = ''
       {fileDragActive && <div className="composer-drop-hint" role="status"><Upload size={18} /><strong>松开以上传到当前频道</strong></div>}
       {!editMode && model.draft.replyTarget && <div className="composer-reply" role="status"><span aria-hidden="true">↩</span><div><strong>回复 @{model.draft.replyTarget.senderName || model.draft.replyTarget.senderId}</strong><small>{model.draft.replyTarget.excerpt || ''}</small></div><button type="button" aria-label="取消回复" onClick={() => invoke(commands.clearReply)}>×</button></div>}
       {!editMode && model.draft.attachments.length > 0 && <div className="attachment-drafts" aria-label="待发送附件">{model.draft.attachments.map((row) => { const id = row.resource_id || row.id; return <article key={id}><button type="button" className="attachment-draft-preview" aria-label={`预览文件 ${row.name || id}`} title="预览已附加文件" onClick={() => invoke(commands.previewAttachment, row)}><span aria-hidden="true">◇</span><span><strong>{row.name || id}</strong><small>{formatSize(Number(row.size || 0))} · 点击预览</small></span></button><button type="button" className="attachment-draft-remove" aria-label={`移除附件 ${row.name || id}`} onClick={() => invoke(commands.removeAttachment, id)}>×</button></article>; })}</div>}
-      <div ref={inputAreaRef} className="composer-input-area"><div className="composer-box"><EditorContent editor={editor} className="composer-richtext" onPasteCapture={(event) => { const files = [...(event.clipboardData?.files || [])]; if (files.length && !editMode && model.permissions.canTransmit) { event.preventDefault(); void uploadFiles(files); } }} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={() => { composingRef.current = false; if (!editor || editor.isDestroyed) return; const value = editorText(editor); pendingTextRef.current = value; setHasText(Boolean(value.trim())); invoke(commands.changeDraft, { text: value, doc: editor.getJSON() }); }} /></div>
+      <div ref={inputAreaRef} className="composer-input-area"><div className="composer-box"><EditorContent editor={editor} className="composer-richtext" onPasteCapture={(event) => { const files = [...(event.clipboardData?.files || [])]; if (files.length && !editMode && model.permissions.canTransmit) { event.preventDefault(); void uploadFiles(files); } }} onCompositionStart={() => { cancelCompositionWork(); composingRef.current = true; }} onCompositionEnd={() => { if (!editor || editor.isDestroyed) return; syncAfterComposition(editor); }} /></div>
         {mentionQuery && mentionRows.length > 0 && <FloatingPortal anchorRef={inputAreaRef} matchWidth className="mention-menu composer-menu-portal"><div role="listbox" aria-label="@ 收件人">{mentionRows.map((actor, index) => <button type="button" role="option" aria-selected={index === activeMention % mentionRows.length} key={actor.id} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseMention(actor)}><span className={`actor-icon kind-${actor.kind}`}>{actor.kind.slice(0, 1).toUpperCase()}</span><strong title={actor.id}>{actorName(actor)}</strong><small>{actor.kind} · {actor.decl_id || actor.id}</small></button>)}</div></FloatingPortal>}
         {commandMenu && <FloatingPortal anchorRef={inputAreaRef} matchWidth className="command-menu composer-menu-portal"><div role="listbox" aria-label="Agent 命令">{commandRows.length ? commandRows.map((row, index) => <button type="button" role="option" aria-selected={index === activeCommand % commandRows.length} key={row.command} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseCommand(row)}><span className="command-menu-name">/{row.command}</span><span><strong>{row.label}</strong><small>{row.description}</small></span></button>) : <p className="command-menu-empty" role="status">{commandMenu.reason}</p>}</div></FloatingPortal>}
       </div>
