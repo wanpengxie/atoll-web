@@ -69,7 +69,7 @@ describe('reading session authority', () => {
     expect(consumeHistoryStartIntent(cancelled, current.historyStartIntent)).toBe(cancelled);
   });
 
-  it('restores saved browsing state without creating an imperative navigation task', () => {
+  it('[TC-0556][AD-262] restores saved browsing state without creating an imperative navigation task', () => {
     const bookmark = { messageID: 'm80', viewportOffset: -12, rowViewportOffset: -40 };
     const current = session({ mode: READING_MODE.browsing, bookmark });
     expect(current.mode).toBe(READING_MODE.browsing);
