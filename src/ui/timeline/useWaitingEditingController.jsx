@@ -85,7 +85,7 @@ function waitingControlContext(turn, { selfId, access, targetAuthority }) {
   const controls = open ? controlEntries(frame) : [];
   const words = new Set(controls.map((entry) => entry.word));
   const dismissPayload = controlPayload({ controls }, TYPES.agentDismiss);
-  const steerPayload = controlPayload({ controls }, TYPES.agentSteer);
+  const steerPayload = waitingSteerPayload({ controls }, turn);
   const currentness = targetCurrentness(turn, targetAuthority);
   const callerCancelEligible = open && writable && owned && location === 'queued';
   const targetControlsEligible = open && writable && currentness === 'current';
@@ -94,6 +94,7 @@ function waitingControlContext(turn, { selfId, access, targetAuthority }) {
     targetCurrentness: currentness,
     targetControlsEligible,
     steering: Boolean(frame?.steering),
+    steerPayload,
     canCancel: callerCancelEligible
       || (targetControlsEligible && location === 'queued' && words.has(TYPES.agentDismiss)
         && Boolean(dismissPayload)),
@@ -121,6 +122,20 @@ function controlPayload(context, entryOrWord) {
   return entry?.payload && typeof entry.payload === 'object' && !Array.isArray(entry.payload)
     ? { ...entry.payload }
     : null;
+}
+
+function waitingSteerPayload(context, turn) {
+  const payload = controlPayload(context, TYPES.agentSteer);
+  if (!payload) return null;
+  // The waiting action is a target-form steer, not a new text submission. A
+  // declared empty object means the actor supports that form but leaves the
+  // queued request identity to this row; fill only that stable target field.
+  // Missing payload remains fail-closed, and any actor-authored fields win.
+  if (Object.keys(payload).length === 0) {
+    const target = String(turn?.requestId || turn?.request?.id || '');
+    return target ? { target } : null;
+  }
+  return payload;
 }
 
 function allTimelineTurns(state) {
@@ -673,7 +688,7 @@ export function WaitingLayer({
                     {!turn.local && context.targetCurrentness === 'unknown' && <span className="agent-wait-paused">正在核验收件人</span>}
                     {!turn.local && context.targetCurrentness === 'departed' && <span className="agent-wait-paused">收件人已离席，等待账本关闭</span>}
                     {context.canInsert && <button type="button" onClick={() => {
-                      const payload = controlPayload(context, TYPES.agentSteer);
+                      const payload = context.steerPayload;
                       if (payload) onControl(turn, group.actorId, TYPES.agentSteer, payload);
                     }}>插入</button>}
                     {context.canEdit && capabilityState === 'supported' && <button type="button" disabled={Boolean(editing)} onClick={() => onEdit(turn, group.actorId)}>编辑</button>}

@@ -146,6 +146,23 @@ describe('等待区控制按钮可用性（新结构 WaitingLayer）', () => {
     expect([...view.container.querySelectorAll('.agent-wait-item button')]).toHaveLength(0);
   });
 
+  it('uses the queued row as target when the declared steer payload is explicitly empty：不伪造正文', () => {
+    const onControl = vi.fn();
+    const turn = queuedTurn('q1', { controls: [{ word: 'agent.steer', payload: {} }] });
+    const view = render(<Harness
+      turns={[turn]}
+      selfId="other"
+      access="member_active"
+      targetAuthority={CURRENT_AUTHORITY}
+      onControl={onControl}
+    />);
+
+    fireEvent.click([...view.container.querySelectorAll('.agent-wait-item button')]
+      .find((button) => button.textContent === '插入'));
+
+    expect(onControl).toHaveBeenCalledWith(turn, 'agent', 'agent.steer', { target: 'q1' });
+  });
+
   it('sends the actor-authored payload unchanged：发送 canonical payload 而不是重造 request target', () => {
     const onControl = vi.fn();
     const turn = queuedTurn('q1', { controls: [
