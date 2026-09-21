@@ -55,3 +55,12 @@ not be committed.
 
 Closeout will append focused, adjacent, and build evidence plus the final
 PASS/REGRESSION disposition.
+
+## Closeout
+
+- **Focused:** `npm test -- tests/content-plan.test.js --run -t 'TC-0545' --reporter=verbose` — `1 passed, 18 skipped by Vitest selection` (no test declarations were skipped).
+- **Adjacent:** `npm test -- tests/content-plan.test.js --run --reporter=dot` — `19 passed`.
+- **Semantic adjacent:** `npm test -- tests/content-plan-semantics.test.jsx --run --reporter=dot` — `10 passed`; the run retained the existing TC-0526 empty-`src` React warnings only.
+- **Build:** `npm run build` — passed; Vite retained its existing advisory about chunks larger than 500 kB.
+- **Diff hygiene:** only the `[TC-0545]` declaration and this audit report changed; setup, public action, exact result, and all assertions are unchanged. No skip/filter/private oracle, product, package, fixture, or compatibility change was introduced.
+- **Disposition:** `PASS / MIGRATED`; **credit: 1**. The public `resolveContentTextOffset` owner proves conservative coarse fallback (`textOffset: 7`, `match: 'block-offset'`) when context recovery is unavailable, without guessing a semantic location.
