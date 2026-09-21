@@ -66,4 +66,40 @@ describe('TC-0128 Composer attachment naming', () => {
     ]);
     expect(new Set(persisted.map((row) => row.name)).size).toBe(persisted.length);
   });
+
+  it('keeps suffix allocation case-insensitive when existing draft names differ only by case', async () => {
+    const drafts = new Map([
+      ['c0', {
+        revision: 0,
+        attachments: [
+          { resource_id: 'existing:image', name: 'IMAGE.PNG', _atoll_world_epoch: 'world-1' },
+          { resource_id: 'existing:image-2', name: 'image-2.png', _atoll_world_epoch: 'world-1' },
+          { resource_id: 'existing:readme', name: 'README', _atoll_world_epoch: 'world-1' },
+        ],
+      }],
+    ]);
+    const wireResource = vi.fn(async (payload) => (
+      payload.op === 'create' && payload.with_content
+        ? { ticket: `put-${payload.address}`, resource_id: `uploaded:${payload.address}` }
+        : { items: [] }
+    ));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }));
+
+    const { view } = mountAttachmentTransactions({
+      activeChannel: { id: 'c0', qualified_name: 'c0' },
+      devices: [{ id: 'local-device', name: 'local-device', defaultStorage: true }],
+      wireResource,
+      drafts,
+    });
+    await waitFor(() => expect(view.result.current.deviceId).toBe('local-device'));
+
+    let uploaded;
+    await act(async () => {
+      uploaded = await view.result.current.uploadComposerAttachments([
+        new File(['image'], 'image.png', { type: 'image/png' }),
+        new File(['readme'], 'README', { type: 'text/plain' }),
+      ]);
+    });
+    expect(uploaded.map((row) => row.name)).toEqual(['image-3.png', 'README-2']);
+  });
 });
