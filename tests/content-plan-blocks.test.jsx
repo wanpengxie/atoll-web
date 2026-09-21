@@ -79,7 +79,7 @@ describe('ContentPlanBlocks', () => {
     expect(restored[0].isSameNode(original[0])).toBe(false);
   });
 
-  it('keeps selected unchanged siblings mounted when a new prefix block is inserted', () => {
+  it('[TC-0520][AD-226] keeps selected unchanged siblings mounted when a new prefix block is inserted', () => {
     const renderBlock = (block) => <p>{block.source}</p>;
     const first = createContentPlan({ contentKey: 'message:prefix:body', source: 'selected text\n\ntail' });
     const view = render(<ContentPlanBlocks plan={first} renderBlock={renderBlock} />);
