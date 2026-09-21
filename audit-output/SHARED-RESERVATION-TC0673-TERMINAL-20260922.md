@@ -56,9 +56,9 @@ focused, adjacent, and build evidence with the final disposition.
 
 ## Closeout
 
-- **Reservation commit:** pending.
-- **Focused:** pending.
-- **Adjacent protocol suites:** pending.
-- **Build:** pending.
-- **Diff hygiene:** pending closeout verification; the allowed boundary is the one test declaration plus this report.
-- **Disposition:** pending focused verification; no unresolved case is hidden by this reservation.
+- **Reservation commit:** `ff25b3c` (`claim TC0673 terminal response baseline`).
+- **Focused:** `npm test -- tests/envelope.test.js --run -t 'TC-0673' --reporter=verbose` — `1 passed`, with the three unrelated declarations selection-skipped by the grep (no declaration was changed to skip).
+- **Adjacent protocol suites:** `npm test -- tests/envelope.test.js tests/frame-fields.test.js tests/frame.test.js --run --reporter=dot` — `14 passed`.
+- **Build:** `npm run build` — passed; Vite retained its existing advisory about chunks larger than 500 kB.
+- **Diff hygiene:** final source diff is limited to this report and the one `[TC-0673][EH02-02]` declaration in `tests/envelope.test.js`; the four canonical inputs and expected results are unchanged in meaning. No product, package, lockfile, protocol, fixture, skip/filter, private oracle, or compatibility change was introduced.
+- **Disposition:** **PASS / MIGRATED**; **credit: 1**. The public `isTerminal` owner preserves the strict response-kind plus final-status gate, so processing responses and completed events cannot close a request.
