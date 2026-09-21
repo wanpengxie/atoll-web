@@ -10,6 +10,13 @@ function presence(row) {
   return ['unknown', '未知'];
 }
 
+function capabilityErrorCodes(capability) {
+  if (!capability || typeof capability !== 'object') return [];
+  const values = capability.raw?.error_codes;
+  if (!Array.isArray(values)) return [];
+  return values.map((value) => (typeof value === 'string' ? value : value?.code)).filter(Boolean);
+}
+
 export function RosterFeature({ port = {}, onClose }) {
   const rows = (port.rows || []).filter(isVisibleActor);
   return <aside className="roster-panel focused" aria-label="频道成员">
@@ -63,9 +70,18 @@ export function ActorDetailPanel({ port = {}, onClose }) {
     }
   };
   return <SidePanel className="actor-details" ariaLabel="Actor 详情" eyebrow={actor.kind || 'ACTOR'} title={actorDisplayName(actor)} onClose={onClose} headerActions={<button type="button" className="text-button" disabled={port.detailBusy} onClick={describe}>{port.detailBusy ? '读取中…' : '刷新能力'}</button>}>
-    <dl className="work-item-metadata"><dt>Actor ID</dt><dd>{actor.id}</dd><dt>类型</dt><dd>{actor.kind || '未知'}</dd><dt>声明</dt><dd>{actor.decl_id || actor.declarationId || '未声明'}</dd><dt>绑定</dt><dd>{actor.bound === true ? '已绑定' : actor.bound === false ? '未绑定' : '未知'}</dd></dl>
+    <dl className="work-item-metadata"><dt>Actor ID</dt><dd>{actor.id}</dd><dt>类型</dt><dd>{actor.kind || '未知'}</dd><dt>声明</dt><dd>{actor.decl_id || actor.declarationId || '未声明'}</dd><dt>绑定</dt><dd>{actor.bound === true ? '已绑定' : actor.bound === false ? '未绑定' : '未知'}</dd><dt>说明</dt><dd>{actor.description || '—'}</dd></dl>
     {port.detailError && <p className="governance-error" role="alert">{port.detailError}</p>}
     {error && <p className="governance-error" role="alert">{error}</p>}
+    {capabilities.length > 0 && <section className="capability-list" aria-label="能力说明">{capabilities.map((capability) => {
+      const type = typeof capability === 'string' ? capability : capability.type;
+      const description = typeof capability === 'string' ? '' : capability.description || '';
+      const errorCodes = capabilityErrorCodes(capability);
+      return <article className="capability-row" key={type}>
+        <div><strong>{type}</strong><p>{description || '无描述'}</p></div>
+        {errorCodes.length > 0 && <details><summary>可能的错误</summary><p>{errorCodes.map((code) => <code key={code}>{code}</code>)}</p></details>}
+      </article>;
+    })}</section>}
     <section className="panel-card governance-form"><header className="panel-card-header"><h3>调用能力</h3></header>
       {!capabilities.length && <p className="governance-empty">该 Actor 没有公布可调用能力。</p>}
       {capabilities.length > 0 && <>
