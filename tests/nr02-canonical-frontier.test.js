@@ -232,6 +232,24 @@ describe('NR02 canonical notification frontier', () => {
     }
   });
 
+  it('durably closes a mine receipt only when its frozen frontier is related-only', async () => {
+    const { runtime, feed } = await ready();
+    try {
+      expect(feed.enqueue({ ...request('related-only'), seq: 1 })).toBe(true);
+      expect(feed.acknowledgeNotifications(receipt(feed, {
+        scope: 'mine',
+        boundary: 1,
+        visibleRowIDs: ['related-only'],
+      }))).toBe(1);
+      expect(feed.historyFor(CHANNEL).notificationHighWater).toBe(1);
+      expect(feed.unreadFor(CHANNEL, SELF)).toEqual({
+        related: 0, other: 0, pending: false, unknown: false,
+      });
+    } finally {
+      runtime.destroy();
+    }
+  });
+
   it('does not republish the same observation identity', async () => {
     const { runtime, feed } = await ready();
     const versions = [];
