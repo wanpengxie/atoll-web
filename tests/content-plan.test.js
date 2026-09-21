@@ -117,7 +117,7 @@ describe('ContentPlan', () => {
     expect(store.size).toBe(2);
   });
 
-  it('does not publish a prepared render candidate before its commit boundary', () => {
+  it('[TC-0534][AD-240] does not publish a prepared render candidate before its commit boundary', () => {
     const store = createContentPlanStore({ limit: 2 });
     const prepared = createContentPlan({ contentKey: 'candidate', source: 'not committed yet' });
     expect(store.get('candidate')).toBeNull();
