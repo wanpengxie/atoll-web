@@ -35,6 +35,7 @@ import {
 import { selectFeatureSearchIndex } from '../model/feature-search.js';
 import { terminalResultPayload, terminalResultState } from '../model/terminal-result.js';
 import { argsOf } from '../protocol/envelope.js';
+import { ERROR_CODES } from '../protocol/frame.js';
 import { isCanonicalAgentTimerFire } from '../model/notification-policy.js';
 import { isManageableDeclaration, isVisibleActor } from '../model/actor-visibility.js';
 import { SYSTEM_ACTOR_ID, TYPES } from '../protocol/vocab.js';
@@ -50,6 +51,23 @@ import {
 } from '../ui/features/index.js';
 
 const EMPTY_ARRAY = Object.freeze([]);
+
+// Governance terminal bodies use the same typed wire error vocabulary where
+// available, plus the bounded local validation errors owned by this Shell.
+// Unknown server additions must remain understandable without exposing an
+// unbounded/raw code as the only user-facing copy.
+const GOVERNANCE_TERMINAL_CODES = new Set([
+  ...ERROR_CODES,
+  'channel_create_target_missing',
+  'channel_create_target_mismatch',
+  'governance_terminal_unavailable',
+  'permission_denied',
+  'protected_actor',
+  'receiver_internal_error',
+  'template_body_invalid',
+  'template_id_mismatch',
+  'type_unsupported',
+]);
 
 const MEMBER_ACCESS = new Set(['member_active', 'member_stale', 'member_unavailable']);
 const OBSERVER_ACCESS = new Set(['observer_active', 'observer_stale']);
@@ -178,8 +196,14 @@ function governanceRequestId(value) {
 }
 
 function governanceTerminalError(payload, fallback = '治理命令未完成') {
-  const error = new Error(String(payload?.detail || payload?.error || payload?.reason || fallback));
-  error.code = String(payload?.error_code || payload?.reason || 'governance_failed');
+  const typedCode = String(payload?.error_code || payload?.reason || '').trim();
+  const code = GOVERNANCE_TERMINAL_CODES.has(typedCode) ? typedCode : '';
+  const detail = String(payload?.detail || payload?.error || '').trim();
+  const message = code
+    ? `账本失败：${code}${detail ? `（${detail}）` : ''}`
+    : `账本失败：${fallback}${detail ? `（${detail}）` : ''}`;
+  const error = new Error(message);
+  error.code = typedCode || 'governance_failed';
   return error;
 }
 

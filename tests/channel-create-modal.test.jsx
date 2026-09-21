@@ -170,4 +170,40 @@ describe('创建子频道（GovernanceFeature public owner）', () => {
       channelId: 'c0.research', view: 'conversation',
     }));
   });
+
+  it('keeps the typed ledger code, server detail, and retry draft visible', async () => {
+    const submit = vi.fn().mockResolvedValue('request-unauthorized');
+    function Harness() {
+      const [creation, setCreation] = useState(null);
+      const commands = {
+        submit: async (command) => {
+          const requestId = await submit(command);
+          setCreation({
+            requestId,
+            accepted: true,
+            failed: true,
+            error: '账本失败：unauthorized_sender（sender is not an active channel member）',
+          });
+          return requestId;
+        },
+      };
+      return <WorkspaceRightPanel
+        panel={{ kind: 'channel-administration', initialTab: 'overview' }}
+        channel={{ id: 'c0', qualified_name: 'c0' }}
+        governance={{ channel: { commands, children: [], creation } }}
+        onClose={vi.fn()}
+      />;
+    }
+
+    render(<Harness />);
+    const name = screen.getByLabelText('新频道名称');
+    fireEvent.change(name, { target: { value: 'denied-room' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建频道' }));
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('账本失败：unauthorized_sender'));
+    expect(screen.getByRole('alert').textContent).toContain('sender is not an active channel member');
+    expect(screen.getByRole('region', { name: '频道创建进度' }).textContent).toContain('创建失败');
+    expect(screen.getByRole('button', { name: '重新创建' }).disabled).toBe(false);
+    expect(name.value).toBe('denied-room');
+  });
 });
