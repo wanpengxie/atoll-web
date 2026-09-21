@@ -446,3 +446,47 @@ describe('频道文件选择的公开 Composer 反馈', () => {
     expect((await screen.findByRole('alert')).textContent).toContain('频道文件选择已拒绝');
   });
 });
+
+describe('TC-0651 / AD-357 完整 Composer 动作合同', () => {
+  it('从公共 Composer 完成本机附件、频道文件入口、多行输入与 accepted send', async () => {
+    const user = userEvent.setup();
+    const changeDraft = vi.fn();
+    const upload = vi.fn().mockResolvedValue([]);
+    const pickChannelFile = vi.fn().mockResolvedValue(null);
+    const send = vi.fn().mockResolvedValue(['message-accepted']);
+    const model = buildComposerModel({
+      activeChannelId: 'c0',
+      draft: { text: '', recipients: [] },
+      roster: ROSTER,
+      access: 'member_active',
+    });
+
+    render(<Composer model={model} commands={{ changeDraft, upload, pickChannelFile, send }} />);
+    const input = screen.getByRole('textbox', { name: '消息' });
+    expect(input).toBeTruthy();
+
+    await user.upload(
+      screen.getByLabelText('上传本机文件到频道'),
+      new File(['local evidence'], '本机证据.txt', { type: 'text/plain' }),
+    );
+    expect(upload).toHaveBeenCalledOnce();
+    expect(upload).toHaveBeenCalledWith([expect.objectContaining({ name: '本机证据.txt' })]);
+
+    await user.click(screen.getByRole('button', { name: '从频道文件选择' }));
+    await vi.waitFor(() => expect(pickChannelFile).toHaveBeenCalledWith(expect.objectContaining({
+      draft: expect.objectContaining({ text: '', doc: expect.objectContaining({ type: 'doc' }) }),
+    })));
+
+    await user.type(input, '第一行{Shift>}{Enter}{/Shift}第二行');
+    expect(send).not.toHaveBeenCalled();
+    await user.keyboard('{Enter}');
+    await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({
+      draft: expect.objectContaining({
+        text: '第一行\n第二行',
+        doc: expect.objectContaining({ type: 'doc' }),
+      }),
+    }));
+    await vi.waitFor(() => expect(input.textContent).toBe(''));
+  });
+});

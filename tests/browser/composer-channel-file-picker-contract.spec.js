@@ -132,3 +132,39 @@ test('choosing one public channel file preserves a multiline draft without an em
   await expect(page.getByLabel('消息').locator('p')).toHaveCount(before.length);
   await expect(page.getByLabel('待发送附件').locator('article')).toHaveCount(1);
 });
+
+test('TC-0651 / AD-357 keeps multiline text while attachment actions precede an accepted send', async ({ page, request }) => {
+  await reset(request, 14976606);
+  await login(page);
+  const editor = page.getByLabel('消息');
+  await editor.fill('@st');
+  await page.getByRole('option', { name: /steward/ }).click();
+  await editor.press('End');
+  await editor.pressSequentially('第一行');
+  await editor.press('Shift+Enter');
+  await editor.pressSequentially('第二行');
+  await expect(editor).toContainText('第一行');
+  await expect(editor).toContainText('第二行');
+
+  await page.getByLabel('上传本机文件到频道').setInputFiles({
+    name: '本机证据.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('accepted attachment'),
+  });
+  const drafts = page.getByLabel('待发送附件');
+  await expect(drafts).toContainText('本机证据.txt');
+
+  await page.getByRole('button', { name: '从频道文件选择', exact: true }).click();
+  const picker = page.getByRole('dialog', { name: '从频道文件选择' });
+  await expect(picker).toBeVisible();
+  await picker.getByRole('button', { name: '关闭频道文件选择' }).click();
+  await expect(picker).toHaveCount(0);
+  await expect(editor).toContainText('第一行');
+  await expect(editor).toContainText('第二行');
+  await expect(drafts).toContainText('本机证据.txt');
+
+  await editor.press('Enter');
+  const turn = page.locator('.turn-card').filter({ hasText: '第一行' });
+  await expect(turn).toBeVisible();
+  await expect(turn).toContainText('第二行');
+});

@@ -7,7 +7,10 @@ import { ArrowLeft, Check, ChevronDown, ChevronRight, FolderOpen, RefreshCw, Upl
 import { useReadingIntent } from '../conversation/ReadingIntentContext.jsx';
 
 const actorName = (actor) => actor?.name || actor?.label || actor?.id || '未知成员';
-const editorText = (editor) => (editor && !editor.isDestroyed ? editor.getText({ blockSeparator: '\n' }) : '') || '';
+const textFromDocument = (doc) => (doc
+  ? doc.textBetween(0, doc.content.size, '\n', '\n')
+  : '') || '';
+const editorText = (editor) => (editor && !editor.isDestroyed ? textFromDocument(editor.state.doc) : '') || '';
 const editorDocument = (text = '') => ({
   type: 'doc',
   content: String(text).split('\n').map((line) => ({ type: 'paragraph', ...(line ? { content: [{ type: 'text', text: line }] } : {}) })),
@@ -349,7 +352,7 @@ export const Composer = memo(function Composer({ model, commands, className = ''
         // it cannot write the consumed composition back into the draft after
         // the send has accepted it.
         cancelCompositionWork();
-        const text = view.state.doc.textBetween(0, view.state.doc.content.size, '\n');
+        const text = textFromDocument(view.state.doc);
         const snapshot = { ...current.draft, text, doc: view.state.doc.toJSON(), editorRevision: current.draft.editorRevision + (text === current.draft.text ? 0 : 1) };
         invoke(current.edit ? owner.edit : owner.send, current.edit ? { newText: text } : { readingIntent: intent, draft: snapshot }).then((result) => {
           if (!result) return;
