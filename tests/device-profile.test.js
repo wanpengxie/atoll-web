@@ -25,7 +25,7 @@ describe('性能路径的判据', () => {
   });
 
   // 覆盖开关是移动端路径唯一能在 PC 上被测到的入口,所以它必须比判据更硬。
-  it('?perf=mobile 压过判据,并被记住', () => {
+  it('[TC-0605][AD-311] ?perf=mobile 压过判据,并被记住', () => {
     const store = storage();
     const desktopMedia = media({});
     expect(detectProfile({ matchMedia: desktopMedia, search: '?perf=mobile', storage: store })).toBe(PROFILE_MOBILE);

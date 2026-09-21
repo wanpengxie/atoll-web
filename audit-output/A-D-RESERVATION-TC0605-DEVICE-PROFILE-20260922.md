@@ -59,3 +59,26 @@ symlink is untracked test infrastructure and must not be committed.
 This is an atomic claim: this reservation report is committed before changing
 the test declaration. Closeout will append focused, owner-suite, adjacent,
 and build evidence plus the final PASS or bounded regression disposition.
+
+## Closeout — 2026-09-22
+
+- **Reservation commit:** `e37dbc9`
+- **Migration:** the retained declaration is tagged
+  `[TC-0605][AD-311]`; its desktop media fixture, `?perf=mobile` input,
+  empty-search storage read, `?perf=desktop` input, and public profile
+  assertions are unchanged.
+- **Focused:** `npm test -- tests/device-profile.test.js --run -t
+  'TC-0605' --reporter=verbose` — 1 passed, 4 selection skips.
+- **Owner suite:** `tests/device-profile.test.js` — 5 passed, 0 failed.
+- **Adjacent public profile contract:** `npm test --
+  tests/i-m-exact-path-contracts.test.jsx --run -t 'memory-window baseline 36'
+  --reporter=verbose` — 1 passed, 169 selection skips.
+- **Build:** `npm run build` — passed; 4306 modules transformed and Vite
+  emitted only the existing large chunk advisory.
+- **Disposition:** `PASS / MIGRATED`, credit 1. The current public
+  `detectProfile` owner persists an explicit mobile override across an empty
+  search and accepts an explicit desktop override, without exposing a second
+  store or private implementation detail. TC-0602/0603/0604 remain separate
+  media contracts; no product change was made.
+- **Final commit:** recorded after this closeout; only this report and the
+  tagged existing test declaration are included.
