@@ -3729,10 +3729,13 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     reading.session = { ...reading.session, bottomIntent: intent };
     const first = round33Row('round37-first', 1);
     const target = { ...round33Row('round37-target', 2), body: { local: false } };
+    const initialSnapshot = round33Snapshot([first], { revision: 1 });
+    const initialPresentation = round36BottomPresentation(reading, initialSnapshot, intent, false);
     const view = render(
       <VendorListExecutor
-        snapshot={round33Snapshot([first], { revision: 1 })}
+        snapshot={initialSnapshot}
         reading={reading}
+        bottomIntentPresentation={initialPresentation}
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
@@ -3746,10 +3749,13 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
     expect(reading.getSession().bottomIntent.id).toBe(intent.id);
 
+    const targetSnapshot = round33Snapshot([first, target], { revision: 2 });
+    const pendingPresentation = round36BottomPresentation(reading, targetSnapshot, intent, false);
     view.rerender(
       <VendorListExecutor
-        snapshot={round33Snapshot([first, target], { revision: 2 })}
+        snapshot={targetSnapshot}
         reading={reading}
+        bottomIntentPresentation={pendingPresentation}
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
@@ -3757,6 +3763,20 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
     expect(reading.getSession().bottomIntent.id).toBe(intent.id);
 
+    // The equal-height physical baseline is not itself a send lease. The
+    // current same-revision Presentation receipt must arrive before the
+    // later committed resize can authorize the one following write.
+    const readyPresentation = round36BottomPresentation(reading, targetSnapshot, intent, true);
+    view.rerender(
+      <VendorListExecutor
+        snapshot={targetSnapshot}
+        reading={reading}
+        bottomIntentPresentation={readyPresentation}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+    expect(reading.getSession().bottomIntent.id).toBe(intent.id);
     setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_100, scrollTop: 400 });
     act(() => vendorHarness.props.totalListHeightChanged());
     expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
