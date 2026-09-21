@@ -519,6 +519,10 @@ function WireErrorLine({ error }) {
   return <div className="wire-error" role="alert"><strong>操作失败{code && <> <code>{code}</code></>}</strong>{detail && <details><summary>详情</summary>{detail}</details>}</div>;
 }
 
+function consumeActionPromise(result) {
+  if (result && typeof result.catch === 'function') void result.catch(() => {});
+}
+
 function ApprovalCard({ turn, names, state, onResolve }) {
   const request = turn.request;
   const payload = argsOf(request);
@@ -534,10 +538,10 @@ function ApprovalCard({ turn, names, state, onResolve }) {
   function submitAnswer() {
     const text = answer.trim();
     if (!text) { setFormError('回答不能为空'); return; }
-    setFormError(''); onResolve?.(request.id, '', { text });
+    setFormError(''); consumeActionPromise(onResolve?.(request.id, '', { text }));
   }
   function decide(decision) {
-    setFormError(''); const note = answer.trim(); onResolve?.(request.id, decision, note ? { note } : {});
+    setFormError(''); const note = answer.trim(); consumeActionPromise(onResolve?.(request.id, decision, note ? { note } : {}));
   }
   return <article className={`approval-card ${settled ? 'settled' : ''}`} data-request-id={turn.requestId} data-request-type={request.type}>
     <header><span>{isText ? '需要你的回答' : '需要你的决定'}</span><small>{nameOf(request.sender?.id, names)} · {messageTimeLabel(request.ts)}</small></header>
