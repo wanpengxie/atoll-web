@@ -11,15 +11,39 @@ import { useModalFocus } from '../primitives/useModalFocus.js';
 import { FoldableBody } from './FoldableBody.jsx';
 
 const RESULT_META = new Set(['status', 'reason', 'error_code', 'detail', 'cancelled', 'closed_by']);
-const FAILURE_LABELS = Object.freeze({
+// One typed error vocabulary serves both terminal result titles and the
+// approval resolve error line. Unknown codes keep the bounded generic label;
+// known codes never expose the wire identifier as the only user-facing text.
+const ERROR_LABELS = Object.freeze({
   unanswered_timeout: '请求在截止时间前没有得到最终响应',
   receiver_unavailable: '接收方已不可用',
   receiver_internal_error: '接收方处理失败',
   type_unsupported: '接收方不支持这个操作',
   payload_invalid: '请求参数不符合要求',
   bad_payload: '请求格式不正确',
-  forbidden: '没有执行该操作的权限',
+  not_in_audience: '收件人不在频道',
+  unauthorized_sender: '发送者无权执行',
+  already_closed: '请求已经结束',
+  request_not_found: '找不到请求',
+  invalid_decision: '审批决定无效',
+  unavailable: '频道暂不可用',
+  routing_unavailable: '未找到可用收件人',
+  idempotency_conflict: '消息编号发生冲突',
+  channel_not_found: '找不到频道',
+  channel_unavailable: '频道暂不可用',
+  capability_unavailable: '所需能力暂不可用',
+  forbidden: '无权在此发言',
   permission_denied: '没有执行该操作的权限',
+  closed: '连接已关闭',
+  timeout: '等待回执超时',
+  cas_mismatch: '任务回合已经变化，请刷新后重试',
+  steer_missed: '没赶上这一轮，已排到下一轮执行',
+  superseded: '已被更新的操作取代，任务已回到队列',
+  control_timeout: '受理方没有在时限内回应',
+  busy: '另一个控制正在进行，稍后再试',
+  interrupted: '任务已被打断',
+  cancelled: '任务已取消',
+  empty_input: '控制内容不能为空',
 });
 
 function MessageFrame({ className = '', actions = null, identity = null, contentClassName = '', contentProps = {}, children, ...articleProps }) {
@@ -469,7 +493,7 @@ function resultTitle(requestType, payload) {
 function failureTitle(payload) {
   if (payload.cancelled === true) return '任务已取消';
   const code = payload.error_code || payload.reason || '';
-  return FAILURE_LABELS[code] || FAILURE_LABELS[payload.reason] || '请求失败';
+  return ERROR_LABELS[code] || ERROR_LABELS[payload.reason] || '请求失败';
 }
 
 function controlsAllowed(access) {
@@ -516,7 +540,8 @@ function StructuredResult({ requestType = '', payload = {}, contentKey }) {
 function WireErrorLine({ error }) {
   const code = error?.code || (typeof error === 'string' ? error : '');
   const detail = error?.detail || error?.message || '';
-  return <div className="wire-error" role="alert"><strong>操作失败{code && <> <code>{code}</code></>}</strong>{detail && <details><summary>详情</summary>{detail}</details>}</div>;
+  const label = ERROR_LABELS[code] || '操作失败';
+  return <div className="wire-error" role="alert"><strong>{label}{code && <> <code>{code}</code></>}</strong>{detail && <details><summary>详情</summary>{detail}</details>}</div>;
 }
 
 function consumeActionPromise(result) {
