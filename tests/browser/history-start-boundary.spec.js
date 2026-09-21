@@ -87,6 +87,7 @@ test('authoritative history start is an ordinary scrolling item', async ({ page,
 });
 
 test('an open history frontier prepends without moving the existing row geometry', async ({ page, request }) => {
+  test.setTimeout(90_000);
   await page.setViewportSize({ width: 1120, height: 620 });
   const reset = await request.post('/mock/control/reset', {
     data: { scenario: 'deep-history', seed: 0x92_48_02 },
@@ -95,24 +96,47 @@ test('an open history frontier prepends without moving the existing row geometry
   await login(page);
   const viewport = list(page);
   await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true })).toBeVisible();
-  await viewport.evaluate((root) => { root.scrollTop = root.clientHeight + 160; });
-  await page.waitForTimeout(100);
+  await viewport.hover();
+  let previousScrollTop = await viewport.evaluate((root) => root.scrollTop);
+  for (let index = 0; index < 3; index += 1) {
+    await page.mouse.wheel(0, -5_000);
+    await expect.poll(() => viewport.evaluate((root) => root.scrollTop))
+      .toBeLessThan(previousScrollTop - 100);
+    previousScrollTop = await viewport.evaluate((root) => root.scrollTop);
+  }
   const before = await viewport.evaluate((root) => {
-    const row = root.querySelector('[data-presentation-row-id]');
-    const rect = row?.getBoundingClientRect();
     const rootRect = root.getBoundingClientRect();
-    return { id: row?.dataset.presentationRowId || '', top: rect ? rect.top - rootRect.top : null, height: row?.getBoundingClientRect().height || 0 };
+    const firstVisible = [...root.querySelectorAll('[data-presentation-row-id]')]
+      .find((candidate) => candidate.getBoundingClientRect().top >= rootRect.top - 1);
+    const row = firstVisible || root.querySelector('[data-presentation-row-id]');
+    const rowRect = row?.getBoundingClientRect();
+    return {
+      id: row?.dataset.presentationRowId || '',
+      top: rowRect ? rowRect.top - rootRect.top : null,
+      height: rowRect?.height || 0,
+      scrollHeight: root.scrollHeight,
+      firstID: root.querySelector('[data-presentation-row-id]')?.dataset.presentationRowId || '',
+    };
   });
   expect(before.id).not.toBe('');
-  await wheel(page, viewport, -5_000);
-  await page.waitForTimeout(500);
+  await page.mouse.wheel(0, -2_000);
+  await expect.poll(() => viewport.evaluate((root) => root.scrollHeight))
+    .toBeGreaterThan(before.scrollHeight);
   const after = await viewport.evaluate((root, id) => {
     const row = root.querySelector(`[data-presentation-row-id="${CSS.escape(id)}"]`);
     const rect = row?.getBoundingClientRect();
     const rootRect = root.getBoundingClientRect();
-    return { connected: Boolean(row?.isConnected), top: rect ? rect.top - rootRect.top : null, height: row?.getBoundingClientRect().height || 0, boundaryCount: root.querySelectorAll('.timeline-history-boundary').length };
+    return {
+      connected: Boolean(row?.isConnected),
+      top: rect ? rect.top - rootRect.top : null,
+      height: rect?.height || 0,
+      firstID: root.querySelector('[data-presentation-row-id]')?.dataset.presentationRowId || '',
+      boundaryCount: root.querySelectorAll('.timeline-history-boundary').length,
+    };
   }, before.id);
   expect(after.connected).toBe(true);
   expect(after.height).toBe(before.height);
+  expect(after.firstID).not.toBe(before.firstID);
+  expect(Number(after.top) - Number(before.top)).toBeGreaterThanOrEqual(-2);
   expect(after.boundaryCount).toBe(0);
 });
