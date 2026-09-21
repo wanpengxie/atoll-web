@@ -625,6 +625,32 @@ function notificationBoundaryForVisibleRoots(state, boundary, previous, visibleR
   return closed;
 }
 
+// A related-only tail can use the same durable cursor when the frozen
+// boundary contains no outside-scope notification. This is deliberately
+// stricter than a normal mine mask: seeing a related prefix is not enough if
+// the receipt also spans an unvisited `other` root, because a scalar
+// high-water would hide that sibling. In that case the existing ephemeral
+// related lease remains the only valid projection.
+function notificationBoundaryForRelatedOnly(state, boundary, previous, selfID) {
+  if (!state || !(state.rows instanceof Map) || !selfID) return previous;
+  const target = historyNumeric(boundary);
+  let closed = historyNumeric(previous);
+  for (let seq = closed + 1; seq <= target; seq += 1) {
+    if (!state.rows.has(seq)) break;
+    const envelope = state.rows.get(seq);
+    if (envelope?.kind === 'response'
+      && envelope.parent_id
+      && FINAL.has(argsOf(envelope)?.status)
+      && !state._envelopesById?.has?.(String(envelope.parent_id))) break;
+    const disposition = notificationDisposition(state, envelope, selfID);
+    if (disposition === 'notification_context_unknown') break;
+    if (isRailNotifiableDisposition(disposition)
+      && !notificationRelatesTo(state, envelope, selfID)) return previous;
+    closed = seq;
+  }
+  return closed;
+}
+
 function rowsCoverRange(state, after, through) {
   const start = historyNumeric(after) + 1;
   const end = historyNumeric(through);
@@ -2881,17 +2907,25 @@ export function createChannelFeedRuntime(options = {}) {
     const durableAll = scope === 'all' && !actorFiltered;
     const mineOnly = scope === 'mine' && !actorFiltered;
     const state = replica.state(channelId);
+    const selfID = rosterRef.current?.self?.(channelId) || '';
     const receiptRootIDs = notificationReceiptRootIDs(state, event);
     // Sparse exact-root receipts are durable only for an unfiltered all view.
-    // A mine tail is an ephemeral related-only mask over its closed boundary;
-    // virtualized rows need not enumerate every already-presented root.
+    // A mine tail normally installs an ephemeral related-only mask; the
+    // related-only frontier below may use the scalar cursor only when the
+    // whole frozen range is provably in-scope.
     const exactRootMask = durableAll && Array.isArray(receiptRootIDs);
     const maskedRootIDs = exactRootMask ? receiptRootIDs : [];
     // Only an unfiltered all-channel receipt may make sparse visible roots
-    // durable. Mine and actor-filtered receipts remain ephemeral masks.
+    // durable. A mine receipt never persists sparse identities; it may only
+    // close a wholly related numeric frontier below.
     const identityEntries = durableAll
       ? notificationIdentityEntries(state, boundary, receiptRootIDs)
       : null;
+    const relatedOnlyBoundary = mineOnly
+      ? notificationBoundaryForRelatedOnly(state, boundary, previous, selfID)
+      : previous;
+    const durableMine = mineOnly && relatedOnlyBoundary > previous;
+    const durableReceipt = durableAll || durableMine;
     // The installed boundary is captured by Presentation, but only the
     // canonical Feed rows can prove that it is a continuous, parent-closed
     // notification frontier. In particular, do not let a response-first
@@ -2902,9 +2936,11 @@ export function createChannelFeedRuntime(options = {}) {
         boundary,
         previous,
         receiptRootIDs,
-        rosterRef.current?.self?.(channelId) || '',
+        selfID,
       )
-      : closedNotificationBoundary(replica.state(channelId), boundary, previous);
+      : durableMine
+        ? relatedOnlyBoundary
+        : closedNotificationBoundary(replica.state(channelId), boundary, previous);
     if (currentObservation && sameOwner) {
       const previousFence = notificationInputEpoch(currentObservation.revokeInputEpoch) ?? -1;
       // A revoke is a tombstone for the whole receipt epoch.  A positive
@@ -2921,10 +2957,11 @@ export function createChannelFeedRuntime(options = {}) {
     const identityChanged = identityEntries
       ? cursors.acknowledgeNotificationIdentities(channelId, identityEntries)
       : false;
-    if (!durableAll) {
-      // Mine is a session-only related mask. Actor-filtered receipts are even
-      // narrower and cannot suppress either channel-level projection. Neither
-      // path may advance the one durable channel high-water.
+    if (!durableReceipt) {
+      // A mine receipt that spans an outside-scope root remains a session-only
+      // related mask. Actor-filtered receipts are even narrower and cannot
+      // suppress either channel-level projection. Neither path may advance
+      // the one durable channel high-water.
       const maskBoundary = mineOnly
         ? closedNotificationBoundary(replica.state(channelId), boundary, previous)
         : previous;
