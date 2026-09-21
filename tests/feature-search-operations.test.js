@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createChannelReplicaStore } from '../src/model/channel-replica.js';
 import { searchFeatureIndex, selectFeatureSearchIndex } from '../src/model/feature-search.js';
 
 const channels = [{ id: 'c1', name: '研究频道', access: 'member_active' }];
@@ -145,5 +146,78 @@ describe('feature search operation projection', () => {
     expect(index.filter((entry) => entry.kind === 'work_item')).toEqual([
       expect.objectContaining({ id: 'approval:c1:approval-1', requestId: 'approval-1' }),
     ]);
+  });
+
+  it('TC-0005 keeps same-request facts isolated by channel and ranks WorkItem ahead of Turn', () => {
+    // 用户能力：同名 request 在不同频道各自可搜索；同频道 WorkItem 覆盖其 Turn。
+    // 不变量：频道/request 是去重边界，WorkItem rank 0 必须高于 Turn rank 2。
+    // 公开 owner：selectFeatureSearchIndex/searchFeatureIndex；只使用公开 Replica 状态。
+    const buildState = (channelId) => {
+      const store = createChannelReplicaStore();
+      expect(store.commit({
+        channel_id: channelId,
+        seq: 1,
+        envelope: {
+          id: 'history-1',
+          kind: 'request',
+          type: 'agent.ask',
+          sender: { kind: 'human', id: 'human:root:1' },
+          audience: ['agent:codex:1'],
+          visibility: 'public',
+          payload: { body: { text: '重名历史任务' } },
+        },
+      }).accepted).toBe(true);
+      expect(store.commit({
+        channel_id: channelId,
+        seq: 2,
+        envelope: {
+          id: `${channelId}-history-1-done`,
+          kind: 'response',
+          type: 'agent.ask',
+          parent_id: 'history-1',
+          sender: { kind: 'agent', id: 'agent:codex:1' },
+          audience: ['human:root:1'],
+          visibility: 'public',
+          payload: { body: { status: 'completed', text: '完成' } },
+        },
+      }).accepted).toBe(true);
+      return store.state(channelId);
+    };
+
+    const index = selectFeatureSearchIndex({
+      channels: [
+        { id: 'c1', name: '频道 c1', access: 'member_active' },
+        { id: 'c2', name: '频道 c2', access: 'member_active' },
+      ],
+      states: new Map([
+        ['c1', buildState('c1')],
+        ['c2', buildState('c2')],
+      ]),
+      tasks: [{
+        key: 'agent_run:c1:history-1',
+        channelId: 'c1',
+        kind: 'agent_run',
+        title: '重名历史任务',
+        state: 'active',
+        requestId: 'history-1',
+        updatedAt: 500,
+        source: { requestId: 'history-1' },
+      }],
+    });
+
+    const results = searchFeatureIndex(index, '重名历史任务');
+    expect(results).toHaveLength(2);
+    expect(results.map((item) => [item.channelId, item.kind]).sort()).toEqual([
+      ['c1', 'work_item'],
+      ['c2', 'turn'],
+    ]);
+    expect(results.find((item) => item.channelId === 'c1')).toMatchObject({
+      kind: 'work_item',
+      source: { channelId: 'c1', view: 'tasks', objectType: 'work_item' },
+    });
+    expect(results.find((item) => item.channelId === 'c2')).toMatchObject({
+      kind: 'turn',
+      source: { channelId: 'c2', view: 'dynamic', objectType: 'turn' },
+    });
   });
 });
