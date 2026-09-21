@@ -125,7 +125,7 @@ describe('ContentPlan', () => {
     expect(store.get('candidate')).toBe(prepared);
   });
 
-  it('reuses an exact unpublished render candidate without exposing it as committed identity', () => {
+  it('[TC-0535][AD-241] reuses an exact unpublished render candidate without exposing it as committed identity', () => {
     const store = createContentPlanStore({ limit: 2 });
     const metrics = {};
     const first = store.prepare('strict-candidate', 'one\n\ntwo', { metrics });
