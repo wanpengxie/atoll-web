@@ -705,6 +705,15 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
   // is only the per-channel navigation fact of whether that existing session
   // is expanded in the workspace.
   const [terminalChannels, setTerminalChannels] = useState(() => new Set());
+  // Files visibility is a channel-scoped navigation fact just like terminal
+  // visibility. The feature's directory/selection lifetime stays in
+  // useAttachmentTransactions; this set only decides which existing Files
+  // surface is selected when a channel is re-entered.
+  const initialFileChannels = initialRef.current.view === 'files' && initialRef.current.channelId
+    ? new Set([initialRef.current.channelId])
+    : new Set();
+  const fileChannelsRef = useRef(initialFileChannels);
+  const [fileChannels, setFileChannels] = useState(() => new Set(initialFileChannels));
   // The URL is only a request. A freshly authenticated principal has no
   // active channel until its own directory/access owner validates that id.
   const [activeChannelId, setActiveChannelId] = useState('');
@@ -717,6 +726,17 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
   // handoff fact inside the existing navigation owner so Layout does not grow
   // a second route store or infer it from mounted DOM.
   const filesReturnIntentRef = useRef(null);
+  const rememberFilesChannel = useCallback((channelId, open) => {
+    if (!channelId) return;
+    const current = fileChannelsRef.current;
+    const has = current.has(channelId);
+    if (has === open) return;
+    const next = new Set(current);
+    if (open) next.add(channelId);
+    else next.delete(channelId);
+    fileChannelsRef.current = next;
+    setFileChannels(next);
+  }, []);
   useLayoutEffect(() => { activeChannelRef.current = activeChannelId; }, [activeChannelId]);
   useLayoutEffect(() => { activeViewRef.current = activeView; }, [activeView]);
   useLayoutEffect(() => { focusRef.current = focus; }, [focus]);
@@ -749,12 +769,18 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
       if (activeChannelId && accessRef.current?.state?.(activeChannelId)?.existence === 'retired') onNotice(`${activeChannelId} 已退役，已切换到其他可用频道。`);
       const requested = channels.find((row) => row.id === initialRef.current.channelId);
       const next = requested || channels.find((row) => row.access === 'member_active') || channels[0];
-      const nextFocus = requested?.id === next.id ? initialRef.current.focus : null;
+      const hasValidRequest = requested?.id === next.id;
+      const nextFocus = hasValidRequest ? initialRef.current.focus : null;
+      // A stale/unknown URL is only a channel selection request. Its Files
+      // view must not leak into the first valid channel selected from the
+      // current directory/world.
+      const nextView = hasValidRequest ? activeViewRef.current : 'conversation';
       commitActiveChannel(next.id);
+      commitActiveView(nextView);
       commitFocus(nextFocus);
-      writeRoute(next.id, activeViewRef.current, true, nextFocus);
+      writeRoute(next.id, nextView, true, nextFocus);
     }
-  }, [accessRef, activeChannelId, channels, commitActiveChannel, commitFocus, onNotice]);
+  }, [accessRef, activeChannelId, channels, commitActiveChannel, commitActiveView, commitFocus, onNotice]);
 
   // Terminal visibility is a navigation fact, so directory/world replacement
   // must retire facts for identities that are no longer in the public channel
@@ -767,13 +793,24 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
       const next = new Set([...current].filter((channelId) => available.has(channelId)));
       return next.size === current.size ? current : next;
     });
-  }, [channels]);
+    if (!fileChannels.size) return;
+    const next = new Set([...fileChannels].filter((channelId) => available.has(channelId)));
+    if (next.size !== fileChannels.size) {
+      fileChannelsRef.current = next;
+      setFileChannels(next);
+    }
+  }, [channels, fileChannels]);
 
   useEffect(() => {
     const receiveRoute = () => {
       const route = readInitialRoute();
       if (route.channelId && channels.some((row) => row.id === route.channelId)) {
         const changedChannel = route.channelId !== activeChannelRef.current;
+        if (activeViewRef.current === 'files' && activeChannelRef.current) {
+          rememberFilesChannel(activeChannelRef.current, true);
+        }
+        if (route.view === 'files') rememberFilesChannel(route.channelId, true);
+        else if (route.view === 'conversation') rememberFilesChannel(route.channelId, false);
         // A browser route is an authoritative navigation request. It must not
         // inherit an in-memory Files→Tasks return handoff from an older route.
         filesReturnIntentRef.current = null;
@@ -789,38 +826,52 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
       globalThis.removeEventListener?.('hashchange', receiveRoute);
       globalThis.removeEventListener?.('popstate', receiveRoute);
     };
-  }, [channels, commitActiveChannel, commitActiveView, commitFocus, onSelect]);
+  }, [channels, commitActiveChannel, commitActiveView, commitFocus, onSelect, rememberFilesChannel]);
 
   const select = useCallback((channelId) => {
     // The boolean is only an acceptance signal for shell handoff gates;
     // activeChannelRef/state remains the sole selection authority.
     if (!channelId || channelId === activeChannelRef.current) return false;
+    const originChannelId = activeChannelRef.current;
+    if (activeViewRef.current === 'files') rememberFilesChannel(originChannelId, true);
+    // Tasks remains the existing cross-channel primary view. Files is the
+    // channel-scoped exception: an already-open target restores Files, while
+    // an unseen target stays on the conversation surface.
+    const nextView = activeViewRef.current === 'tasks'
+      ? 'tasks'
+      : fileChannelsRef.current.has(channelId) ? 'files' : 'conversation';
     commitActiveChannel(channelId);
+    commitActiveView(nextView);
     commitFocus(null);
     onSelect(channelId);
-    writeRoute(channelId, activeViewRef.current, true, null, false);
+    writeRoute(channelId, nextView, true, null, false);
     return true;
-  }, [commitActiveChannel, commitFocus, onSelect]);
+  }, [commitActiveChannel, commitActiveView, commitFocus, onSelect, rememberFilesChannel]);
   const setActiveView = useCallback((view) => {
     if (!['conversation', 'files', 'tasks'].includes(view)) return;
     const channelId = activeChannelRef.current;
     let nextView = view;
     if (view === 'tasks') {
-      if (activeViewRef.current === 'files' && channelId) filesReturnIntentRef.current = channelId;
+      if (activeViewRef.current === 'files' && channelId) {
+        rememberFilesChannel(channelId, true);
+        filesReturnIntentRef.current = channelId;
+      }
     } else if (view === 'files') {
       // Opening or explicitly staying on Files is a new primary intent.
+      rememberFilesChannel(channelId, true);
       filesReturnIntentRef.current = null;
     } else if (filesReturnIntentRef.current === channelId) {
       // The Dynamic tab is the return edge for a temporary Tasks excursion.
       nextView = 'files';
       filesReturnIntentRef.current = null;
     } else {
+      if (activeViewRef.current === 'files') rememberFilesChannel(channelId, false);
       filesReturnIntentRef.current = null;
     }
     commitActiveView(nextView);
     commitFocus(null);
     writeRoute(channelId, nextView, true, null, false);
-  }, [commitActiveView, commitFocus]);
+  }, [commitActiveView, commitFocus, rememberFilesChannel]);
   const setFocus = useCallback((nextFocus) => {
     const normalized = nextFocus?.type && nextFocus?.key
       ? parseRouteFocus(`${nextFocus.type}:${nextFocus.key}`)
@@ -856,17 +907,28 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
     if (next instanceof Map && next.size === 0) {
       filesReturnIntentRef.current = null;
       setTerminalChannels((current) => (current.size ? new Set() : current));
+      fileChannelsRef.current = new Set();
+      setFileChannels((current) => (current.size ? new Set() : current));
+      // An empty authoritative directory is a world/replacement boundary,
+      // not a temporary absence of rows. Retire the old channel/view
+      // synchronously so a subsequent valid channel cannot inherit Files.
+      commitActiveChannel('');
+      commitActiveView('conversation');
+      commitFocus(null);
     }
     setProfiles(next);
-  }, []);
+  }, [commitActiveChannel, commitActiveView, commitFocus]);
   const clear = useCallback(() => {
     filesReturnIntentRef.current = null;
+    fileChannelsRef.current = new Set();
+    setFileChannels(new Set());
     setProfiles(new Map());
     setTerminalChannels(new Set());
     commitActiveChannel('');
+    commitActiveView('conversation');
     commitFocus(null);
     setRevision((value) => value + 1);
-  }, [commitActiveChannel, commitFocus]);
+  }, [commitActiveChannel, commitActiveView, commitFocus]);
 
   return {
     activeChannel: channels.find((row) => row.id === activeChannelId) || null,
