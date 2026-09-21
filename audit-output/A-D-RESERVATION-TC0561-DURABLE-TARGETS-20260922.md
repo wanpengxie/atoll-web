@@ -57,3 +57,29 @@ committed.
 This is an atomic claim: this reservation report is committed before changing
 the test declaration. Closeout will append focused, adjacent, and build
 evidence plus the final PASS or bounded regression disposition.
+
+## Closeout — 2026-09-22
+
+- **Reservation commit:** `a267d40` (`chore(a-d): reserve TC0561 durable target binding`).
+- **Migration:** the retained declaration is tagged `[TC-0561][AD-267]`; its
+  original `latest` request, matching authority tuple, stable target ID, and
+  unchanged `intentRevision` assertions remain intact. No test was
+  deleted/skipped and no private oracle, second store, or product code was
+  introduced.
+- **Focused:**
+  `npm test -- tests/conversation-viewport.test.js --run -t 'TC-0561' --reporter=verbose`
+  — **1 passed, 20 selection skips**; the skips are Vitest selection output,
+  not skipped declarations.
+- **Owner suite:**
+  `npm test -- tests/conversation-viewport.test.js --run --reporter=dot`
+  — **21 passed, 0 failed**.
+- **Adjacent reading suites:**
+  `npm test -- tests/reading-session-ports.test.js tests/reading-navigation-coordinator.test.js tests/reading-geometry.test.js --run --reporter=dot`
+  — **17 passed, 0 failed**.
+- **Build:** `npm run build` — **passed**; Vite emitted only the existing
+  large-chunk advisory.
+- **Disposition:** **PASS / MIGRATED**, credit `1`. The public
+  reading-session owner enriches the existing one-shot tail intent with
+  durable message identity without advancing its intent revision or creating a
+  second bottom authority. No product change or semantic weakening was needed.
+- **Final commit:** recorded below after this closeout and test-only tag.

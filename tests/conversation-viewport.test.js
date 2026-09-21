@@ -356,7 +356,7 @@ describe('reading session authority', () => {
     expect(consumed.mode).toBe(READING_MODE.following);
   });
 
-  it('binds durable message identities without issuing a second bottom intent', () => {
+  it('[TC-0561][AD-267] binds durable message identities without issuing a second bottom intent', () => {
     const requested = requestLatest(session(), 'composer:send-start:one', {
       afterPresentationRevision: 8,
     });
