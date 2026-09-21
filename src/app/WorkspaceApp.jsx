@@ -1723,6 +1723,11 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
         selectActor: (actor) => setPanel({ kind: 'actor', actor, channelId: navigation.activeChannelId }),
         listTemplates: () => requestChannelTemplateList(navigation.activeChannelId),
         getTemplate: (templateId) => requestChannelTemplate(navigation.activeChannelId, templateId),
+        restartActor: ({ channelId, actorId } = {}) => sendGovernanceCommand(
+          String(channelId || navigation.activeChannelId || ''),
+          TYPES.member.restart,
+          { member: String(actorId || '') },
+        ),
         enterChannel: ({ channelId, view = 'conversation' } = {}) => {
           const target = String(channelId || '');
           if (!target || !navigation.channels.some((row) => row.id === target)) return false;

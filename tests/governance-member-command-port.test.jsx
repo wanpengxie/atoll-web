@@ -262,4 +262,30 @@ describe('TC-0484 real Workspace governance composition', () => {
     });
     expect(workspaceFixture.submit).toHaveBeenCalledTimes(1);
   });
+
+  it('maps the public member restart action to the canonical system restart frame', async () => {
+    workspaceFixture.transportFrames.length = 0;
+    workspaceFixture.submit.mockClear();
+
+    render(<WorkspaceApp />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: '打开频道成员管理' })).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: '打开频道成员管理' }));
+
+    const panel = await screen.findByRole('complementary', { name: '频道治理' });
+    const worker = within(panel).getByText('Worker').closest('.managed-actor');
+    expect(worker).toBeTruthy();
+    fireEvent.click(within(worker).getByRole('button', { name: '重启' }));
+    fireEvent.click(within(panel).getByRole('button', { name: '确认操作' }));
+
+    await waitFor(() => expect(workspaceFixture.transportFrames).toHaveLength(1));
+    expect(workspaceFixture.transportFrames[0]).toMatchObject({
+      channel_id: workspaceFixture.channelId,
+      msg_type: TYPES.member.restart,
+      kind: 'request',
+      audience: [SYSTEM_ACTOR_ID],
+      payload: { member: workspaceFixture.workerId },
+    });
+    expect(workspaceFixture.submit).toHaveBeenCalledTimes(1);
+  });
 });
