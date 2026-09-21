@@ -118,6 +118,16 @@ function directionFromKey(key) {
   return '';
 }
 
+// Modal surfaces can be rendered below a timeline row (the process-detail
+// drawer is one such surface).  Their own wheel/touch/key interaction must
+// not become a navigation transaction for the list that happens to contain
+// the row.  Keep this fence at the one native-input owner so modal consumers
+// retain their normal document-level keyboard handling without adding a
+// second event owner or a scroll writer.
+function isReadingModalEvent(event) {
+  return Boolean(event?.target?.closest?.('[data-modal-layer]'));
+}
+
 const CONTENT_ANCHOR_MAX_ATTEMPTS = 4;
 const FOLLOWING_TAIL_GAP_TOLERANCE_PX = 1;
 const POSITION_RESTORE_MAX_ATTEMPTS = 8;
@@ -1378,6 +1388,7 @@ export function VendorListExecutor({
     lastScrollTopRef.current = Number(root.scrollTop || 0);
     const host = { activationID: reading.activationID, hostRole: 'conversation', hostToken: root };
     const wheel = (event) => {
+      if (isReadingModalEvent(event)) return;
       if (!event.deltaY) return;
       const direction = event.deltaY < 0 ? 'older' : 'newer';
       const atTop = root.scrollTop <= 1;
@@ -1426,6 +1437,7 @@ export function VendorListExecutor({
       }
     };
     const keydown = (event) => {
+      if (isReadingModalEvent(event)) return;
       const direction = directionFromKey(event.key);
       if (!direction) return;
       if (event.key === 'Home') event.preventDefault();
@@ -1440,6 +1452,7 @@ export function VendorListExecutor({
       coordinator.endContact({ ...host, source: 'key', sourceID: event.key });
     };
     const touchstart = (event) => {
+      if (isReadingModalEvent(event)) return;
       const touch = event.touches?.[0];
       if (!touch) return;
       cancelPendingPositionRestore();
@@ -1453,6 +1466,7 @@ export function VendorListExecutor({
       });
     };
     const touchmove = (event) => {
+      if (isReadingModalEvent(event)) return;
       const current = touchRef.current;
       const touch = [...(event.touches || [])].find((item) => item.identifier === current?.id);
       if (!current || !touch || Math.abs(touch.clientY - current.y) < 2) return;
@@ -1461,13 +1475,19 @@ export function VendorListExecutor({
       cancelPendingPositionRestore();
       coordinator.recordInput({ ...host, source: 'touch', sourceID: current.id, direction });
     };
-    const touchend = () => {
+    const touchend = (event) => {
+      if (isReadingModalEvent(event)) return;
       const current = touchRef.current;
       if (!current) return;
       coordinator.endContact({ ...host, source: 'touch', sourceID: current.id });
       touchRef.current = null;
     };
-    const scroll = () => {
+    const scroll = (event) => {
+      // Scroll events from the drawer body must never be interpreted as
+      // physical movement of the timeline root. Native scroll does not
+      // bubble, but the target fence also protects against synthetic/custom
+      // dispatch and future scroll propagation changes.
+      if (event?.target !== root) return;
       tailWriteRef.current = null;
       const top = Number(root.scrollTop || 0);
       const direction = top < lastScrollTopRef.current ? 'older' : top > lastScrollTopRef.current ? 'newer' : '';
@@ -1494,7 +1514,8 @@ export function VendorListExecutor({
     root.addEventListener('touchend', touchend, { passive: true });
     root.addEventListener('touchcancel', touchend, { passive: true });
     root.addEventListener('scroll', scroll, { passive: true });
-    const scrollend = () => {
+    const scrollend = (event) => {
+      if (event?.target !== root) return;
       const transaction = coordinator.getSnapshot().transaction;
       // Chromium emits `scrollend` after each discrete wheel tick, even while
       // the user is still producing one physical wheel burst. Ending the

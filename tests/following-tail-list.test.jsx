@@ -291,3 +291,67 @@ it('does not reissue the pending tail writer after a wheel takeover', () => {
   act(() => harness.props.totalListHeightChanged());
   expect(root.scrollTo).toHaveBeenCalledTimes(1);
 });
+
+it('keeps modal drawer input outside the Reading navigation owner', () => {
+  const reading = followingIntentReading();
+  render(<VendorListExecutor
+    snapshot={snapshot(2)}
+    reading={reading}
+    rowRevision={(index) => String(index)}
+    renderRow={(row) => <div>{row.id}</div>}
+    surfaceVisible
+  />);
+
+  const root = document.querySelector('.timeline-message-list');
+  const modal = document.createElement('div');
+  modal.setAttribute('data-modal-layer', '');
+  const body = document.createElement('div');
+  modal.appendChild(body);
+  root.appendChild(modal);
+
+  const before = { ...reading.getSession() };
+  const wheel = new Event('wheel', { bubbles: true });
+  Object.defineProperty(wheel, 'deltaY', { configurable: true, value: -240 });
+  const keydown = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Home' });
+  const touchstart = new Event('touchstart', { bubbles: true });
+  Object.defineProperty(touchstart, 'touches', {
+    configurable: true,
+    value: [{ identifier: 1, clientY: 200 }],
+  });
+  const touchmove = new Event('touchmove', { bubbles: true });
+  Object.defineProperty(touchmove, 'touches', {
+    configurable: true,
+    value: [{ identifier: 1, clientY: 80 }],
+  });
+  const touchend = new Event('touchend', { bubbles: true });
+  const nestedScroll = new Event('scroll', { bubbles: true });
+  const nestedScrollEnd = new Event('scrollend', { bubbles: true });
+
+  act(() => {
+    body.dispatchEvent(wheel);
+    body.dispatchEvent(keydown);
+    body.dispatchEvent(touchstart);
+    body.dispatchEvent(touchmove);
+    body.dispatchEvent(touchend);
+    body.dispatchEvent(nestedScroll);
+    body.dispatchEvent(nestedScrollEnd);
+  });
+
+  expect(reading.beginNavigation).not.toHaveBeenCalled();
+  expect(reading.getSession()).toMatchObject({
+    inputEpoch: before.inputEpoch,
+    intentRevision: before.intentRevision,
+    mode: before.mode,
+  });
+  expect(keydown.defaultPrevented).toBe(false);
+
+  // The fence is scoped to the existing modal marker; ordinary row content
+  // must retain the normal Reading input path.
+  const ordinaryChild = document.createElement('div');
+  root.appendChild(ordinaryChild);
+  Object.defineProperty(root, 'scrollTop', { configurable: true, writable: true, value: 100 });
+  const ordinaryWheel = new Event('wheel', { bubbles: true });
+  Object.defineProperty(ordinaryWheel, 'deltaY', { configurable: true, value: -240 });
+  act(() => ordinaryChild.dispatchEvent(ordinaryWheel));
+  expect(reading.beginNavigation).toHaveBeenCalledTimes(1);
+});

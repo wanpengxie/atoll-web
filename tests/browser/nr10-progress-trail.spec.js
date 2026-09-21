@@ -129,3 +129,113 @@ test('NR10-01/04 public process detail and live timing', async ({ page, request 
   await liveDrawer.getByRole('button', { name: '关闭详情' }).click();
   await expect(liveDrawer).toHaveCount(0);
 });
+
+test('NR10 nested drawer input does not take over the timeline Reading owner', async ({ page, request }) => {
+  await reset(request, 10011);
+  await login(page);
+
+  const marker = 'NR10 nested drawer boundary';
+  const editor = page.getByRole('textbox', { name: '消息', exact: true });
+  await editor.fill('@st');
+  await page.getByRole('option', { name: /steward/ }).click();
+  await editor.press('End');
+  await editor.pressSequentially(marker);
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+
+  const turn = page.locator('.agent-conversation-turn').filter({ hasText: marker }).first();
+  await expect(turn).toBeVisible();
+  const trail = turn.locator('.progress-trail.running');
+  await expect(trail).toBeVisible();
+  await trail.getByRole('button', { name: /展开过程详情/ }).click();
+  const requestId = await turn.getAttribute('data-request-id');
+  const detail = 'nested drawer boundary detail';
+  const response = await request.post(`${MOCK}/mock/control/action`, {
+    data: {
+      type: 'push_provisional',
+      channel_id: 'c0',
+      request_id: requestId,
+      status: 'processing',
+      payload: { process: { kind: 'stage', stage: 'thinking', text: detail } },
+    },
+  });
+  expect(response.ok()).toBe(true);
+
+  const trigger = trail.locator('button[title="查看完整内容"]').filter({ hasText: detail });
+  await expect(trigger).toBeVisible();
+  await trigger.evaluate(() => {
+    const root = document.querySelector('.timeline-message-list');
+    const writes = [];
+    const originalScrollTo = Element.prototype.scrollTo;
+    Element.prototype.scrollTo = function patchedScrollTo(...args) {
+      if (this === root) writes.push({ method: 'scrollTo', args });
+      return originalScrollTo?.apply(this, args);
+    };
+    window.__nr10DrawerBoundary = { root, writes, originalScrollTo };
+  });
+
+  const before = await page.evaluate(() => {
+    const root = document.querySelector('.timeline-message-list');
+    const timeline = document.querySelector('.timeline');
+    const row = [...root.querySelectorAll('[data-presentation-row-id]')]
+      .find((node) => { const rect = node.getBoundingClientRect(); const box = root.getBoundingClientRect(); return rect.bottom > box.top && rect.top < box.bottom; });
+    return {
+      mode: timeline?.dataset.viewportMode,
+      scrollTop: root.scrollTop,
+      anchorID: row?.closest('[data-presentation-row-id]')?.dataset.presentationRowId || '',
+      anchorTop: row?.getBoundingClientRect().top ?? null,
+    };
+  });
+
+  await trigger.click();
+  const drawer = page.getByRole('dialog', { name: /过程详情/ });
+  await expect(drawer).toBeVisible();
+  const inputResult = await drawer.locator('.progress-drawer-body').evaluate((node) => {
+    const wheel = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: -240 });
+    node.dispatchEvent(wheel);
+    const keydown = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Home' });
+    node.dispatchEvent(keydown);
+    const touch = (type, touches) => {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'touches', { configurable: true, value: touches });
+      node.dispatchEvent(event);
+    };
+    touch('touchstart', [{ identifier: 1, clientY: 180 }]);
+    touch('touchmove', [{ identifier: 1, clientY: 80 }]);
+    touch('touchend', []);
+    node.dispatchEvent(new Event('scroll', { bubbles: true }));
+    node.dispatchEvent(new Event('scrollend', { bubbles: true }));
+    return { keyPrevented: keydown.defaultPrevented };
+  });
+  await page.waitForTimeout(100);
+
+  const after = await page.evaluate(() => {
+    const root = document.querySelector('.timeline-message-list');
+    const timeline = document.querySelector('.timeline');
+    const row = [...root.querySelectorAll('[data-presentation-row-id]')]
+      .find((node) => { const rect = node.getBoundingClientRect(); const box = root.getBoundingClientRect(); return rect.bottom > box.top && rect.top < box.bottom; });
+    return {
+      mode: timeline?.dataset.viewportMode,
+      scrollTop: root.scrollTop,
+      anchorID: row?.closest('[data-presentation-row-id]')?.dataset.presentationRowId || '',
+      anchorTop: row?.getBoundingClientRect().top ?? null,
+      writes: window.__nr10DrawerBoundary.writes,
+    };
+  });
+
+  expect(inputResult.keyPrevented).toBe(false);
+  expect(after.mode).toBe(before.mode);
+  expect(after.scrollTop).toBe(before.scrollTop);
+  expect(after.anchorID).toBe(before.anchorID);
+  if (before.anchorTop != null && after.anchorTop != null) {
+    expect(Math.abs(after.anchorTop - before.anchorTop)).toBeLessThanOrEqual(1);
+  }
+  expect(after.writes).toEqual([]);
+
+  await drawer.getByRole('button', { name: '关闭详情' }).click();
+  await expect(drawer).toHaveCount(0);
+  await expect.poll(() => trigger.evaluate((node) => document.activeElement === node)).toBe(true);
+  await page.evaluate(() => {
+    const boundary = window.__nr10DrawerBoundary;
+    if (boundary) Element.prototype.scrollTo = boundary.originalScrollTo;
+  });
+});
