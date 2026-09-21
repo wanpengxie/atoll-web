@@ -4370,12 +4370,16 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     reading.session = { ...reading.session, bottomIntent: intent };
     const first = round33Row('round37-waiting-root', 1);
     const queued = { ...round33Row('round37-queued-request', 2), localState: 'queued', body: { local: true } };
+    const timelineTarget = { ...round33Row('round37-queued-request', 2), body: { local: false } };
     const humanNext = { ...round33Row('round37-human-next', 3), body: { local: false } };
     const running = { ...round33Row('round37-running', 4), body: { local: false } };
+    const initialSnapshot = round33Snapshot([first], { revision: 1 });
+    const initialPresentation = round36BottomPresentation(reading, initialSnapshot, intent, false);
     const view = render(
       <VendorListExecutor
-        snapshot={round33Snapshot([first], { revision: 1 })}
+        snapshot={initialSnapshot}
         reading={reading}
+        bottomIntentPresentation={initialPresentation}
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
@@ -4386,31 +4390,66 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     });
     vendorHarness.scrollTo.mockClear();
 
+    const waitingSnapshot = round33Snapshot([first, queued], { revision: 2 });
+    const waitingPresentation = Object.freeze({
+      ...round36BottomPresentation(reading, waitingSnapshot, intent, false),
+      destinations: Object.freeze([Object.freeze({
+        messageID: queued.id,
+        destination: 'waiting',
+        targetListRevision: waitingSnapshot.revision,
+      })]),
+    });
     view.rerender(
       <VendorListExecutor
-        snapshot={round33Snapshot([first, queued], { revision: 2 })}
+        snapshot={waitingSnapshot}
         reading={reading}
+        bottomIntentPresentation={waitingPresentation}
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
-    expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
-    expect(reading.getSession().bottomIntent.id).toBe('');
-    setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_100, scrollTop: 400 });
+    act(() => vendorHarness.props.totalListHeightChanged());
+    expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+    expect(reading.getSession().bottomIntent.id).toBe(intent.id);
+
+    // Waiting is not a consumable timeline destination. The same target must
+    // later materialize in the timeline before the typed receipt can join the
+    // send to the physical height acknowledgement.
+    const timelineSnapshot = round33Snapshot([first, timelineTarget], { revision: 3 });
+    const timelinePresentation = round36BottomPresentation(reading, timelineSnapshot, intent, true);
     view.rerender(
       <VendorListExecutor
-        snapshot={round33Snapshot([first, queued, humanNext], { revision: 3 })}
+        snapshot={timelineSnapshot}
         reading={reading}
+        bottomIntentPresentation={timelinePresentation}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+    expect(reading.getSession().bottomIntent.id).toBe(intent.id);
+    setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_100, scrollTop: 400 });
+    act(() => vendorHarness.props.totalListHeightChanged());
+    expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
+    expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_100, behavior: 'auto' });
+    expect(reading.getSession().bottomIntent.id).toBe('');
+
+    setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_180, scrollTop: 500 });
+    view.rerender(
+      <VendorListExecutor
+        snapshot={round33Snapshot([first, timelineTarget, humanNext], { revision: 4 })}
+        reading={reading}
+        bottomIntentPresentation={null}
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
     act(() => vendorHarness.props.totalListHeightChanged());
     expect(vendorHarness.scrollTo).toHaveBeenCalledTimes(2);
 
-    setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_180, scrollTop: 500 });
+    setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_260, scrollTop: 600 });
     view.rerender(
       <VendorListExecutor
-        snapshot={round33Snapshot([first, queued, humanNext, running], { revision: 4 })}
+        snapshot={round33Snapshot([first, timelineTarget, humanNext, running], { revision: 5 })}
         reading={reading}
+        bottomIntentPresentation={null}
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
