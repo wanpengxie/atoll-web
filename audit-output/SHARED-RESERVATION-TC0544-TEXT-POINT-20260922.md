@@ -55,3 +55,26 @@ not be committed.
 
 Closeout will append focused, adjacent, and build evidence plus the final
 PASS/REGRESSION disposition.
+
+## Closeout — 2026-09-22
+
+- **Migration:** added only the explicit `[TC-0544]` tag to the existing test
+  declaration. The saved point, prepended source, public resolver call, exact
+  offset computation, and `match: 'context'` assertion remain unchanged; no
+  skip/filter/private oracle was introduced.
+- **Focused:**
+  `npm test -- tests/content-plan.test.js --run -t 'TC-0544' --reporter=verbose`
+  — `1 passed, 18 skipped` by Vitest selection (the 18 are not skipped test
+  declarations).
+- **Adjacent owner suite:**
+  `npm test -- tests/content-plan.test.js --run --reporter=verbose` — `19
+  passed`.
+- **Adjacent semantic suite:**
+  `npm test -- tests/content-plan-semantics.test.jsx --run --reporter=dot` —
+  `10 passed`. It retains the pre-existing empty-`src` React warnings; no
+  assertion failed.
+- **Build:** `npm run build` — passed; Vite emitted only the existing large
+  chunk advisory.
+- **Disposition:** `PASS` / `MIGRATED`, credit `1`. The case remains a strict
+  public-owner proof of context-based text-point relocation after prefix
+  insertion. No product change or semantic weakening was required.
