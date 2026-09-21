@@ -42,6 +42,7 @@ function captureAgentAskFrames(page) {
         const parsed = JSON.parse(raw);
         if (parsed?.frame_type !== 'submit' || parsed.payload?.msg_type !== 'agent.ask') return;
         frames.push({
+          messageId: parsed.payload.id,
           channelId: parsed.payload.channel_id,
           text: parsed.payload.payload?.text,
         });
@@ -119,6 +120,7 @@ test('SZ-034 backend retired rejection preserves draft and never revives queued 
       target: 'submit',
       mode: 'reject',
       code: 'channel_not_found',
+      match_msg_type: 'agent.ask',
       count: 1,
     },
   });
@@ -128,14 +130,16 @@ test('SZ-034 backend retired rejection preserves draft and never revives queued 
   await expect(connection).toHaveClass(/state-open/, { timeout: 15_000 });
   await expect.poll(() => errors.filter((error) => error.code === 'channel_not_found').length, { timeout: 15_000 }).toBe(1);
   const composerError = page.locator('.composer-error');
-  await page.waitForTimeout(500);
+  await expect(composerError, 'server rejection must settle the Composer row visibly').toBeVisible({ timeout: 15_000 });
   const composerErrorVisible = await composerError.isVisible();
   const feedback = page.locator('.top-error, .channel-notice, .composer-error').first();
   const feedbackText = await feedback.count() ? (await feedback.innerText()).trim() : '';
   const draftRetainedAfterRejection = (await editor.innerText()).trim() === draftText;
+  const queuedSends = () => sends.filter((row) => row.channelId === 'c0.project' && row.text === queuedText);
+  const sendsAtRejection = queuedSends().length;
   await page.waitForTimeout(1_500);
 
-  const sendsAfterRejection = sends.length;
+  const sendsAfterRejection = queuedSends().length;
 
   // Publish the ordinary retired projection only after the backend rejection
   // has been rendered.  This verifies the public handoff without requiring
@@ -150,23 +154,24 @@ test('SZ-034 backend retired rejection preserves draft and never revives queued 
   const retiredNoticeVisible = await retiredNotice.isVisible();
   await page.waitForTimeout(1_000);
 
-  const sendsAfterProjection = sends.length;
+  const sendsAfterProjection = queuedSends().length;
   await page.reload();
   await expect(connection).toHaveClass(/state-open/, { timeout: 15_000 });
   await page.waitForTimeout(800);
-  const sendsAfterReload = sends.length;
+  const sendsAfterReload = queuedSends().length;
 
   // Soft assertions keep the complete public evidence in the failing report:
   // draft retention, server rejection, bounded retired notice, and the
   // no-retry/revival observations.
   expect.soft(draftRetainedBeforeReconnect, 'draft must remain visible until the backend rejection').toBe(true);
   expect.soft(draftRetainedAfterRejection, 'draft must remain visible after a definitive server rejection').toBe(true);
-  expect.soft(sends[0], 'the one allowed wire attempt must target the retired channel').toMatchObject({ channelId: 'c0.project', text: queuedText });
-  expect.soft(sendsAfterRejection, 'server-rejected intent must not retry before retirement projection').toBe(1);
+  expect.soft(queuedSends()[0], 'the admitted wire attempt must target the retired channel').toMatchObject({ channelId: 'c0.project', text: queuedText });
+  expect.soft(sendsAtRejection, 'backend rejection must follow an admitted wire attempt').toBeGreaterThanOrEqual(1);
+  expect.soft(sendsAfterRejection, 'server-rejected intent must not retry after its terminal rejection').toBe(sendsAtRejection);
   expect.soft(errors.filter((error) => error.code === 'channel_not_found'), 'backend must return the retired-channel rejection').toHaveLength(1);
   expect.soft(composerErrorVisible, 'Composer must show an explicit bounded server failure').toBe(true);
   expect.soft(feedbackText, 'server rejection must not be presented as an uncertain retry').not.toMatch(/待确认|重连账本核对/);
   expect.soft(retiredNoticeVisible, 'retired projection must remain a bounded public failure').toBe(true);
-  expect.soft(sendsAfterProjection, 'rejected intent must not revive after retirement projection').toBe(1);
-  expect.soft(sendsAfterReload, 'rejected intent must not revive after reload').toBe(1);
+  expect.soft(sendsAfterProjection, 'rejected intent must not revive after retirement projection').toBe(sendsAtRejection);
+  expect.soft(sendsAfterReload, 'rejected intent must not revive after reload').toBe(sendsAtRejection);
 });

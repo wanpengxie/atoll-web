@@ -1647,7 +1647,7 @@ export function createMockServer({
       sendError(socket, { ref, frame: type, code: 'bad_payload', detail: validation });
       return;
     }
-    const injected = domain.takeFault(type);
+    const injected = domain.takeFault(type, { msgType: payload?.msg_type });
     if (injected?.mode === 'reject') {
       sendError(socket, { ref, frame: type, code: injected.code, detail: 'injected mock rejection' });
       return;
