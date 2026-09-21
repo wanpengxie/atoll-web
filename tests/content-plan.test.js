@@ -279,7 +279,7 @@ describe('ContentPlan', () => {
     });
   });
 
-  it('reports a coarse block-offset fallback rather than guessing between repeated contexts', () => {
+  it('[TC-0545] reports a coarse block-offset fallback rather than guessing between repeated contexts', () => {
     const point = createContentTextPoint({ blockID: 'block:1', text: 'before target after', textOffset: 7 });
     expect(resolveContentTextOffset('completely rewritten', point)).toEqual({
       textOffset: 7,
