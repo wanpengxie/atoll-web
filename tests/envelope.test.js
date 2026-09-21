@@ -8,7 +8,7 @@ import {
 } from '../src/protocol/envelope.js';
 
 describe('envelope algebra', () => {
-  it('keeps final and provisional status sets disjoint', () => {
+  it('[TC-0672][EH02-01] keeps final and provisional status sets disjoint', () => {
     expect([...FINAL]).toEqual(['completed', 'failed']);
     expect([...PROVISIONAL]).toEqual(['received', 'queued', 'processing', 'deferred', 'unavailable']);
     expect([...FINAL].some((status) => PROVISIONAL.has(status))).toBe(false);
