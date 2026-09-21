@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { actorNameFromMap } from '../../model/actor-display.js';
 import { isStandardActorIdentity } from '../../model/actor-visibility.js';
-import { redactSensitive, terminalContentEnvelope, terminalResultState, turnProcessObservations } from '../../model/terminal-result.js';
+import { redactSensitive, terminalContentEnvelope, terminalResultState, turnProcessAuditFacts, turnProcessObservations } from '../../model/terminal-result.js';
 import { argsOf, hasCanonicalBody } from '../../protocol/envelope.js';
 import { DECISIONS, isSystemWord, TYPES } from '../../protocol/vocab.js';
 import { messageTimeLabel } from '../../util/time.js';
@@ -551,7 +551,16 @@ function ApprovalCard({ turn, names, state, onResolve }) {
 }
 
 function hasProcessSummary(turn) {
-  return progressRows(turn).some((row) => !row.stateOnly
+  // A process can be auditable even when it has no human-readable detail
+  // body. Keep the entry owned by the timeline, while allowing the existing
+  // TurnDetailPanel facts projection to expose its safe identifiers.
+  const hasAuditFacts = turnProcessAuditFacts(turn).some((fact) => {
+    const hasAuditNumber = fact.identifiers.some(({ label }) => label === '审计编号');
+    const hasCompletedCall = fact.phase === 'ended'
+      && fact.identifiers.some(({ label }) => label === '调用编号');
+    return hasAuditNumber || hasCompletedCall;
+  });
+  return hasAuditFacts || progressRows(turn).some((row) => !row.stateOnly
     && typeof row.body === 'string'
     && row.body.trim());
 }
