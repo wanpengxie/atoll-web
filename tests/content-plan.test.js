@@ -66,7 +66,7 @@ describe('ContentPlan', () => {
     expect(next.blocks[1].renderRevision).not.toBe(first.blocks[1].renderRevision);
   });
 
-  it('keeps an unambiguous locally edited block identity but replaces ambiguous edits', () => {
+  it('[TC-0530][AD-236] keeps an unambiguous locally edited block identity but replaces ambiguous edits', () => {
     const first = plan({
       contentKey: 'message:local-edit:body',
       source: 'fixed before\n\nkeep these words\n\nfixed after',
