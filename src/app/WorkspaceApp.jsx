@@ -1177,6 +1177,25 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       return currentKind === 'task' ? '' : current;
     });
   }, [navigation.activeView, navigation.focus]);
+  useEffect(() => {
+    const routeFocus = navigation.focus?.type === 'channel'
+      && String(navigation.focus.key || '') === String(navigation.activeChannelId || '')
+      ? String(navigation.focus.key)
+      : '';
+    setPanel((current) => {
+      const currentKind = typeof current === 'string' ? current : current?.kind || '';
+      if (routeFocus) {
+        return currentKind === 'channel-administration' ? current : 'channel-administration';
+      }
+      // A browser Back/Forward transition clears or restores the typed
+      // channel Context. Do not infer this from a mounted panel: the route
+      // owner remains useChannelNavigation, while this effect only projects
+      // its validated focus into the existing Governance feature.
+      return navigation.focus == null && currentKind === 'channel-administration'
+        ? ''
+        : current;
+    });
+  }, [navigation.activeChannelId, navigation.focus]);
   const waitingItems = useMemo(() => selectFeatureWaitingFacts({
     state,
     pending: submission.pending,
@@ -1874,6 +1893,21 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     />}
   </>;
 
+  const openChannelAdministration = useCallback((initialTab = 'members') => {
+    if (!memberVisible) return false;
+    setPanel(initialTab === 'overview'
+      ? { kind: 'channel-administration', initialTab: 'overview' }
+      : 'channel-administration');
+    return true;
+  }, [memberVisible]);
+  const openChannelDetails = useCallback(() => {
+    if (!memberVisible || !navigation.activeChannelId) return false;
+    if (typeof navigation.setFocus === 'function') {
+      navigation.setFocus({ type: 'channel', key: navigation.activeChannelId });
+    }
+    return openChannelAdministration();
+  }, [memberVisible, navigation.activeChannelId, navigation.setFocus, openChannelAdministration]);
+
   if (wire.incompatible) return <VersionIncompatible
     expectedVersion={wire.incompatible.expected_version ?? wire.incompatible.expected}
     receivedVersion={wire.incompatible.received_version ?? wire.incompatible.received}
@@ -1918,11 +1952,8 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       openActivity: () => setPanel('activity'),
       update: wire.update,
       openReadingHistory: contentVisible ? () => setPanel('reading-history') : undefined,
-      openChannelAdministration: memberVisible
-        ? (initialTab = 'members') => setPanel(initialTab === 'overview'
-          ? { kind: 'channel-administration', initialTab: 'overview' }
-          : 'channel-administration')
-        : undefined,
+      openChannelAdministration: memberVisible ? openChannelAdministration : undefined,
+      openChannelDetails: memberVisible ? openChannelDetails : undefined,
       openSpaceAdministration: () => setPanel('space-administration'),
     }}
     notices={{
