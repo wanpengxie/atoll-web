@@ -265,16 +265,27 @@ export function useComposerSubmissionRuntime({
     return value;
   }, []);
 
-  const persistControlState = useCallback((controlKey, value, lifecycleGeneration = null) => {
+  const persistControlState = useCallback((controlKey, value, {
+    lifecycleGeneration = null,
+    attemptEpoch = null,
+  } = {}) => {
     if (!principalId || !value || !ACTIVE_CONTROL_STATES.has(value.state)) return Promise.resolve(false);
+    const isCurrent = () => (lifecycleGeneration === null
+      || isLiveLifecycle(lifecycleRef.current, lifecycleGeneration))
+      && (attemptEpoch === null || attemptEpochRef.current === attemptEpoch);
+    if (!isCurrent()) return Promise.resolve(false);
     return fenceRef.current.run(async () => {
-      if (lifecycleGeneration !== null && !isLiveLifecycle(lifecycleRef.current, lifecycleGeneration)) return false;
+      if (!isCurrent()) return false;
       const row = controlRecord(principalId, controlKey, value);
-      await outboxRef.current.putMany(principalId, [row], {
-        authorize: () => lifecycleGeneration === null
-          || isLiveLifecycle(lifecycleRef.current, lifecycleGeneration),
-      });
-      return true;
+      try {
+        await outboxRef.current.putMany(principalId, [row], {
+          authorize: isCurrent,
+        });
+      } catch (error) {
+        if (!isCurrent()) return false;
+        throw error;
+      }
+      return isCurrent();
     });
   }, [principalId]);
 
@@ -1056,13 +1067,22 @@ export function useComposerSubmissionRuntime({
     // The in-flight marker is durable before the external cancel crosses the
     // wire. A real remount can therefore downgrade it to `uncertain` instead
     // of presenting a lost action as though it never existed.
-    await persistControlState(key, sending, lifecycleGeneration);
+    const persistedSending = await persistControlState(key, sending, {
+      lifecycleGeneration,
+      attemptEpoch,
+    });
+    if (!persistedSending || !isCurrentAttempt()) return false;
+    // Hydration may have completed while the durable marker was queued and
+    // replaced the in-memory projection with its earlier snapshot. Re-publish
+    // the same fenced sending fact before crossing the wire so resetWorld can
+    // remove exactly this control record as part of the current world fence.
+    publishControlStates((current) => ({ ...current, [key]: sending }));
     try {
       const value = await ownedWireCommand('cancel', channelId, reqId);
       if (isCurrentAttempt()) {
         const accepted = { ...identity, state: 'accepted', error: null, updatedAt: Date.now() };
         publishControlStates((current) => ({ ...current, [key]: accepted }));
-        await persistControlState(key, accepted, lifecycleGeneration).catch(onError);
+        await persistControlState(key, accepted, { lifecycleGeneration, attemptEpoch }).catch(onError);
       }
       return value;
     } catch (error) {
@@ -1074,7 +1094,7 @@ export function useComposerSubmissionRuntime({
           updatedAt: Date.now(),
         };
         publishControlStates((current) => ({ ...current, [key]: failed }));
-        await persistControlState(key, failed, lifecycleGeneration).catch(onError);
+        await persistControlState(key, failed, { lifecycleGeneration, attemptEpoch }).catch(onError);
       }
       throw error;
     }
