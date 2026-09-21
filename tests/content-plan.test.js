@@ -147,7 +147,7 @@ describe('ContentPlan', () => {
     expect(store.get('concurrent-candidate')).toBeNull();
   });
 
-  it('bounds prepared AST retention by bytes without discarding durable block identity', () => {
+  it('[TC-0537][AD-243] bounds prepared AST retention by bytes without discarding durable block identity', () => {
     const store = createContentPlanStore({ limit: 4, preparedByteLimit: 1 });
     const committed = createContentPlan({ contentKey: 'bounded-prepared', source: 'one\n\ntwo' });
     const first = store.commit(committed);
