@@ -23,6 +23,7 @@ import { ReadingIntentProvider, useReadingIntent } from '../src/ui/conversation/
 afterEach(() => { cleanup(); });
 
 const CLAUDE = { id: 'agent:claude:1', kind: 'agent', name: 'claude' };
+const CODEX = { id: 'agent:codex:1', kind: 'agent', name: 'codex' };
 const ROSTER = [{ id: 'root', kind: 'human', name: 'root' }, CLAUDE];
 
 // Composer isolation owns the command/acceptance protocol; durable storage is
@@ -318,6 +319,44 @@ describe('AD-347 describe-gated slash candidate contract', () => {
     expect(latest.model.commandMenu.rows
       .filter((row) => row.scope === 'agent')
       .map((row) => row.command)).toEqual(['compact']);
+  });
+});
+
+describe('TC-0650 mention-then-command audience contract', () => {
+  it('keeps an explicitly mentioned Agent as the slash command audience', async () => {
+    const user = userEvent.setup();
+    const capabilityIndex = new Map([
+      [CLAUDE.id, { describe: { types: new Map([['agent.compact', { inputSchema: { type: 'object' } }]]) } }],
+      [CODEX.id, { describe: { types: new Map([['agent.compact', { inputSchema: { type: 'object' } }]]) } }],
+    ]);
+    const config = commandsHarness({ roster: [...ROSTER, CODEX], capabilityIndex });
+    let latest;
+
+    function Harness() {
+      latest = useComposerCommands(config);
+      return <Composer model={latest.model} commands={latest.commands} />;
+    }
+
+    render(<Harness />);
+    const input = screen.getByRole('textbox', { name: '消息' });
+    await user.type(input, '@co');
+    await user.click(await screen.findByRole('option', { name: /codex/i }));
+    expect(await screen.findByRole('button', { name: '移除收件人 @codex' })).toBeTruthy();
+
+    await user.type(input, '/co');
+    expect(await screen.findByRole('option', { name: /\/compact/ })).toBeTruthy();
+    await user.keyboard('{Enter}');
+    await vi.waitFor(() => expect(input.textContent).toBe('/compact '));
+    expect(latest.submission.pending).toEqual([]);
+
+    await user.keyboard('{Enter}');
+    await vi.waitFor(() => expect(latest.submission.pending).toEqual([
+      expect.objectContaining({
+        frame: expect.objectContaining({
+          msg_type: 'agent.compact', payload: {}, audience: [CODEX.id],
+        }),
+      }),
+    ]));
   });
 });
 
