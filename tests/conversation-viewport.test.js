@@ -77,7 +77,7 @@ describe('reading session authority', () => {
     expect(current).not.toHaveProperty('navigation');
   });
 
-  it('never changes browsing intent because data or geometry changed', () => {
+  it('[TC-0557][AD-263] never changes browsing intent because data or geometry changed', () => {
     let current = session({ mode: READING_MODE.browsing, bookmark: { messageID: 'm4', viewportOffset: 12 } });
     current = observeReading(current, {
       activationID: 'a1', bookmark: { messageID: 'm4', viewportOffset: 12 },
