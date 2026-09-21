@@ -35,7 +35,7 @@ function requestRow() {
   };
 }
 
-function toolRow() {
+function toolRow(output = TOOL_OUTPUT) {
   return {
     channel_id: CHANNEL,
     seq: 2,
@@ -55,7 +55,7 @@ function toolRow() {
             tool: 'Bash',
             outcome: 'completed',
             detail: '工具返回了一份很长的输出。',
-            output: TOOL_OUTPUT,
+            output,
           },
         },
       },
@@ -85,9 +85,9 @@ function publicTurn(store) {
   return entry.turn;
 }
 
-function createToolFixture() {
+function createToolFixture(output = TOOL_OUTPUT) {
   const sourceRequest = requestRow();
-  const sourceProcess = toolRow();
+  const sourceProcess = toolRow(output);
   const originalProcess = structuredClone(sourceProcess);
   const replica = createChannelReplicaStore();
   expect(replica.commit(sourceRequest, '', undefined, { source: 'history' }).accepted).toBe(true);
@@ -125,11 +125,21 @@ describe('NR09-02 public mobile tool-output presentation owner', () => {
     const { turn } = createToolFixture();
     const { visible } = openToolDrawer(turn);
     // User contract: mobile tool output remains readable but bounded and says
-    // what was omitted. This is the first expected red at the current owner.
+    // what was omitted without changing the source row.
     expect(visible).toContain(HEAD);
     expect(visible).toContain('省略');
     expect(visible.length).toBeLessThan(4_700);
     expect(visible).not.toContain(TAIL);
+  });
+
+  it('bounds structured tool output fields without changing scalar fields', () => {
+    const { turn } = createToolFixture({ stdout: TOOL_OUTPUT, exit_code: '0' });
+    const { visible } = openToolDrawer(turn);
+    expect(visible).toContain(HEAD);
+    expect(visible).toContain('省略');
+    expect(visible).toContain('0');
+    expect(visible).not.toContain(TAIL);
+    expect(visible.length).toBeLessThan(4_700);
   });
 
   it('keeps Replica and IndexedDB source rows exact after public rendering', async () => {

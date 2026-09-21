@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { actorNameFromMap } from '../../model/actor-display.js';
 import { isStandardActorIdentity } from '../../model/actor-visibility.js';
 import { redactSensitive, terminalContentEnvelope, terminalResultState, turnProcessAuditFacts, turnProcessObservations } from '../../model/terminal-result.js';
+import { isMobileProfile } from '../../model/device-profile.js';
 import { argsOf, hasCanonicalBody } from '../../protocol/envelope.js';
 import { DECISIONS, isSystemWord, TYPES } from '../../protocol/vocab.js';
 import { messageTimeLabel } from '../../util/time.js';
@@ -567,12 +568,48 @@ function hasProcessSummary(turn) {
 function conversationObservations(turn) {
   return turnProcessObservations(turn).filter(({ process }) => process.kind === 'stage' && process.stage === 'text' && typeof process.text === 'string' && process.text.trim());
 }
+
+const MOBILE_TOOL_OUTPUT = Object.freeze({ head: 4096, threshold: 6144 });
+
+function abbreviateMobileToolText(value) {
+  if (typeof value !== 'string' || value.length <= MOBILE_TOOL_OUTPUT.threshold) return value;
+  return `${value.slice(0, MOBILE_TOOL_OUTPUT.head)}\n…（手机上只保留了开头，此处省略 ${value.length - MOBILE_TOOL_OUTPUT.head} 字符）`;
+}
+
+function mobileToolOutputText(output) {
+  if (output == null) return '';
+  if (typeof output === 'string') return abbreviateMobileToolText(output);
+  if (typeof output !== 'object') return String(output);
+  let value = output;
+  if (!Array.isArray(output)) {
+    value = Object.fromEntries(Object.entries(output).map(([key, item]) => [
+      key,
+      typeof item === 'string' ? abbreviateMobileToolText(item) : item,
+    ]));
+  }
+  try {
+    const serialized = abbreviateMobileToolText(JSON.stringify(value, null, 2));
+    return `\`\`\`json\n${serialized}\n\`\`\``;
+  } catch {
+    return '';
+  }
+}
+
+function toolPresentationBody(process, detail) {
+  if (!isMobileProfile() || process.kind !== 'tool') return detail;
+  const output = mobileToolOutputText(process.output);
+  if (!output) return detail;
+  if (!detail) return output;
+  return `${detail}\n\n${output}`;
+}
+
 function progressRows(turn) {
   const rows = []; const tools = new Map();
   for (const { process, seq, envelope } of turnProcessObservations(turn)) {
     // Keep the process projection typed and redact any nested sensitive field
-    // before selecting the two public fields this surface owns. In particular,
-    // input/output are never copied into a row or handed to the drawer.
+    // before selecting the public presentation fields this surface owns. The
+    // mobile output is a bounded display copy only; the Replica/cache row is
+    // never changed or handed back to a persistence owner.
     const safeProcess = redactSensitive(process);
     if (safeProcess.kind === 'stage' && safeProcess.stage !== 'text') {
       const stageText = typeof safeProcess.text === 'string' ? safeProcess.text : '';
@@ -590,35 +627,36 @@ function progressRows(turn) {
     if (safeProcess.kind !== 'tool') continue;
     const key = safeProcess.tool_call_id || String(seq);
     const detail = typeof safeProcess.detail === 'string' ? safeProcess.detail : '';
+    const body = toolPresentationBody(safeProcess, detail);
     if (safeProcess.phase === 'started') {
       const row = {
         key: `tool:${key}`,
         seq,
         line: `tool: ${safeProcess.tool || '工具'} …`,
-        body: detail,
+        body,
         ts: envelope.ts,
         kind: 'tool',
-        stateOnly: !detail.trim(),
+        stateOnly: !body.trim(),
       };
       rows.push(row);
       tools.set(key, row);
     } else if (safeProcess.phase === 'ended') {
       const started = tools.get(key);
       if (started) {
-        const body = detail.trim() ? detail : started.body;
+        const endedBody = body.trim() ? body : started.body;
         started.seq = seq;
         started.line = `tool: ${safeProcess.tool || '工具'} ${safeProcess.outcome === 'failed' ? '失败' : '完成'}`;
-        started.body = body;
+        started.body = endedBody;
         started.ts = envelope.ts || started.ts;
-        started.stateOnly = !String(body || '').trim();
+        started.stateOnly = !String(endedBody || '').trim();
       } else rows.push({
         key: `tool:${key}`,
         seq,
         line: `tool: ${safeProcess.tool || '工具'} ${safeProcess.outcome === 'failed' ? '失败' : '完成'}`,
-        body: detail,
+        body,
         ts: envelope.ts,
         kind: 'tool',
-        stateOnly: !detail.trim(),
+        stateOnly: !body.trim(),
       });
     }
   }
