@@ -33,6 +33,39 @@
 .compact-shell .dynamic-workspace.files-split-open > .dynamic-message-pane,
 .mobile-shell .dynamic-workspace.terminal-split-open > .dynamic-message-pane,
 .mobile-shell .dynamic-workspace.files-split-open > .dynamic-message-pane { visibility: hidden; pointer-events: none; }
+/* Files is still the only mobile page surface, but its mounted Conversation
+   keeps the Composer as a fixed bottom affordance. The pane is an inert
+   transparent overlay; only the Composer's own pointer-enabled surface can
+   receive events, so the full Files directory remains usable underneath. */
+.compact-shell .dynamic-workspace.mobile-files-composer-open > .dynamic-message-pane,
+.mobile-shell .dynamic-workspace.mobile-files-composer-open > .dynamic-message-pane {
+  position: absolute;
+  z-index: 4;
+  inset: 0;
+  visibility: visible;
+  pointer-events: none;
+  background: transparent;
+}
+.compact-shell .dynamic-workspace.mobile-files-composer-open,
+.mobile-shell .dynamic-workspace.mobile-files-composer-open {
+  position: relative;
+  --mobile-files-composer-reserve: 152px;
+}
+.compact-shell .dynamic-workspace.mobile-files-composer-open > .dynamic-message-pane > .conversation-surface,
+.mobile-shell .dynamic-workspace.mobile-files-composer-open > .dynamic-message-pane > .conversation-surface {
+  background: transparent;
+}
+.compact-shell .dynamic-workspace.mobile-files-composer-open .conversation-reading-slot,
+.mobile-shell .dynamic-workspace.mobile-files-composer-open .conversation-reading-slot,
+.compact-shell .dynamic-workspace.mobile-files-composer-open .conversation-floating-slot,
+.mobile-shell .dynamic-workspace.mobile-files-composer-open .conversation-floating-slot {
+  visibility: hidden;
+  pointer-events: none;
+}
+.compact-shell .dynamic-workspace.mobile-files-composer-open > .artifacts-view .channel-files-scroll,
+.mobile-shell .dynamic-workspace.mobile-files-composer-open > .artifacts-view .channel-files-scroll {
+  padding-bottom: var(--mobile-files-composer-reserve, 152px);
+}
 .compact-shell .dynamic-workspace.terminal-split-open > .terminal-view,
 .mobile-shell .dynamic-workspace.terminal-split-open > .terminal-view { grid-row: 1; grid-column: 1; border-top: 0; border-left: 0; }
 .compact-shell .dynamic-workspace.files-split-open > .artifacts-view,

@@ -141,6 +141,77 @@ test('UI-VIS-12 mobile Files surface close returns focus to channel actions', as
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
 
+test('F2-FS-04 mobile Files overlay keeps queued Waiting inert while Files and Composer stay usable', async ({ page, request }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  const response = await request.post(`${MOCK}/mock/control/reset`, {
+    data: { scenario: 'long-running', seed: 226 },
+  });
+  expect(response.ok()).toBe(true);
+  await login(page);
+
+  await page.getByRole('button', { name: '选择 Agent', exact: true }).click();
+  await page.getByRole('menu', { name: '选择目标 Agent' })
+    .getByRole('menuitem', { name: 'steward' }).click();
+  const composer = page.getByRole('textbox', { name: '消息', exact: true });
+  await composer.fill('mobile Files owner');
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await expect(page.locator('[data-presentation-row-id]').filter({ hasText: 'mobile Files owner' })).toBeVisible();
+  await composer.fill('mobile Files queued Waiting');
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  const waiting = page.getByRole('region', { name: '等待区' });
+  await expect(waiting).toContainText('mobile Files queued Waiting');
+
+  await page.getByRole('button', { name: '频道操作', exact: true }).click();
+  await page.getByRole('menuitem', { name: '打开文件', exact: true }).click();
+  const files = page.getByRole('region', { name: '频道文件' });
+  await expect(files).toBeVisible();
+  await expect(composer).toBeVisible();
+  await expect(page.locator('.conversation-floating-slot')).toBeHidden();
+  await expect(page.locator('.agent-wait-layer')).toBeHidden();
+  await expect.poll(() => page.locator('.channel-files-scroll').evaluate((node) => (
+    getComputedStyle(node).paddingBottom
+  ))).toBe('152px');
+
+  const waitingHit = await page.locator('.agent-wait-layer').evaluate((node) => {
+    const style = getComputedStyle(node);
+    const box = node.getBoundingClientRect();
+    const target = box.width > 0 && box.height > 0
+      ? document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)
+      : null;
+    return {
+      visibility: style.visibility,
+      display: style.display,
+      hitInsideWaiting: Boolean(target && (target === node || node.contains(target))),
+      focusInsideWaiting: node.contains(document.activeElement),
+    };
+  });
+  expect(waitingHit.visibility).toBe('hidden');
+  expect(waitingHit.hitInsideWaiting).toBe(false);
+  expect(waitingHit.focusInsideWaiting).toBe(false);
+
+  // A bounded Tab walk must never enter the hidden Waiting subtree. The
+  // Composer remains the only Conversation control layered over Files.
+  await composer.fill('Files surface remains usable');
+  await expect(composer).toBeFocused();
+  const tabBudget = await page.locator('button, a[href], input, textarea, select, [tabindex]:not([tabindex="-1"])').count() + 4;
+  for (let index = 0; index < tabBudget; index += 1) {
+    await page.keyboard.press('Tab');
+    await expect.poll(() => page.evaluate(() => (
+      document.querySelector('.conversation-floating-slot')?.contains(document.activeElement) || false
+    ))).toBe(false);
+  }
+
+  // The long-running fixture intentionally has no seeded rows; the public
+  // Files refresh/upload controls still prove the surface owns its hit area
+  // instead of being covered by the mounted Conversation pane.
+  const refreshFiles = files.getByRole('button', { name: '刷新文件目录', exact: true });
+  await expect(refreshFiles).toBeEnabled();
+  await refreshFiles.click();
+  await expect(files).toBeVisible();
+  await composer.fill('Files and Composer both usable');
+  await expect(composer).toContainText('Files and Composer both usable');
+});
+
 test('F2-FS-02c desktop restores Files after a Tasks excursion', async ({ page, request }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await reset(request, 222);
