@@ -4600,16 +4600,22 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
       targetMessageIDs: ['round37-takeover-target'],
     };
     const reading = installSemanticBottomIntentConsumer(round34Reading({ mode: READING_MODE.following }));
-    reading.session = { ...reading.session, bottomIntent: intent };
+    const consumeBottomIntent = reading.consumeBottomIntent;
+    reading.consumeBottomIntent = vi.fn((candidate) => consumeBottomIntent(candidate));
+    reading.session = { ...reading.session, intentRevision: 0, bottomIntent: intent };
     reading.onUserControl = vi.fn(() => {
-      reading.session = { ...reading.session, mode: READING_MODE.browsing, inputEpoch: 1 };
+      reading.session = takeReadingControl(reading.session, { direction: 'browse' });
     });
     const first = round33Row('round37-takeover-first', 1);
     const target = { ...round33Row('round37-takeover-target', 2), localState: 'queued', body: { local: true } };
+    const timelineTarget = { ...round33Row('round37-takeover-target', 2), body: { local: false } };
+    const initialSnapshot = round33Snapshot([first], { revision: 1 });
+    const initialPresentation = round36BottomPresentation(reading, initialSnapshot, intent, false);
     const view = render(
       <VendorListExecutor
-        snapshot={round33Snapshot([first], { revision: 1 })}
+        snapshot={initialSnapshot}
         reading={reading}
+        bottomIntentPresentation={initialPresentation}
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
@@ -4620,27 +4626,61 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     });
     vendorHarness.scrollTo.mockClear();
 
+    const waitingSnapshot = round33Snapshot([first, target], { revision: 2 });
+    const waitingPresentation = Object.freeze({
+      ...round36BottomPresentation(reading, waitingSnapshot, intent, false),
+      destinations: Object.freeze([Object.freeze({
+        messageID: target.id,
+        destination: 'waiting',
+        targetListRevision: waitingSnapshot.revision,
+      })]),
+    });
     view.rerender(
       <VendorListExecutor
-        snapshot={round33Snapshot([first, target], { revision: 2 })}
+        snapshot={waitingSnapshot}
         reading={reading}
-        renderRow={(row) => <article>{row.id}</article>}
-      />,
-    );
-    expect(vendorHarness.scrollTo).toHaveBeenCalledOnce();
-    expect(reading.getSession().bottomIntent.id).toBe('');
-    reading.onUserControl();
-
-    setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_180, scrollTop: 400 });
-    view.rerender(
-      <VendorListExecutor
-        snapshot={round33Snapshot([first, target], { revision: 3 })}
-        reading={reading}
+        bottomIntentPresentation={waitingPresentation}
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
     act(() => vendorHarness.props.totalListHeightChanged());
-    expect(vendorHarness.scrollTo).toHaveBeenCalledTimes(1);
+    expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+    expect(reading.consumeBottomIntent).not.toHaveBeenCalled();
+    expect(reading.getSession().bottomIntent.id).toBe(intent.id);
+
+    // The target may leave Waiting for the timeline, but the old send join
+    // must still wait for the public physical acknowledgement. User input
+    // takes ownership before that acknowledgement and revokes the old writer.
+    const timelineSnapshot = round33Snapshot([first, timelineTarget], { revision: 3 });
+    const timelinePresentation = round36BottomPresentation(reading, timelineSnapshot, intent, true);
+    view.rerender(
+      <VendorListExecutor
+        snapshot={timelineSnapshot}
+        reading={reading}
+        bottomIntentPresentation={timelinePresentation}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+    expect(reading.consumeBottomIntent).not.toHaveBeenCalled();
+    expect(reading.getSession().bottomIntent.id).toBe(intent.id);
+    reading.onUserControl();
+    expect(reading.getSession().mode).toBe(READING_MODE.browsing);
+    expect(reading.getSession().bottomIntent.id).toBe('');
+    reading.consumeBottomIntent.mockClear();
+
+    setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_180, scrollTop: 400 });
+    view.rerender(
+      <VendorListExecutor
+        snapshot={timelineSnapshot}
+        reading={reading}
+        bottomIntentPresentation={null}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    act(() => vendorHarness.props.totalListHeightChanged());
+    expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+    expect(reading.consumeBottomIntent).not.toHaveBeenCalled();
     expect(scroller.scrollTop).toBe(400);
   });
 
