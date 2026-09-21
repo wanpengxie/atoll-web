@@ -70,13 +70,31 @@ test('UX-A09 covered Surface remounts current history before exposing a hidden-s
 
   await toggleFiles(page);
   const terminal = await pushTerminal(request);
-  await expect(page.locator('.dynamic-message-pane')).toHaveCSS('visibility', 'hidden');
+  const messagePane = page.locator('.dynamic-message-pane');
+  const readingSlot = page.locator('.dynamic-message-pane .conversation-reading-slot');
+  const floatingSlot = page.locator('.dynamic-message-pane .conversation-floating-slot');
+  // Mobile Files keeps the mounted Conversation pane as an inert transparent
+  // overlay for the Composer. The semantic surface is hidden through the
+  // public data attribute, while the actual reading/floating slots are hidden
+  // and cannot receive pointer input.
+  await expect(messagePane).toHaveAttribute('data-surface-visible', 'false');
+  await expect(messagePane).toHaveCSS('pointer-events', 'none');
+  await expect(readingSlot).toHaveCSS('visibility', 'hidden');
+  await expect(readingSlot).toHaveCSS('pointer-events', 'none');
+  await expect(floatingSlot).toHaveCSS('visibility', 'hidden');
+  await expect(floatingSlot).toHaveCSS('pointer-events', 'none');
   // On the compact surface, opening Files suspends the conversation owner and
   // its live arrival consumer. The hidden view therefore cannot manufacture a
   // viewport notice; reopening it must hydrate the canonical history instead.
   const latest = page.locator('.timeline-jump-latest');
   const hiddenEvidence = await page.evaluate(() => ({
     paneVisibility: getComputedStyle(document.querySelector('.dynamic-message-pane')).visibility,
+    surfaceVisible: document.querySelector('.dynamic-message-pane')?.dataset.surfaceVisible || '',
+    panePointerEvents: getComputedStyle(document.querySelector('.dynamic-message-pane')).pointerEvents,
+    readingVisibility: getComputedStyle(document.querySelector('.conversation-reading-slot')).visibility,
+    readingPointerEvents: getComputedStyle(document.querySelector('.conversation-reading-slot')).pointerEvents,
+    floatingVisibility: getComputedStyle(document.querySelector('.conversation-floating-slot')).visibility,
+    floatingPointerEvents: getComputedStyle(document.querySelector('.conversation-floating-slot')).pointerEvents,
     jumpText: document.querySelector('.timeline-jump-latest')?.textContent || '',
     rowIDs: [...document.querySelectorAll('.timeline-message-list [data-presentation-row-id]')]
       .map((node) => node.dataset.presentationRowId),
@@ -85,13 +103,20 @@ test('UX-A09 covered Surface remounts current history before exposing a hidden-s
   }));
   await attachJSON(testInfo, 'ux-a09-hidden-surface.json', { terminal, before, hiddenEvidence });
 
-  expect(hiddenEvidence.paneVisibility).toBe('hidden');
+  expect(hiddenEvidence.surfaceVisible).toBe('false');
+  expect(hiddenEvidence.panePointerEvents).toBe('none');
+  expect(hiddenEvidence.readingVisibility).toBe('hidden');
+  expect(hiddenEvidence.readingPointerEvents).toBe('none');
+  expect(hiddenEvidence.floatingVisibility).toBe('hidden');
+  expect(hiddenEvidence.floatingPointerEvents).toBe('none');
   expect(hiddenEvidence.jumpText).toBe('');
   await expect(latest).toHaveCount(0);
 
   await toggleFiles(page);
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/, { timeout: 15_000 });
-  await page.waitForFunction(() => getComputedStyle(document.querySelector('.dynamic-message-pane')).visibility === 'visible');
+  await expect(messagePane).toHaveAttribute('data-surface-visible', 'true');
+  await expect.poll(() => readingSlot.evaluate((node) => getComputedStyle(node).visibility)).toBe('visible');
+  await expect.poll(() => floatingSlot.evaluate((node) => getComputedStyle(node).visibility)).toBe('visible');
 
   await expect(page.getByText('Approve live mock action', { exact: true })).toBeVisible();
   // The arrival became part of canonical history while the surface was
@@ -107,6 +132,12 @@ test('UX-A09 covered Surface remounts current history before exposing a hidden-s
     const node = document.querySelector('.timeline-message-list');
     return {
       paneVisibility: getComputedStyle(document.querySelector('.dynamic-message-pane')).visibility,
+      surfaceVisible: document.querySelector('.dynamic-message-pane')?.dataset.surfaceVisible || '',
+      panePointerEvents: getComputedStyle(document.querySelector('.dynamic-message-pane')).pointerEvents,
+      readingVisibility: getComputedStyle(document.querySelector('.conversation-reading-slot')).visibility,
+      readingPointerEvents: getComputedStyle(document.querySelector('.conversation-reading-slot')).pointerEvents,
+      floatingVisibility: getComputedStyle(document.querySelector('.conversation-floating-slot')).visibility,
+      floatingPointerEvents: getComputedStyle(document.querySelector('.conversation-floating-slot')).pointerEvents,
       jumpText: document.querySelector('.timeline-jump-latest')?.textContent || '',
       tailDistance: node.scrollHeight - node.clientHeight - node.scrollTop,
       rowIDs: [...node.querySelectorAll('[data-presentation-row-id]')].map((row) => row.dataset.presentationRowId),
@@ -114,7 +145,11 @@ test('UX-A09 covered Surface remounts current history before exposing a hidden-s
   });
   await attachJSON(testInfo, 'ux-a09-visible-surface.json', visibleEvidence);
   await expect(latest).toHaveCount(0);
+  expect(visibleEvidence.surfaceVisible).toBe('true');
   expect(visibleEvidence.paneVisibility).toBe('visible');
+  expect(visibleEvidence.readingVisibility).toBe('visible');
+  expect(visibleEvidence.readingPointerEvents).not.toBe('none');
+  expect(visibleEvidence.floatingVisibility).toBe('visible');
   expect(visibleEvidence.tailDistance).toBeLessThanOrEqual(24);
 });
 
@@ -190,17 +225,26 @@ test('UX-A09 history, replay, reconnect, filters and channel switches never manu
   const latest = page.locator('.timeline-jump-latest');
   const checkpoints = [];
   const capture = async (stage) => {
-    const value = await page.evaluate((label) => ({
-      stage: label,
-      channel: document.querySelector('main h1')?.textContent || '',
-      jump: document.querySelector('.timeline-jump-latest')?.textContent || '',
-      mode: document.querySelector('.timeline')?.dataset.viewportMode || '',
-      paneVisibility: document.querySelector('.dynamic-message-pane')
-        ? getComputedStyle(document.querySelector('.dynamic-message-pane')).visibility
-        : '',
-      materialized: [...document.querySelectorAll('.timeline-message-list [data-presentation-row-id]')]
-        .map((node) => node.dataset.presentationRowId),
-    }), stage);
+    const value = await page.evaluate((label) => {
+      const pane = document.querySelector('.dynamic-message-pane');
+      const reading = document.querySelector('.conversation-reading-slot');
+      const floating = document.querySelector('.conversation-floating-slot');
+      return {
+        stage: label,
+        channel: document.querySelector('main h1')?.textContent || '',
+        jump: document.querySelector('.timeline-jump-latest')?.textContent || '',
+        mode: document.querySelector('.timeline')?.dataset.viewportMode || '',
+        paneVisibility: pane ? getComputedStyle(pane).visibility : '',
+        surfaceVisible: pane?.dataset.surfaceVisible || '',
+        panePointerEvents: pane ? getComputedStyle(pane).pointerEvents : '',
+        readingVisibility: reading ? getComputedStyle(reading).visibility : '',
+        readingPointerEvents: reading ? getComputedStyle(reading).pointerEvents : '',
+        floatingVisibility: floating ? getComputedStyle(floating).visibility : '',
+        floatingPointerEvents: floating ? getComputedStyle(floating).pointerEvents : '',
+        materialized: [...document.querySelectorAll('.timeline-message-list [data-presentation-row-id]')]
+          .map((node) => node.dataset.presentationRowId),
+      };
+    }, stage);
     checkpoints.push(value);
     expect(value.jump).toBe('');
   };
@@ -219,7 +263,15 @@ test('UX-A09 history, replay, reconnect, filters and channel switches never manu
   await capture('filter-off');
 
   await toggleFiles(page);
-  await expect.poll(() => page.locator('.dynamic-message-pane').evaluate(
+  await expect(page.locator('.dynamic-message-pane')).toHaveAttribute('data-surface-visible', 'false');
+  await expect(page.locator('.dynamic-message-pane')).toHaveCSS('pointer-events', 'none');
+  await expect.poll(() => page.locator('.conversation-reading-slot').evaluate(
+    (node) => getComputedStyle(node).visibility,
+  )).toBe('hidden');
+  await expect.poll(() => page.locator('.conversation-reading-slot').evaluate(
+    (node) => getComputedStyle(node).pointerEvents,
+  )).toBe('none');
+  await expect.poll(() => page.locator('.conversation-floating-slot').evaluate(
     (node) => getComputedStyle(node).visibility,
   )).toBe('hidden');
   const replay = await request.post('/mock/control/action', {
@@ -245,7 +297,8 @@ test('UX-A09 history, replay, reconnect, filters and channel switches never manu
   await capture('reconnected-hidden');
 
   await toggleFiles(page);
-  await expect.poll(() => page.locator('.dynamic-message-pane').evaluate(
+  await expect(page.locator('.dynamic-message-pane')).toHaveAttribute('data-surface-visible', 'true');
+  await expect.poll(() => page.locator('.conversation-reading-slot').evaluate(
     (node) => getComputedStyle(node).visibility,
   )).toBe('visible');
   await expect(latest).toHaveCount(0);
