@@ -1,9 +1,9 @@
 # SZ-179 — gen0 cache-to-gen1 source-lease reacquisition
 
-Date: 2026-09-21  
-Base: `0710d5852a2983459575138259c79918333b525f`  
+Date: 2026-09-21
+Base: `0710d5852a2983459575138259c79918333b525f`
 Owner: `useConversationProjection` → `useHistoryConsumer` viewport; the
-history source lease and supply obligation remain Feed-owned facts.  
+history source lease and supply obligation remain Feed-owned facts.
 Test: `tests/sz179-cache-source-lease-public-owner.test.jsx`
 
 ## Contract
