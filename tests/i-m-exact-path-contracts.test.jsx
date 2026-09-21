@@ -3810,10 +3810,13 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     reading.session = { ...reading.session, bottomIntent: intent };
     const first = round33Row('round37-revoke-first', 1);
     const target = { ...round33Row('round37-revoke-target', 2), body: { local: false } };
+    const initialSnapshot = round33Snapshot([first], { revision: 1 });
+    const initialPresentation = round36BottomPresentation(reading, initialSnapshot, intent, false);
     const view = render(
       <VendorListExecutor
-        snapshot={round33Snapshot([first], { revision: 1 })}
+        snapshot={initialSnapshot}
         reading={reading}
+        bottomIntentPresentation={initialPresentation}
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
@@ -3824,10 +3827,13 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     });
     vendorHarness.scrollTo.mockClear();
 
+    const targetSnapshot = round33Snapshot([first, target], { revision: 2 });
+    const pendingPresentation = round36BottomPresentation(reading, targetSnapshot, intent, false);
     view.rerender(
       <VendorListExecutor
-        snapshot={round33Snapshot([first, target], { revision: 2 })}
+        snapshot={targetSnapshot}
         reading={reading}
+        bottomIntentPresentation={pendingPresentation}
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
@@ -3837,10 +3843,15 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     expect(reading.getSession().bottomIntent.id).toBe(intent.id);
 
     reading.session = { ...reading.session, bottomIntent: { id: '', inputEpoch: 0 } };
+    // The owner update itself revokes the send lease. Keep the same public
+    // snapshot/receipt tuple on this rerender so the old physical callback
+    // cannot be mistaken for a new presentation; no matching intent means
+    // the stale receipt has no authority.
     view.rerender(
       <VendorListExecutor
-        snapshot={round33Snapshot([first, target], { revision: 2 })}
+        snapshot={targetSnapshot}
         reading={reading}
+        bottomIntentPresentation={pendingPresentation}
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
