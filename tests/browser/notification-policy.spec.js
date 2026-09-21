@@ -110,39 +110,9 @@ test('rail follows presented lifecycle roots and persists only unacknowledged ex
   await expect(other).toHaveCount(0);
   const scope = page.locator('.timeline-scope > button');
   await expect(scope).toHaveText('与我相关');
-  await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__?.reading?.enable?.({ case: 'notification-policy' }));
   await scope.click();
   await expect(scope).toHaveText('全部');
   await expect(page.locator('[data-presentation-row-id="c0.project-notification-agent-task"]')).toBeVisible();
-  await page.waitForTimeout(1_000);
-  const processingEvidence = await page.evaluate(() => ({
-    rail: window.__ATOLL_DIAGNOSTICS__?.rail?.snapshot?.('c0.project'),
-    reading: window.__ATOLL_DIAGNOSTICS__?.reading?.snapshot?.(),
-    viewSession: localStorage.getItem('atoll.view-session.v3.root'),
-    geometry: (() => {
-      const root = document.querySelector('.timeline-message-list');
-      if (!root) return null;
-      const rootRect = root.getBoundingClientRect();
-      return {
-        root: { top: rootRect.top, bottom: rootRect.bottom, left: rootRect.left, right: rootRect.right },
-        rows: [...root.querySelectorAll('[data-presentation-row-id]')].map((node) => {
-          const rect = node.getBoundingClientRect();
-          const x = (Math.max(rootRect.left, rect.left) + Math.min(rootRect.right, rect.right)) / 2;
-          const y = (Math.max(rootRect.top, rect.top) + Math.min(rootRect.bottom - 48, rect.bottom)) / 2;
-          const hit = document.elementFromPoint(x, y);
-          return {
-            id: node.dataset.presentationRowId,
-            rect: { top: rect.top, bottom: rect.bottom, left: rect.left, right: rect.right },
-            hit: { tag: hit?.tagName || '', className: String(hit?.className || '') },
-            ownsHit: Boolean(hit && (hit === node || node.contains(hit))),
-          };
-        }),
-      };
-    })(),
-  }));
-  const evidencePath = testInfo.outputPath('notification-processing-evidence.json');
-  await writeFile(evidencePath, `${JSON.stringify(processingEvidence, null, 2)}\n`, 'utf8');
-  await testInfo.attach('notification-processing-evidence.json', { path: evidencePath, contentType: 'application/json' });
   await expect(other).toHaveCount(0);
 
   // A later terminal response is the user-facing content notification. It
@@ -154,20 +124,11 @@ test('rail follows presented lifecycle roots and persists only unacknowledged ex
   // The current rail exposes one personal unread badge; the retired total
   // badge is reserved for pending/unknown state and never carries counts.
   await expect(related).toHaveText('1');
-  // The live feed's checkpoint and row are persisted behind an async storage
-  // fence. Reload only after that durable boundary can represent the case.
   await page.waitForTimeout(500);
-  const beforeReload = await reloadEvidence(page);
   await page.reload();
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
-  await page.waitForTimeout(1_000);
-  const afterReload = await reloadEvidence(page);
-  const reloadPath = testInfo.outputPath('notification-reload-evidence.json');
-  await writeFile(reloadPath, `${JSON.stringify({ beforeReload, afterReload }, null, 2)}\n`, 'utf8');
-  await testInfo.attach('notification-reload-evidence.json', { path: reloadPath, contentType: 'application/json' });
   await expect(related).toHaveText('1');
 
-  await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__?.reading?.enable?.({ case: 'notification-policy-restored' }));
   await project.click();
   await expect(page.locator('main h1')).toHaveText('c0.project');
   const restoredScope = page.locator('.timeline-scope > button');
@@ -177,16 +138,26 @@ test('rail follows presented lifecycle roots and persists only unacknowledged ex
   // Virtuoso may mount the final inside overscan while restoring an older
   // bookmark. CSS visibility is not reading evidence; put the exact row in
   // the physical viewport before requiring its identity acknowledgement.
-  await restoredFinal.evaluate((node) => node.scrollIntoView({ block: 'center' }));
-  await page.waitForTimeout(1_000);
-  const restoredEvidence = await page.evaluate(() => ({
-    rail: window.__ATOLL_DIAGNOSTICS__?.rail?.snapshot?.('c0.project'),
-    reading: window.__ATOLL_DIAGNOSTICS__?.reading?.snapshot?.(),
-  }));
-  const restoredPath = testInfo.outputPath('notification-restored-visible-evidence.json');
-  await writeFile(restoredPath, `${JSON.stringify(restoredEvidence, null, 2)}\n`, 'utf8');
-  await testInfo.attach('notification-restored-visible-evidence.json', { path: restoredPath, contentType: 'application/json' });
+  await restoredFinal.scrollIntoViewIfNeeded();
+  await expect(restoredFinal).toBeVisible();
+  await expect(related).toHaveCount(0);
   await expect(other).toHaveCount(0);
+  await page.reload();
+  await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
+  await expect(related).toHaveCount(0);
+  await expect(other).toHaveCount(0);
+  const evidencePath = testInfo.outputPath('notification-processing-evidence.json');
+  await writeFile(evidencePath, `${JSON.stringify({
+    contract: 'public-dom',
+    quietLifecycle: { related: 0, other: 0 },
+    terminalAfterReload: { related: 1, other: 0 },
+    afterExactPresentation: { related: 0, other: 0 },
+    afterAcknowledgementReload: { related: 0, other: 0 },
+  }, null, 2)}\n`, 'utf8');
+  await testInfo.attach('notification-processing-evidence.json', {
+    path: evidencePath,
+    contentType: 'application/json',
+  });
 });
 
 test('tool, timer, and public-event notifications follow independent readable roots', async ({ page, request }, testInfo) => {
