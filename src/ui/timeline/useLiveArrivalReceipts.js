@@ -11,8 +11,9 @@ import {
   recordActiveReadingArrivals,
 } from '../../model/view-session.js';
 
-export function useTimelineArrivalReceipt(state) {
+export function useTimelineArrivalReceipt(state, activationID) {
   const tokenRef = useRef(null);
+  const activationBaselineRef = useRef(null);
   if (!tokenRef.current) tokenRef.current = Symbol('timeline-live-arrival-consumer');
 
   useLayoutEffect(
@@ -22,14 +23,36 @@ export function useTimelineArrivalReceipt(state) {
 
   const snapshot = state.arrivalReceipts.timeline();
   const durableRecords = readActiveReadingUnseen(state.channelId);
-  const durableFingerprint = durableRecords.map(([key, seq]) => `${key}\u0000${seq}`).join('\u0001');
+  const baseline = activationBaselineRef.current;
+  if (!baseline
+    || baseline.activationID !== activationID
+    || baseline.channelID !== state.channelId
+    || baseline.arrivalReceipts !== state.arrivalReceipts) {
+    activationBaselineRef.current = Object.freeze({
+      activationID,
+      channelID: state.channelId,
+      arrivalReceipts: state.arrivalReceipts,
+      revision: Number(snapshot.revision || 0),
+      durableRecords: new Map(durableRecords.map(([key, seq]) => [String(key), Number(seq || 0)])),
+    });
+  }
+  const activationBaseline = activationBaselineRef.current;
+  const activeLiveEvents = (snapshot.events || []).filter((event) => (
+    Number(event?.revision || 0) > Number(activationBaseline.revision || 0)
+  ));
+  const activeDurableRecords = durableRecords.filter(([key, seq]) => {
+    const baselineSeq = activationBaseline.durableRecords.get(String(key));
+    return baselineSeq == null || Number(seq || 0) > baselineSeq;
+  });
+  const durableFingerprint = activeDurableRecords
+    .map(([key, seq]) => `${key}\u0000${seq}`).join('\u0001');
   useLayoutEffect(() => {
-    recordActiveReadingArrivals(state.channelId, snapshot.events);
-    if (durableRecords.length) prepareActiveReadingUnseen(state.channelId);
-  }, [durableFingerprint, snapshot.events.length, snapshot.revision, state.channelId]);
+    recordActiveReadingArrivals(state.channelId, activeLiveEvents);
+    if (activeDurableRecords.length) prepareActiveReadingUnseen(state.channelId);
+  }, [activeDurableRecords.length, activeLiveEvents, durableFingerprint, state.channelId]);
 
   const events = useMemo(() => {
-    const live = snapshot.events || [];
+    const live = activeLiveEvents;
     // The Replica journal records every protocol transition, while Reading
     // exposes one notice per stable conversation identity. A terminal/update
     // for an already pending root must advance that root's high-water rather
@@ -49,7 +72,7 @@ export function useTimelineArrivalReceipt(state) {
       }
     };
     for (const event of live) retain(event);
-    durableRecords.forEach(([key, seq], index) => retain(Object.freeze({
+    activeDurableRecords.forEach(([key, seq], index) => retain(Object.freeze({
       revision: 0,
       key,
       rowID: key,
@@ -60,7 +83,7 @@ export function useTimelineArrivalReceipt(state) {
     return Object.freeze([...byKey.values()].sort((left, right) => (
       Number(left.revision || 0) - Number(right.revision || 0)
     )));
-  }, [durableFingerprint, snapshot.events, durableRecords]);
+  }, [activeLiveEvents, durableFingerprint, activeDurableRecords]);
 
   return {
     ...snapshot,

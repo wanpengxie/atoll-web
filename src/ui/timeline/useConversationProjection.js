@@ -225,6 +225,7 @@ function createSessionController({ channelID, viewKey, viewSessions }) {
 }
 
 function useProjectionReadingOwner({
+  state,
   channelID,
   viewKey,
   snapshot,
@@ -232,7 +233,6 @@ function useProjectionReadingOwner({
   viewSessions,
   historyViewSpec,
   surfaceVisible,
-  arrivals,
   onTailLeaseRevoke,
   onScopeHandoffCancel,
 }) {
@@ -242,6 +242,7 @@ function useProjectionReadingOwner({
     () => createSessionController({ channelID, viewKey, viewSessions }),
     [channelID, viewKey, viewSessions],
   );
+  const arrivals = useTimelineArrivalReceipt(state, controller.activationID);
   const published = useSyncExternalStore(
     controller.subscribe,
     controller.getSnapshot,
@@ -1439,8 +1440,8 @@ export function useConversationProjection({
   const historyReveal = history.status?.presentationAdmissionState?.phase === 'committed-awaiting-layout'
     ? history.status.presentationAdmissionState.committed
     : null;
-  const arrivals = useTimelineArrivalReceipt(state);
   const viewport = useProjectionReadingOwner({
+    state,
     channelID: state.channelId,
     viewKey: messageListKey,
     snapshot: projection.presentation,
@@ -1448,7 +1449,6 @@ export function useConversationProjection({
     viewSessions,
     historyViewSpec,
     surfaceVisible,
-    arrivals,
     onTailLeaseRevoke: revokeTailLease,
     onScopeHandoffCancel: cancelScopeHandoff,
   });
