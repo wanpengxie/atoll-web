@@ -442,7 +442,7 @@ describe('reading session authority', () => {
     expect(current.mode).toBe(READING_MODE.browsing);
   });
 
-  it('records the actually visible row at lifecycle handoff without granting following', () => {
+  it('[TC-0565][AD-271] records the actually visible row at lifecycle handoff without granting following', () => {
     const current = session({ mode: READING_MODE.browsing, bookmark: { messageID: 'm4', rowViewportOffset: -40 } });
     const handedOff = observeReading(current, {
       activationID: 'a1', atTail: true, source: 'lifecycle',
