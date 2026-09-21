@@ -31,8 +31,10 @@ describe('conversation architecture boundaries', () => {
     // Chromium contract, not a jsdom assertion.
     expect(domExecutor.match(/\broot\.scrollTo\(\{/g)).toHaveLength(1);
     expect(domExecutor).toMatch(/writeScroll\(root, command\.reverse === true \? 0 : root\.scrollHeight\)/);
-    expect(list.match(/type:\s*'scroll-tail'/g)).toHaveLength(2);
-    expect(list).toMatch(/const enforceFollowingTail = useCallback[\s\S]*?current\.mode !== READING_MODE\.following[\s\S]*?input\.active && input\.direction !== 'newer'[\s\S]*?executeReadingDOMCommand\([\s\S]*?type:\s*'scroll-tail'/);
+    expect(list.match(/type:\s*'scroll-tail'/g)).toHaveLength(1);
+    expect(list).toMatch(/const writeTailOnce = useCallback[\s\S]*?executeReadingDOMCommand\([\s\S]*?type:\s*'scroll-tail'/);
+    expect(list).toMatch(/const enforceFollowingTail = useCallback[\s\S]*?current\.mode !== READING_MODE\.following[\s\S]*?input\.active && input\.direction !== 'newer'[\s\S]*?writeTailOnce\(source\)/);
+    expect(list).toMatch(/const issueBottomIntent = useCallback[\s\S]*?writeTailOnce\('layout'\)/);
     expect(list).toMatch(/MutationObserver[\s\S]*?enforceFollowingTail\('layout'\)/);
     expect(list).toMatch(/totalListHeightChanged=\{\(\) => \{[\s\S]*?enforceFollowingTail\('layout'\)/);
     expect(browsing).toMatch(/\bonReadingObservation\b/);
@@ -41,7 +43,7 @@ describe('conversation architecture boundaries', () => {
     expect(`${browsing}\n${navigation}`).not.toMatch(/document\.|window\.|querySelector|getBoundingClientRect|\.scrollTo\(/);
     expect(`${list}\n${browsing}\n${navigation}`).not.toMatch(/atoll:input-resize-prepared|data-input-resize-transition|timeline-input-resize-content/);
     expect(list).toMatch(/current\.bottomIntent/);
-    expect(list).toMatch(/reading\.consumeBottomIntent\(intent\)/);
+    expect(list).toMatch(/(?:reading|owner)\.consumeBottomIntent\(intent\)/);
     expect(surface).not.toMatch(/scrollTop\s*=|scrollBy\(|scrollToIndex/);
     expect(() => source('src/ui/timeline/VirtualTimelineAdapter.jsx')).toThrow();
     expect(() => source('src/ui/timeline/useConversationViewport.js')).toThrow();
