@@ -63,7 +63,7 @@ describe('ContentPlanBlocks', () => {
     expect(renderBlock).toHaveBeenCalledTimes(3);
   });
 
-  it('restores the same block ids after component unmount while never claiming DOM survival', () => {
+  it('[TC-0519][AD-225] restores the same block ids after component unmount while never claiming DOM survival', () => {
     const store = createContentPlanStore({ limit: 4 });
     const renderBlock = (block) => <p>{block.source}</p>;
     const plan = store.plan('message:remount:body', 'one\n\ntwo');
