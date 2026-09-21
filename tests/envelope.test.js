@@ -21,7 +21,7 @@ describe('envelope algebra', () => {
     expect(isTerminal({ kind: 'event', payload: { body: { status: 'completed' } } })).toBe(false);
   });
 
-  it('uses correlation_id and falls back to id', () => {
+  it('[TC-0674][EH02-03] uses correlation_id and falls back to id', () => {
     expect(correlationOf({ id: 'm1', correlation_id: 'turn-1' })).toBe('turn-1');
     expect(correlationOf({ id: 'm1' })).toBe('m1');
   });
