@@ -4497,10 +4497,14 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     reading.session = { ...reading.session, bottomIntent: intent };
     const first = round33Row('round37-child-root', 1);
     const queued = { ...round33Row('round37-child-waiting', 2), localState: 'queued', body: { local: true } };
+    const timelineTarget = { ...round33Row('round37-child-waiting', 2), body: { local: false } };
+    const initialSnapshot = round33Snapshot([first], { revision: 1 });
+    const initialPresentation = round36BottomPresentation(reading, initialSnapshot, intent, false);
     const view = render(
       <VendorListExecutor
-        snapshot={round33Snapshot([first], { revision: 1 })}
+        snapshot={initialSnapshot}
         reading={reading}
+        bottomIntentPresentation={initialPresentation}
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
@@ -4511,21 +4515,53 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     });
     vendorHarness.scrollTo.mockClear();
 
+    const waitingSnapshot = round33Snapshot([first, queued], { revision: 2 });
+    const waitingPresentation = Object.freeze({
+      ...round36BottomPresentation(reading, waitingSnapshot, intent, false),
+      destinations: Object.freeze([Object.freeze({
+        messageID: queued.id,
+        destination: 'waiting',
+        targetListRevision: waitingSnapshot.revision,
+      })]),
+    });
     view.rerender(
       <VendorListExecutor
-        snapshot={round33Snapshot([first, queued], { revision: 2 })}
+        snapshot={waitingSnapshot}
         reading={reading}
+        bottomIntentPresentation={waitingPresentation}
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
+    act(() => vendorHarness.props.totalListHeightChanged());
+    expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+    expect(reading.getSession().bottomIntent.id).toBe(intent.id);
+
+    // A queued Waiting row is not a timeline destination. Once that same
+    // target is publicly materialized in the timeline, its ready receipt and
+    // the first child/height acknowledgement authorize the one send join.
+    const timelineSnapshot = round33Snapshot([first, timelineTarget], { revision: 3 });
+    const timelinePresentation = round36BottomPresentation(reading, timelineSnapshot, intent, true);
+    view.rerender(
+      <VendorListExecutor
+        snapshot={timelineSnapshot}
+        reading={reading}
+        bottomIntentPresentation={timelinePresentation}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+    expect(reading.getSession().bottomIntent.id).toBe(intent.id);
+    act(() => vendorHarness.props.totalListHeightChanged());
     expect(vendorHarness.scrollTo).toHaveBeenCalledTimes(1);
+    expect(vendorHarness.scrollTo).toHaveBeenCalledWith({ top: 1_000, behavior: 'auto' });
     expect(reading.getSession().bottomIntent.id).toBe('');
 
     setRound35Geometry(scroller, { clientHeight: 600, scrollHeight: 1_180, scrollTop: 400 });
     view.rerender(
       <VendorListExecutor
-        snapshot={round33Snapshot([first, queued], { revision: 3 })}
+        snapshot={timelineSnapshot}
         reading={reading}
+        bottomIntentPresentation={null}
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
@@ -4544,10 +4580,11 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     view.rerender(
       <VendorListExecutor
         snapshot={{
-          ...round33Snapshot([first, { ...queued, contentRevision: 2 }], { revision: 4 }),
+          ...round33Snapshot([first, { ...timelineTarget, contentRevision: 2 }], { revision: 4 }),
           changes: { kind: 'revise', inserted: [], updated: ['round37-child-waiting'], removed: [] },
         }}
         reading={reading}
+        bottomIntentPresentation={null}
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
