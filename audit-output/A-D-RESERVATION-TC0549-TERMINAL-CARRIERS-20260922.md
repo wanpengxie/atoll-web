@@ -60,3 +60,30 @@ committed.
 This is an atomic claim: this reservation report is committed before changing
 the test declaration. Closeout will append focused, adjacent, and build
 evidence plus the final PASS or bounded regression disposition.
+
+## Closeout — 2026-09-22
+
+- **Reservation commit:** `4542f02` (`claim TC0549 terminal payload carriers
+  baseline`).
+- **Migration:** the existing declaration is tagged
+  `[TC-0549][AD-255]`; all registrar/member/agent/actor/resource carrier
+  fixtures and exact nested/flat assertions remain unchanged. No test was
+  deleted/skipped and no private oracle, fabricated result, or compatibility
+  path was added.
+- **Focused:**
+  `npm test -- tests/contract-fixtures.test.js --run -t 'TC-0549' --reporter=verbose`
+  — **1 passed, 3 selection skips**; the skips are Vitest selection output,
+  not skipped declarations.
+- **Adjacent owner suite:**
+  `npm test -- tests/contract-fixtures.test.js --run --reporter=verbose` —
+  **4 passed, 0 failed**.
+- **Adjacent protocol suites:**
+  `npm test -- tests/envelope.test.js tests/frame-fields.test.js tests/frame.test.js --run --reporter=dot`
+  — **14 passed, 0 failed**.
+- **Build:** `npm run build` — **passed**; Vite emitted only the existing
+  large-chunk advisory.
+- **Disposition:** **PASS / MIGRATED**, credit `1`. The current v5 public
+  protocol projection preserves the documented terminal success/error,
+  membership, actor-description, and resource-receipt carriers without
+  guessing shape or adding frontend authority.
+- **Final commit:** recorded below after this closeout and test-only tag.

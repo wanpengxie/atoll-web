@@ -30,7 +30,7 @@ describe('atoll contract v5 fixtures', () => {
     }
   });
 
-  it('pins the real terminal payload carriers', () => {
+  it('[TC-0549][AD-255] pins the real terminal payload carriers', () => {
     // registrar 类的词回 {status, value}；system actor 自己答的词把回复平铺在 status 旁边。
     expect(fixtures.structured.registrar_reply).toMatchObject({ status: 'completed', value: { channel_id: 'c0.project' } });
     expect(fixtures.structured.registrar_error.error_code).toBe('permission_denied');
