@@ -45,7 +45,7 @@ describe('ContentPlan semantic boundaries', () => {
     ['fenced code', 'before\n\n```js\nconst value = `not **markdown**`;\n```\n\nafter'],
     ['block and inline math', 'before $x + y$\n\n$$\na^2+b^2=c^2\n$$\n\nafter'],
     ['GFM table', '| A | B |\n| - | - |\n| one | two |\n\nafter'],
-  ])('keeps full-document semantics for %s when top-level blocks render independently', (_name, source) => {
+  ])('[TC-0525][AD-231] keeps full-document semantics for %s when top-level blocks render independently', (_name, source) => {
     expect(plannedHTML(source)).toBe(html(source));
     expect(preparedHTML(source)).toBe(plannedHTML(source));
   });
