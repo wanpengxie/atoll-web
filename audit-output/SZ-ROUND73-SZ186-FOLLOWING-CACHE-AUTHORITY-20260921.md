@@ -1,17 +1,20 @@
-# SZ-186 fresh-following cache authority — 2026-09-21
+# SZ-186 fresh-following cache authority — 2026-09-22
 
 ## User capability and invariant
 
-Fresh following may show a readable cached Projection immediately. That cached
-view is not, by itself, permission to follow the channel tail: until the
-current Replica revision is consumed, the public following authority remains
-stale. Once the Presentation source revision catches the history authority,
-the same visible row may become semantically current without issuing a history
-request. This test does not manufacture a physical Vendor receipt.
+Fresh following may show cached Projection rows immediately, but visible rows
+are not yet a readable surface: until the current activation publishes its
+first materialized range receipt, availability remains `materializing`. The
+same cached row is still not permission to follow the channel tail. Even after
+the current Replica revision is consumed and the range receipt is accepted,
+physical `tailCaughtUp` authority remains a separate observation and is not
+manufactured by Projection.
 
-The invariant is intentionally distinct from SZ-185: SZ-185 covers a detached
-cache failure and its typed retry; SZ-186 covers a readable cache whose source
-revision lags the current history presentation revision.
+The invariant is intentionally distinct from SZ-185 and SZ-200: SZ-185 covers
+a detached cache failure and its typed retry; SZ-200 covers an empty cold
+entry's first range; SZ-186 covers a following cache with rows already visible
+while the current range receipt is still pending, plus the no-tail-authority
+boundary.
 
 ## Unique public owner
 
@@ -29,14 +32,16 @@ following view, then publishes a cached `head-row` at Replica source revision
 10 while history requires presentation revision 11. Admission has no
 `sourceFence` override, so the public Projection source revision is exactly
 the Replica `_timelineRevision`: 10 while lagging and 11 after catch-up. It
-proves the row appears and is readable immediately, but `bottomReady` and
-`tailCaughtUp.caughtUp` remain false and no request is manufactured. Publishing
-Replica revision 11 then makes semantic `bottomReady` true with the same row,
-while physical `tailCaughtUp.caughtUp` remains false and history request count
-stays zero.
+proves the row appears while availability remains `materializing`,
+`presentationPending` remains true, `bottomReady`/`tailCaughtUp.caughtUp` do
+not grant physical tail authority, and no request is manufactured. After
+Replica revision 11, stale activation/revision/negative-range receipts are
+rejected and the viewport remains `materializing`; only the exact current
+activation + Presentation revision + non-negative range receipt transitions
+to `readable`. The same row remains visible, `tailCaughtUp.caughtUp` remains
+false, and history request count stays zero.
 
-Current-main base:
-`4d6a09c884f0d56b37ad677585f51f753f41c1d2`.
+Current-main base: `89c04f13e683d092e84f7bd26ae9a5e4aac19336`.
 
 Focused command:
 
@@ -44,9 +49,11 @@ Focused command:
 npm test -- --run tests/sz186-following-cache-authority.test.jsx
 ```
 
-Result: 1 file passed, 1 test passed. Focused repeat5, adjacent SZ-191
-reopen checks, and the production build passed. Product files were not changed; no
-skip/deletion, compatibility layer, vendor/package/lockfile, or private oracle
-was introduced.
+Result: focused SZ-186 + SZ-200 passed (2 files, 2 tests), repeated 5/5.
+Adjacent history/Reading checks passed (8 files, 16 tests): SZ-180, SZ-182,
+SZ-191, SZ-192, SZ-193, SZ-194, reading observation settle, and bottom-intent
+waiting. `npm run build` passed with the existing chunk-size warning. Product
+files were not changed; no skip/deletion, compatibility layer,
+vendor/package/lockfile, or private oracle was introduced.
 
 Decision: **ACCEPT / close SZ-186 evidence**.

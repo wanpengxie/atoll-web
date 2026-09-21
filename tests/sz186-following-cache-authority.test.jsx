@@ -137,7 +137,11 @@ describe('SZ-186 fresh following cached projection authority', () => {
     await waitFor(() => expect(result.current.viewport.initializing).toBe(false));
     expect(result.current.projection.presentation.rows.map((row) => row.id)).toContain('head-row');
     expect(result.current.projection.presentation.sourceRevision).toBe(10);
-    expect(result.current.viewport.availability).toBe('readable');
+    // Rows are visible data, but the current activation has not received its
+    // first physical range receipt yet.  Do not expose readable before that
+    // receipt, and do not infer tail authority from the cached row.
+    expect(result.current.viewport.availability).toBe('materializing');
+    expect(result.current.viewport.presentationPending).toBe(true);
     expect(result.current.viewport.bottomReady).toBe(false);
     expect(result.current.viewport.tailCaughtUp.caughtUp).toBe(false);
     expect(request).not.toHaveBeenCalled();
@@ -148,12 +152,47 @@ describe('SZ-186 fresh following cached projection authority', () => {
     expect(result.current.viewport.bottomReady).toBe(false);
 
     rerender({ state: currentState, history: currentHistory });
-    await waitFor(() => expect(result.current.viewport.bottomReady).toBe(true));
+    await waitFor(() => expect(result.current.projection.presentation.sourceRevision).toBe(11));
     expect(result.current.projection.presentation.sourceRevision).toBe(11);
-    expect(result.current.viewport.availability).toBe('readable');
+    expect(result.current.viewport.availability).toBe('materializing');
+    expect(result.current.viewport.presentationPending).toBe(true);
     expect(result.current.projection.presentation.rows.map((row) => row.id)).toEqual(['head-row']);
-    // This test proves semantic following authority only; no physical Vendor
-    // receipt is manufactured by a cached Projection rerender.
+    expect(result.current.viewport.tailCaughtUp.caughtUp).toBe(false);
+
+    const presentationRevision = result.current.projection.presentation.revision;
+    expect(result.current.viewport.onPresentationMaterialized({
+      activationID: 'stale-activation',
+      presentationRevision,
+      startIndex: 0,
+      endIndex: 0,
+    })).toBe(false);
+    expect(result.current.viewport.onPresentationMaterialized({
+      activationID: result.current.viewport.activationID,
+      presentationRevision: presentationRevision - 1,
+      startIndex: 0,
+      endIndex: 0,
+    })).toBe(false);
+    expect(result.current.viewport.onPresentationMaterialized({
+      activationID: result.current.viewport.activationID,
+      presentationRevision,
+      startIndex: -1,
+      endIndex: 0,
+    })).toBe(false);
+    expect(result.current.viewport.availability).toBe('materializing');
+
+    act(() => {
+      expect(result.current.viewport.onPresentationMaterialized({
+        activationID: result.current.viewport.activationID,
+        presentationRevision,
+        startIndex: 0,
+        endIndex: 0,
+      })).toBe(true);
+    });
+    await waitFor(() => expect(result.current.viewport.availability).toBe('readable'));
+    expect(result.current.viewport.presentationPending).toBe(false);
+    expect(result.current.viewport.bottomReady).toBe(true);
+    // Physical tail authority is a separate observation; a range receipt does
+    // not manufacture following/tail caught-up evidence.
     expect(result.current.viewport.tailCaughtUp.caughtUp).toBe(false);
     expect(request).not.toHaveBeenCalled();
     unmount();
