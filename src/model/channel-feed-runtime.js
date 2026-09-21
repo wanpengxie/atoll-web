@@ -1856,29 +1856,35 @@ export function createChannelFeedRuntime(options = {}) {
     const coverageRows = networkRows.length
       ? new Set(networkRows.map((row) => historyNumeric(row?.seq)).filter(Boolean))
       : null;
-    const accepted = applyRows(rows, {
-      source, persist: false, publishChange: false,
-      coverageRows,
-    });
-    const status = histories.get(operation.channelId);
     let persistenceError = null;
     if (networkRows.length) {
       const persistence = cache.saveRows(networkRows);
       if (operation.warm) {
         try {
-          // Warm continuation must not count a page until its canonical
-          // durable owner has accepted the rows.  Foreground callers retain
-          // the existing asynchronous cache write boundary.
+          // Warm pages are an anticipatory durable obligation. Do not install
+          // their rows into Replica, advance history status, or publish a
+          // completion until the cache write has settled. This keeps an
+          // attach/world/disconnect replacement during the await from leaking
+          // an old page into the current Replica authority.
           await persistence;
         } catch (error) {
           persistenceError = error;
           cacheError(error);
         }
+        if (!physicalAuthorityCurrent(operation)) {
+          return { kind: 'cancelled', reason: 'stale-generation' };
+        }
+        if (persistenceError) return { kind: 'failed', error: persistenceError };
       } else void persistence.catch(cacheError);
     }
     if (!physicalAuthorityCurrent(operation)) {
       return { kind: 'cancelled', reason: 'stale-generation' };
     }
+    const accepted = applyRows(rows, {
+      source, persist: false, publishChange: false,
+      coverageRows,
+    });
+    const status = histories.get(operation.channelId);
     status.completedPages += 1;
     status.lastSource = batch.source;
     status.beforeSeq = historyNumeric(result.next_before_seq ?? result.nextBeforeSeq ?? batch.beforeSeq);
