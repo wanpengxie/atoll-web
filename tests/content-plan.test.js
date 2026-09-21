@@ -97,7 +97,7 @@ describe('ContentPlan', () => {
     expect(next.blocks[0].renderSource).toContain('https://two.example');
   });
 
-  it('keeps unclosed fence/list semantics atomic instead of splitting lines independently', () => {
+  it('[TC-0532][AD-238] keeps unclosed fence/list semantics atomic instead of splitting lines independently', () => {
     const fence = plan({ contentKey: 'message:m5:fence', source: 'before\n\n```js\nconst x = 1;\nstill code' });
     expect(fence.blocks.map((block) => block.kind)).toEqual(['paragraph', 'code']);
     expect(fence.blocks[1].source).toContain('still code');
