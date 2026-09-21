@@ -358,6 +358,61 @@ describe('Round 16 public-owner evidence: Dynamic presentation', () => {
     expect(view.container.textContent).toContain('B 完成');
     expect(view.container.textContent).not.toContain('D 完成');
   });
+
+  it('[TC-0234] expanded ThreadCall renders only that child turn\'s ProgressTrail', () => {
+    // 能力：用户展开父回合后，可按需查看每个子调用自己的过程；不变量：父过程、子过程和兄弟过程互不串线；公开 owner：TimelineRowRenderer ThreadCall + ProgressTrail。
+    const child = turnOf({
+      requestId: 'child', requestText: 'B 负责资料分析', actorId: AGENT_B.id, status: 'completed',
+      provisional: [
+        processFrame('child-thinking', 2, { kind: 'stage', stage: 'thinking', text: 'B 正在整理资料' }),
+        processFrame('child-tool-start', 3, { kind: 'tool', phase: 'started', tool_call_id: 'child-call', tool: 'call_actor' }),
+        processFrame('child-tool-end', 4, { kind: 'tool', phase: 'ended', tool_call_id: 'child-call', tool: 'call_actor', outcome: 'completed', detail: 'B 汇总完成' }),
+      ],
+      terminal: envelope({ id: 'child-done', body: { status: 'completed', text: 'B 汇总完成' } }),
+    });
+    child.request.parent_id = 'root';
+    const sibling = turnOf({
+      requestId: 'sibling', requestText: 'C 负责独立复核', actorId: AGENT_B.id, status: 'completed',
+      provisional: [processFrame('sibling-thinking', 2, { kind: 'stage', stage: 'thinking', text: 'C 正在复核' })],
+      terminal: envelope({ id: 'sibling-done', body: { status: 'completed', text: 'C 复核完成' } }),
+    });
+    sibling.request.parent_id = 'root';
+    const root = turnOf({
+      requestId: 'root', requestText: '请协作回答', status: 'completed',
+      provisional: [processFrame('root-thinking', 2, { kind: 'stage', stage: 'thinking', text: '父回合处理中' })],
+      terminal: envelope({ id: 'root-done', body: { status: 'completed', text: 'A 已汇总结果' } }),
+      thread: [{ turn: child }, { turn: sibling }],
+    });
+    const { view } = renderTurnRow(root);
+
+    const rootTrail = view.container.querySelector('.agent-turn-bubble .progress-trail');
+    expect(rootTrail?.textContent).toContain('1 条过程记录');
+    expect(rootTrail?.textContent).not.toContain('B 正在整理资料');
+    expect(rootTrail?.textContent).not.toContain('C 正在复核');
+
+    fireEvent.click(view.container.querySelector('.turn-thread-toggle'));
+    const items = [...view.container.querySelectorAll('.turn-thread-item')];
+    expect(items).toHaveLength(2);
+    expect(items.map((item) => item.querySelector('.turn-thread-row')?.getAttribute('aria-expanded'))).toEqual(['false', 'false']);
+
+    fireEvent.click(items[0].querySelector('.turn-thread-row'));
+    const childTrail = items[0].querySelector('.progress-trail.settled');
+    expect(childTrail).toBeTruthy();
+    expect(childTrail?.textContent).toContain('2 条过程记录');
+    fireEvent.click(childTrail.querySelector('.progress-trail-toggle'));
+    expect(childTrail.querySelectorAll('.progress-row')).toHaveLength(2);
+    expect(childTrail?.textContent).toContain('B 正在整理资料');
+    expect(childTrail?.textContent).not.toContain('C 正在复核');
+
+    fireEvent.click(items[1].querySelector('.turn-thread-row'));
+    const siblingTrail = items[1].querySelector('.progress-trail.settled');
+    expect(siblingTrail).toBeTruthy();
+    expect(siblingTrail?.textContent).toContain('1 条过程记录');
+    fireEvent.click(siblingTrail.querySelector('.progress-trail-toggle'));
+    expect(siblingTrail.querySelectorAll('.progress-row')).toHaveLength(1);
+    expect(siblingTrail?.textContent).toContain('C 正在复核');
+    expect(siblingTrail?.textContent).not.toContain('B 正在整理资料');
+  });
 });
 
 describe('Round 16 public-owner evidence: Composer target guards', () => {
