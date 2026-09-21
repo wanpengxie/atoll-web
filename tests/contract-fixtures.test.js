@@ -21,7 +21,7 @@ describe('atoll contract v5 fixtures', () => {
     expect(envelope.channel_id).toBe(fixtures.downstream.feed.payload.channel_id);
   });
 
-  it('pins all six real OBS observation kinds and completeness', () => {
+  it('[TC-0548] pins all six real OBS observation kinds and completeness', () => {
     expect(Object.keys(fixtures.observations).sort()).toEqual(['actors', 'channels', 'daemons', 'decls', 'principals', 'profile']);
     for (const [kind, observation] of Object.entries(fixtures.observations)) {
       expect(observation.kind).toBe(kind);
