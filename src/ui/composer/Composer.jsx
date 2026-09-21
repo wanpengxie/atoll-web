@@ -229,9 +229,9 @@ export const Composer = memo(function Composer({ model, commands, className = ''
   const invoke = useCallback((operation, ...args) => {
     setInteractionError('');
     try {
-      return Promise.resolve(operation?.(...args)).catch((error) => { setInteractionError(error?.message || String(error)); return undefined; });
+      return Promise.resolve(operation?.(...args)).catch((error) => { setInteractionError(error?.detail || error?.message || String(error)); return undefined; });
     } catch (error) {
-      setInteractionError(error?.message || String(error));
+      setInteractionError(error?.detail || error?.message || String(error));
       return Promise.resolve(undefined);
     }
   }, []);
@@ -545,6 +545,6 @@ export const Composer = memo(function Composer({ model, commands, className = ''
         </div>
       </div>
     </form>
-    <div className="composer-state-rail">{interactionError ? <p className="composer-error" role="alert">{interactionError}</p> : model.editSession?.error ? <p className="composer-error" role="alert">{model.editSession.error}</p> : model.delivery.kind === 'lost' ? <p className="composer-error" role="alert">{model.delivery.label}；{model.delivery.source === 'reply' ? '请取消回复后重新选择收件人' : '请移除后重新选择收件人'}。</p> : model.failure ? <p className="composer-error" role="alert">{model.failure.error?.message || model.failure.error || '发送失败'}<button type="button" className="composer-retry" onClick={() => invoke(commands.retry, model.failure)}>使用原编号重试</button></p> : disabled || !model.permissions.canDurablyAccept ? <p className="composer-disabled-reason">{model.permissions.reason}；草稿仍保留在当前设备。</p> : !model.permissions.canTransmit ? <p className="composer-status state-offline" role="status">离线编辑；发送会先保存到本机，连接可用后自动发送。</p> : null}</div>
+    <div className="composer-state-rail">{interactionError ? <p className="composer-error" role="alert">{interactionError}</p> : model.editSession?.error ? <p className="composer-error" role="alert">{model.editSession.error}</p> : model.delivery.kind === 'lost' ? <p className="composer-error" role="alert">{model.delivery.label}；{model.delivery.source === 'reply' ? '请取消回复后重新选择收件人' : '请移除后重新选择收件人'}。</p> : model.failure ? <p className="composer-error" role="alert">{model.failure.error?.detail || model.failure.error?.message || model.failure.error || '发送失败'}<button type="button" className="composer-retry" onClick={() => invoke(commands.retry, model.failure)}>使用原编号重试</button></p> : disabled || !model.permissions.canDurablyAccept ? <p className="composer-disabled-reason">{model.permissions.reason}；草稿仍保留在当前设备。</p> : !model.permissions.canTransmit ? <p className="composer-status state-offline" role="status">离线编辑；发送会先保存到本机，连接可用后自动发送。</p> : null}</div>
   </section>;
 });

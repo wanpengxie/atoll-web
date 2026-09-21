@@ -96,7 +96,7 @@ function restoredSubmission(row) {
     state: row.state === 'transmitting' ? 'uncertain' : row.state,
     leaseOwner: '',
     leaseUntil: 0,
-    error: row.error || null,
+    error: serializedSubmissionError(row.error, row),
   };
 }
 
@@ -124,6 +124,20 @@ function serializedControlError(error) {
     code: error.code || 'unknown',
     detail: error.detail || error.message || String(error),
   };
+}
+
+function isControlSubmission(submission) {
+  const type = submission?.frame?.msg_type;
+  return submission?.controlSubmission === true
+    || isAgentControlType(type)
+    // Older durable command rows have no local provenance marker. These are
+    // command-only protocol families, unlike the ordinary agent.ask message.
+    || type === 'actor.describe'
+    || (typeof type === 'string' && type.startsWith('system.'));
+}
+
+function serializedSubmissionError(error, submission) {
+  return isControlSubmission(submission) ? serializedControlError(error) : serializedError(error);
 }
 
 function controlRecordId(controlKey) {
@@ -632,7 +646,7 @@ export function useComposerSubmissionRuntime({
           expectedStates,
           {
             state: retryable ? 'queued' : 'rejected',
-            error: serializedError(requestAccessError(assessment)),
+            error: serializedSubmissionError(requestAccessError(assessment), submission),
             leaseOwner: '',
             leaseUntil: 0,
           },
@@ -768,7 +782,7 @@ export function useComposerSubmissionRuntime({
       if (leased) patchOptions.leaseOwner = leaseOwnerRef.current;
       const failed = await outboxRef.current.patch(owner.principalId, submission.messageId,
         ['queued', 'transmitting', 'uncertain', 'rejected'],
-        { state, error: serializedError(error) }, {
+        { state, error: serializedSubmissionError(error, submission) }, {
           ...patchOptions,
         }).catch((persistError) => {
           if (persistError?.code !== STALE_SEND_LEASE && isLive()) onError(persistError);
@@ -831,6 +845,7 @@ export function useComposerSubmissionRuntime({
         key: id,
         messageId: id,
         channelId: resolvedChannel,
+        ...(ownedControlRequestsRef.current.has(row) ? { controlSubmission: true } : {}),
         text: row.text || '',
         targetLabel: row.targetLabel || '',
         frame: {
@@ -1076,10 +1091,17 @@ export function useComposerSubmissionRuntime({
     submissionCorrelationPortRef.current.reset();
     persistedDraftRevisionRef.current.clear();
     setAcceptingChannels(new Set());
-    const worldError = serializedError(Object.assign(new Error('服务端数据世界已更换，请确认后重新发送'), { code: 'world_changed' }));
+    const worldError = Object.assign(new Error('服务端数据世界已更换，请确认后重新发送'), { code: 'world_changed' });
     const rejected = pendingRef.current.map((row) => ['rejected'].includes(row.state)
       ? row
-      : { ...row, state: 'rejected', error: worldError, leaseOwner: '', leaseUntil: 0, updatedAt: Date.now() });
+      : {
+        ...row,
+        state: 'rejected',
+        error: serializedSubmissionError(worldError, row),
+        leaseOwner: '',
+        leaseUntil: 0,
+        updatedAt: Date.now(),
+      });
     publishPending(rejected);
     const principal = authorityRef.current?.principalId || principalId;
     for (const row of rejected) {

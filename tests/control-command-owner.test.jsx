@@ -23,8 +23,7 @@ function turn() {
   };
 }
 
-function harness() {
-  const submit = vi.fn().mockResolvedValue({ message_id: 'stop-1' });
+function harness({ submit = vi.fn().mockResolvedValue({ message_id: 'stop-1' }) } = {}) {
   const store = createOutboxStore({ databaseName: databaseName() });
   const access = {
     relationship: 'member', existence: 'present', runtime: 'open', freshness: 'fresh',
@@ -99,6 +98,43 @@ describe('submission control owner', () => {
       controlContext: { source: 'feature', turn: turn() },
     }))).rejects.toMatchObject({ code: 'control_authority_stale' });
     expect(config.submit).not.toHaveBeenCalled();
+    unmount();
+    config.store.close();
+  });
+
+  it('projects a backend control rejection as bounded code/detail data', async () => {
+    const failure = Object.assign(new Error('transport wording must not leak'), {
+      code: 'control_rejected',
+      detail: '服务端拒绝该控制命令',
+    });
+    const config = harness({ submit: vi.fn().mockRejectedValue(failure) });
+    const { result, unmount } = renderHook(() => useComposerSubmissionRuntime(config));
+    await waitFor(() => expect(result.current.pending).toEqual([]));
+
+    const messageId = await act(async () => result.current.control({
+      channelId: 'c0', type: TYPES.agentInterrupt, actorId: 'agent:worker:1', payload: {},
+      controlContext: {
+        source: 'timeline', turn: turn(),
+        targetAuthority: { current: true, actorIDs: new Set(['agent:worker:1']) },
+      },
+    }));
+    await waitFor(() => expect(result.current.pending).toEqual([
+      expect.objectContaining({ messageId, state: 'rejected' }),
+    ]));
+    expect(result.current.pending[0].error).toEqual({
+      code: 'control_rejected', detail: '服务端拒绝该控制命令',
+    });
+    expect(JSON.parse(JSON.stringify(result.current.pending[0].error))).toEqual({
+      code: 'control_rejected', detail: '服务端拒绝该控制命令',
+    });
+    const persisted = (await config.store.restore(config.principalId))
+      .find((row) => row.messageId === messageId);
+    expect(persisted).toMatchObject({
+      state: 'rejected',
+      error: { code: 'control_rejected', detail: '服务端拒绝该控制命令' },
+    });
+    expect(persisted.error).not.toHaveProperty('message');
+    expect(config.submit).toHaveBeenCalledOnce();
     unmount();
     config.store.close();
   });

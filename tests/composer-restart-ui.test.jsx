@@ -155,12 +155,14 @@ describe('targeted restart through the public Composer UI owner', () => {
 
   it('keeps a rejected restart as a visible retryable failure', async () => {
     const user = userEvent.setup();
-    const failure = Object.assign(new Error('protected actor'), { code: 'protected_actor' });
+    const failure = Object.assign(new Error('transport wording must not leak'), {
+      code: 'protected_actor', detail: '服务端拒绝重启该成员',
+    });
     const transport = { submit: vi.fn().mockRejectedValue(failure) };
     render(<RestartSurface transport={transport} />);
 
     await chooseRestart(user);
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('protected actor'));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('服务端拒绝重启该成员'));
     expect(screen.getByRole('button', { name: '使用原编号重试' })).toBeTruthy();
   });
 });
