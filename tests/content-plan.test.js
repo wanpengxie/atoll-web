@@ -170,7 +170,7 @@ describe('ContentPlan', () => {
     expect(store.preparedBytes).toBe(0);
   });
 
-  it('reports honest parser work while making unchanged publication a no-op', () => {
+  it('[TC-0539] reports honest parser work while making unchanged publication a no-op', () => {
     const metrics = {};
     const first = plan({ contentKey: 'message:m6:body', source: 'one\n\ntwo', metrics });
     const same = plan({ contentKey: 'message:m6:body', source: 'one\n\ntwo', previous: first, metrics });
