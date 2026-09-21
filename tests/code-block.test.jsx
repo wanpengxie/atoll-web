@@ -32,7 +32,7 @@ describe('围栏代码块', () => {
     await waitFor(() => expect(block.querySelector('.code-block-copy').textContent).toBe('已复制'));
   });
 
-  it('五行起显示行号；没写语言按纯文本，标签写 text', () => {
+  it('[TC-0513][AD-219] 五行起显示行号；没写语言按纯文本，标签写 text', () => {
     const source = '```\n1\n2\n3\n4\n5\n```';
     const { container } = render(<MarkdownContent text={source} />);
     const block = container.querySelector('figure.code-block');
