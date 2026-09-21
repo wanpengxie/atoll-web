@@ -3655,6 +3655,50 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     expect(reading.getSession().bottomIntent.id).toBe('');
   });
 
+  it('message-list-lifecycle: a ready receipt without a timeline destination cannot consume the send intent', () => {
+    const intent = {
+      id: 'composer:send-start:round36-waiting-destination',
+      inputEpoch: 0,
+      afterPresentationRevision: 2,
+      targetMessageIDs: ['round36-waiting-target'],
+    };
+    const reading = installSemanticBottomIntentConsumer(round34Reading({ mode: READING_MODE.following }));
+    const consumeBottomIntent = reading.consumeBottomIntent;
+    reading.consumeBottomIntent = vi.fn((candidate) => consumeBottomIntent(candidate));
+    reading.session = { ...reading.session, bottomIntent: intent };
+    const first = round33Row('round36-waiting-first', 1);
+    const target = { ...round33Row('round36-waiting-target', 2), body: { local: false } };
+    const snapshot = round33Snapshot([first, target], { revision: 2 });
+    const waitingReceipt = Object.freeze({
+      ...round36BottomPresentation(reading, snapshot, intent, true),
+      destinations: Object.freeze([Object.freeze({
+        messageID: target.id,
+        destination: 'waiting',
+        targetListRevision: snapshot.revision,
+      })]),
+    });
+    const view = render(
+      <VendorListExecutor
+        snapshot={snapshot}
+        reading={reading}
+        bottomIntentPresentation={waitingReceipt}
+        renderRow={(row) => <article>{row.id}</article>}
+      />,
+    );
+    const scroller = setRound35Geometry(vendorHarness.root, {
+      clientHeight: 600,
+      scrollHeight: 1_132,
+      scrollTop: 400,
+    });
+    vendorHarness.scrollTo.mockClear();
+    act(() => vendorHarness.props.totalListHeightChanged());
+    expect(vendorHarness.scrollTo).not.toHaveBeenCalled();
+    expect(reading.consumeBottomIntent).not.toHaveBeenCalled();
+    expect(reading.getSession().bottomIntent.id).toBe(intent.id);
+    expect(scroller.scrollTop).toBe(400);
+    view.unmount();
+  });
+
   it('message-list-lifecycle TC-1012: an equal-height target baseline precedes a later same-revision resize', () => {
     const intent = {
       id: 'composer:send-start:round37-equal-baseline',

@@ -43,18 +43,21 @@ function bottomIntentPresentationOf({ intent, activationID, inputEpoch, intentRe
     const row = rows.find((candidate) => String(candidate?.id || '') === messageID);
     if (row) {
       const waiting = waitingDestination(row);
-      if (waiting) blockedWaiting = true;
+      if (waiting || row.local === true || row.localState) blockedWaiting = true;
       return [{
         messageID,
         destination: waiting || row.local === true || row.localState ? 'waiting' : 'timeline',
         targetListRevision: revision,
       }];
     }
-    if (queued.has(messageID)) return [{
-      messageID,
-      destination: 'waiting',
-      targetListRevision: revision,
-    }];
+    if (queued.has(messageID)) {
+      blockedWaiting = true;
+      return [{
+        messageID,
+        destination: 'waiting',
+        targetListRevision: revision,
+      }];
+    }
     return [];
   });
   const ready = destinations.length === targetIDs.length

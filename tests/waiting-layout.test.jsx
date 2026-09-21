@@ -4,6 +4,11 @@ import { cleanup, render } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ConversationSurface } from '../src/ui/conversation/ConversationSurface.jsx';
 
+const conversationHarness = vi.hoisted(() => ({
+  value: null,
+  handoffProps: null,
+}));
+
 vi.mock('../src/ui/timeline/useTimelinePreferences.js', () => ({
   CONVERSATION_SCOPE: { mine: 'mine', all: 'all' },
   useTimelinePreferences: () => ({
@@ -13,7 +18,7 @@ vi.mock('../src/ui/timeline/useTimelinePreferences.js', () => ({
 }));
 
 vi.mock('../src/ui/timeline/useConversationProjection.js', () => ({
-  useConversationProjection: () => ({
+  useConversationProjection: () => conversationHarness.value || {
     projection: { presentation: { rows: [] } },
     viewport: {
       activationID: 'activation-1', session: { mode: 'following' }, availability: 'empty-known',
@@ -22,7 +27,7 @@ vi.mock('../src/ui/timeline/useConversationProjection.js', () => ({
       revokeBottomIntent: vi.fn(), jumpToLatest: vi.fn(),
     },
     latestRowID: '', browsingExpandedSlots: new Set(), livePresentationArrivals: [],
-  }),
+  },
 }));
 
 vi.mock('../src/ui/timeline/useWaitingEditingController.jsx', async (load) => {
@@ -45,11 +50,16 @@ vi.mock('../src/ui/timeline/useTimelineRowRenderer.jsx', () => ({
 }));
 
 vi.mock('../src/ui/timeline/ReadingContainerHandoff.jsx', () => ({
-  ReadingContainerHandoff: () => <div data-testid="reading">reading</div>,
+  ReadingContainerHandoff: (props) => {
+    conversationHarness.handoffProps = props;
+    return <div data-testid="reading">reading</div>;
+  },
 }));
 
 afterEach(() => {
   cleanup();
+  conversationHarness.value = null;
+  conversationHarness.handoffProps = null;
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -65,6 +75,73 @@ function Surface({ composer, pending = [], className = '' }) {
 }
 
 describe('fixed conversation surface ownership', () => {
+  it('publishes queued and local send destinations as not-ready, while timeline rows are ready', () => {
+    const cases = [
+      {
+        targetID: 'queued-target',
+        rows: [],
+        pending: [{ requestId: 'queued-target' }],
+        ready: false,
+        destination: 'waiting',
+      },
+      {
+        targetID: 'local-target',
+        rows: [{ id: 'local-target', local: true, localState: 'queued' }],
+        pending: [],
+        ready: false,
+        destination: 'waiting',
+      },
+      {
+        targetID: 'timeline-target',
+        rows: [{ id: 'timeline-target', local: false }],
+        pending: [],
+        ready: true,
+        destination: 'timeline',
+      },
+    ];
+
+    for (const candidate of cases) {
+      conversationHarness.value = {
+        projection: { presentation: { revision: 12, rows: candidate.rows } },
+        viewport: {
+          activationID: 'activation-contract',
+          session: {
+            mode: 'following',
+            inputEpoch: 2,
+            intentRevision: 7,
+            bottomIntent: {
+              id: `composer:send-start:${candidate.targetID}`,
+              inputEpoch: 2,
+              targetMessageIDs: [candidate.targetID],
+            },
+          },
+          availability: 'readable',
+          historyDemand: { phase: 'idle' }, historyBoundary: null, unseenNotice: 0,
+          captureBottomIntent: vi.fn(), requestBottom: vi.fn(), bindBottomIntentTargets: vi.fn(),
+          revokeBottomIntent: vi.fn(), jumpToLatest: vi.fn(),
+        },
+        latestRowID: '', browsingExpandedSlots: new Set(), livePresentationArrivals: [],
+      };
+      render(<Surface pending={candidate.pending} composer={<div>composer</div>} />);
+
+      expect(conversationHarness.handoffProps.bottomIntentPresentation).toMatchObject({
+        kind: 'bottom-intent-presentation',
+        activationID: 'activation-contract',
+        inputEpoch: 2,
+        intentRevision: 7,
+        presentationRevision: 12,
+        targetIDs: [candidate.targetID],
+        ready: candidate.ready,
+        destinations: [{
+          messageID: candidate.targetID,
+          destination: candidate.destination,
+          targetListRevision: 12,
+        }],
+      });
+      cleanup();
+    }
+  });
+
   it('does not install a size/mutation/frame observer or publish a scroll intent', () => {
     const ResizeObserver = vi.fn();
     const MutationObserver = vi.fn();

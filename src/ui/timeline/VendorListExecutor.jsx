@@ -139,7 +139,7 @@ function isComposerSendIntent(intent) {
 
 function composerSendTargetIDs(intent) {
   return Array.isArray(intent?.targetMessageIDs)
-    ? intent.targetMessageIDs.map(String).filter(Boolean)
+    ? [...new Set(intent.targetMessageIDs.map(String).filter(Boolean))]
     : [];
 }
 
@@ -896,6 +896,8 @@ export function VendorListExecutor({
       const rootIdentity = currentRootIdentity(root);
       const generation = Number(owner.status?.generation || 0);
       const measuredRows = new Set(measurement.rowIDs || []);
+      const allTargetsAreTimeline = timelineTargets.length > 0
+        && timelineTargets.length === targetIDs.length;
       const measurementCurrent = measurement.root === root
         && Number(measurement.rootIdentity) === Number(rootIdentity)
         && Number(measurement.generation) === generation
@@ -907,6 +909,7 @@ export function VendorListExecutor({
         && Number(measurement.roleRevision) === Number(data.roleRevision || 0)
         && measurement.ackSeq > 0
         && measurement.readyAtAck === true
+        && allTargetsAreTimeline
         && timelineTargets.every((destination) => measuredRows.has(String(destination.messageID)));
       // The Presentation receipt and the physical height ack are separate
       // local UI facts. A role-only callback, an equal-height baseline, or a
