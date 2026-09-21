@@ -248,6 +248,19 @@ function useProjectionReadingOwner({
     controller.getSnapshot,
   );
   const { session } = published;
+  // A cold activation can commit a non-empty Presentation before Virtuoso has
+  // published a range for this physical root. Keep that distinction in the
+  // Reading owner: rows are readable data, but the first range is the public
+  // materialization receipt that lets the surface leave its bounded loading
+  // state. A controller replacement starts from the new snapshot's rows;
+  // there is no second store or persisted lifecycle field.
+  const [viewabilityState, setViewabilityState] = useState(() => ({
+    controller,
+    visible: snapshot.rows.length > 0,
+  }));
+  const presentationViewable = viewabilityState.controller === controller
+    ? viewabilityState.visible
+    : snapshot.rows.length > 0;
   const snapshotRef = useRef(snapshot);
   const historyStatusRef = useRef(historyStatus);
   const observationRef = useRef(Object.freeze({
@@ -416,8 +429,11 @@ function useProjectionReadingOwner({
     || historyStatus.error
     || '',
   );
+  const presentationPending = snapshot.rows.length > 0
+    && surfaceVisible === true
+    && !presentationViewable;
   const availability = snapshot.rows.length
-    ? 'readable'
+    ? (presentationPending ? 'materializing' : 'readable')
     : availabilityError
       ? 'error'
       : authoritativeEmpty || semanticExhausted
@@ -984,7 +1000,7 @@ function useProjectionReadingOwner({
     presentationAuthority,
     availability,
     emptyReason: authoritativeEmpty ? 'channel' : 'filtered',
-    presentationPending: false,
+    presentationPending,
     availabilityError,
     freshness: Object.freeze({ phase: syncObservationCurrent ? 'current' : availabilityError ? 'error' : 'pending', error: String(syncStatus.error || '') }),
     cache: Object.freeze({
@@ -1215,8 +1231,20 @@ function useProjectionReadingOwner({
     },
     onReadingRootActivation,
     onPresentationMaterialized(observation = {}) {
-      return observation.activationID === controller.activationID
-        && Number(observation.presentationRevision) === Number(snapshotRef.current.revision || 0);
+      const current = controller.getSnapshot().session;
+      if (committedOwnerRef.current !== commitOwnerCandidate
+        || surfaceVisible !== true
+        || observation.activationID !== current.activationID
+        || Number(observation.presentationRevision) !== Number(snapshotRef.current.revision || 0)
+        || snapshotRef.current.rows.length === 0
+        || Number(observation.startIndex) < 0
+        || Number(observation.endIndex) < Number(observation.startIndex)) return false;
+      setViewabilityState((previous) => (
+        previous.controller === controller && previous.visible
+          ? previous
+          : { controller, visible: true }
+      ));
+      return true;
     },
     onSurfaceVisibilityChange(visible) {
       const nextVisible = visible === true;
@@ -1319,7 +1347,7 @@ function useProjectionReadingOwner({
     currentAdmissionAuthority, getContentAnchorCommand, historyPositionLeaseCommand,
     revokeHistoryPositionLease,
     history, historyBoundary, historyConsumer, historyStatus,
-    failHistoryStart, historyStartCommand, onHistoryStartEvidence, presentationAuthority, presentationInitializing, requestBottom, requestHistory,
+    failHistoryStart, historyStartCommand, onHistoryStartEvidence, presentationAuthority, presentationInitializing, presentationPending, requestBottom, requestHistory,
     restorePending, session, syncObservationCurrent, syncStatus.error, tailCaughtUp,
     onReadingRootActivation, onScopeHandoffCancel,
   ]);
