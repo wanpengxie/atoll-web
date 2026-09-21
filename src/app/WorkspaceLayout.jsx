@@ -357,6 +357,7 @@ export function WorkspaceLayout({
   const channelHeadingRef = useRef(null);
   const channelMenuRef = useRef(null);
   const channelMenuButtonRef = useRef(null);
+  const channelMenuReturnFocusRef = useRef(null);
   const filesToggleRef = useRef(null);
   const filesOpenRef = useRef(filesOpen);
   const viewTabRefs = useRef([]);
@@ -410,8 +411,11 @@ export function WorkspaceLayout({
     },
   };
   const rightPanelElement = React.isValidElement(rightPanel)
-    ? React.cloneElement(rightPanel, { layout: paneLayoutPort })
+    ? React.cloneElement(rightPanel, { layout: paneLayoutPort, returnFocusRef: channelMenuReturnFocusRef })
     : rightPanel;
+  useLayoutEffect(() => {
+    if (!rightPanel) channelMenuReturnFocusRef.current = null;
+  }, [rightPanel]);
   const pendingChannelSelectionRef = useRef(null);
   // Presentation-only handoff gate. `navigation.activeChannelId` remains the
   // sole committed selection authority; this state only disables controls
@@ -579,6 +583,10 @@ export function WorkspaceLayout({
   }, [navigation.activeChannelId, navigation.channels, selectChannel]);
   const runChannelMenuAction = (command) => {
     setChannelMenuOpen(false);
+    channelMenuReturnFocusRef.current = channelMenuButtonRef.current;
+    // The menu item is about to unmount. Preserve the stable channel-action
+    // opener so ContextHost restores focus on desktop and compact/mobile rails.
+    channelMenuButtonRef.current?.focus({ preventScroll: true });
     command?.();
   };
   const moveChannelMenu = (event) => {
@@ -631,7 +639,7 @@ export function WorkspaceLayout({
           <div className="channel-menu" ref={channelMenuRef}>
             <button ref={channelMenuButtonRef} type="button" className="header-action" disabled={!channel} aria-label="频道操作" aria-haspopup="menu" aria-expanded={channelMenuOpen} onClick={() => setChannelMenuOpen((value) => !value)}>•••</button>
             {channelMenuOpen && <div className="channel-menu-popover" role="menu" aria-label="频道操作菜单" onKeyDown={moveChannelMenu}>
-              {navigation.openChannelAdministration && <button type="button" role="menuitem" onClick={() => runChannelMenuAction(navigation.openChannelAdministration)}>频道详情</button>}
+              {(navigation.openChannelDetails || navigation.openChannelAdministration) && <button type="button" role="menuitem" onClick={() => runChannelMenuAction(navigation.openChannelDetails || navigation.openChannelAdministration)}>频道详情</button>}
               {navigation.openAutomation && <button type="button" role="menuitem" onClick={() => runChannelMenuAction(navigation.openAutomation)}>定时动作</button>}
               <button type="button" role="menuitem" className="mobile-channel-menu-action" onClick={() => runChannelMenuAction(toggleFiles)}>{filesOpen ? '关闭文件' : '打开文件'}</button>
               {navigation.openTerminal && <button type="button" role="menuitem" className="mobile-channel-menu-action" disabled={!channel || terminalTransitionPending} onClick={() => runChannelMenuAction(toggleTerminal)}>{navigation.terminalVisible ? '关闭终端' : '打开终端'}</button>}

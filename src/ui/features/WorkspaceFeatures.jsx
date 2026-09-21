@@ -261,20 +261,20 @@ export function WorkspaceFeatures({
   </>;
 }
 
-function ContextHost({ type, focusKey, onClose, paneLayout = null, children }) {
+function ContextHost({ type, focusKey, onClose, paneLayout = null, returnFocusRef = null, children }) {
   const hostRef = useRef(null);
   const openerRef = useRef(null);
   useLayoutEffect(() => {
     const active = document.activeElement;
-    openerRef.current = active && active !== document.body && active.isConnected
+    openerRef.current = returnFocusRef?.current || (active && active !== document.body && active.isConnected
       ? active
-      : document.querySelector('.mobile-channel-toggle');
+      : document.querySelector('.mobile-channel-toggle'));
     hostRef.current?.querySelector('.context-pane button[aria-label^="关闭"]')?.focus({ preventScroll: true });
     return () => {
       const opener = openerRef.current;
       if (opener?.isConnected && !opener.disabled) opener.focus({ preventScroll: true });
     };
-  }, []);
+  }, [returnFocusRef]);
   useEffect(() => {
     const escape = (event) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;
@@ -303,7 +303,7 @@ function ContextHost({ type, focusKey, onClose, paneLayout = null, children }) {
   </div>;
 }
 
-export function WorkspaceRightPanel({ panel, channel, files = {}, tasks = {}, roster = {}, governance = {}, automation = {}, activity = {}, turn = null, onClose, layout = null }) {
+export function WorkspaceRightPanel({ panel, channel, files = {}, tasks = {}, roster = {}, governance = {}, automation = {}, activity = {}, turn = null, onClose, layout = null, returnFocusRef = null }) {
   const kind = typeof panel === 'string' ? panel : panel?.kind || panel?.value || '';
   let content = null;
   let dismiss = onClose;
@@ -353,6 +353,7 @@ export function WorkspaceRightPanel({ panel, channel, files = {}, tasks = {}, ro
     focusKey={focusKey}
     onClose={dismiss}
     paneLayout={paneLayout}
+    returnFocusRef={returnFocusRef}
   >{content}</ContextHost>;
 }
 
