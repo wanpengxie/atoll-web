@@ -33,7 +33,7 @@ describe('性能路径的判据', () => {
     expect(detectProfile({ matchMedia: desktopMedia, search: '?perf=desktop', storage: store })).toBe(PROFILE_DESKTOP);
   });
 
-  it('判据缺失（jsdom、旧浏览器）恒落到今天已经在跑的那条路径', () => {
+  it('[TC-0606][AD-312] 判据缺失（jsdom、旧浏览器）恒落到今天已经在跑的那条路径', () => {
     expect(detectProfile({ matchMedia: undefined, search: '', storage: storage() })).toBe(PROFILE_DESKTOP);
   });
 });
