@@ -172,6 +172,7 @@ export function useHistoryConsumer({
   const topContinuationRef = useRef(null);
   const topBoundaryRef = useRef(null);
   const positionLeaseWaitRef = useRef(null);
+  const grantTailRequestRef = useRef(null);
   const epochRef = useRef(0);
   const historyStartRef = useRef(null);
   const [historyStartFailure, setHistoryStartFailure] = useState(null);
@@ -212,6 +213,7 @@ export function useHistoryConsumer({
     cancelPositionLeaseWait(positionLeaseWaitRef, 'position-lease-owner-replaced', true);
     clearTopContinuation(topContinuationRef);
     topBoundaryRef.current = null;
+    grantTailRequestRef.current = null;
     clearHistoryStart(historyStartRef, 'history-start-owner-replaced');
     setHistoryStartFailure(null);
     failedAnticipatoryRef.current = null;
@@ -311,7 +313,7 @@ export function useHistoryConsumer({
       requiredVisibleCoverage = null, consumer = '', continuation = false,
       stableTopContinuation = false, continuationAnchorID = '', continuationAnchorSeq = 0,
       continuationFirstVisibleSeq = 0, continuationLease = null,
-      historyStartIntent = null,
+      historyStartIntent = null, beforeSeq = 0,
     } = options;
     const historyStart = historyStartIntent?.type === 'history-start';
     if (!continuation && committedOwnerRef.current !== commitOwnerCandidate) {
@@ -660,6 +662,7 @@ export function useHistoryConsumer({
     const promise = Promise.resolve(requestPort({
       intent, urgency, signal: abortController.signal,
       anchorSeq: Number(first?.seqLow || 0), targetSeq: Number(targetSeq || 0),
+      beforeSeq: Number(beforeSeq || 0) || undefined,
       requiredVisibleCoverage: requiredVisibleCoverage || undefined,
       revealRows, revealBytes, reason,
       explicitRetry: reason === 'retry' || reason === 'retry-restore',
@@ -902,6 +905,32 @@ export function useHistoryConsumer({
     historyStatusRef, historyViewSpec, requestPort, snapshotRef,
     continuationLineage?.gestureID, continuationLineage?.rootIdentity,
     continuationLineage?.visibilityEpoch, viewKey]);
+
+  // A membership regrant may hydrate a stale durable window before the new
+  // surface paint. That window is readable, but it is not the current tail;
+  // issue one existing Reading history demand against the authoritative grant
+  // head so the Feed owns the canonical physical fetch. This is keyed to the
+  // grant authority, not to row visibility, and therefore cannot loop or turn
+  // a cache row into a tail proof.
+  useEffect(() => {
+    const authorityRevision = Number(historyStatus.notificationAuthorityRevision || 0);
+    const renderedTailSeq = Number(snapshotRef.current.rows?.at(-1)?.seqHigh || 0);
+    const attached = historyStatus.attached === true
+      && Number(historyStatus.generation || 0) > 0
+      && historyStatus.messageCurrent === true;
+    if (!attached || Number(historyStatus.generation || 0) <= 1
+      || authorityRevision <= 0 || knownHead <= 0
+      || snapshotRef.current.rows.length === 0 || renderedTailSeq >= knownHead) return;
+    const key = `${controller.activationID}:${authorityRevision}`;
+    if (grantTailRequestRef.current === key) return;
+    grantTailRequestRef.current = key;
+    void request('grant-current-tail', HISTORY_URGENCY.interactive, {
+      intent: HISTORY_INTENT.scrollHistory,
+      beforeSeq: knownHead + 1,
+    });
+  }, [controller.activationID, historyStatus.attached, historyStatus.generation,
+    historyStatus.messageCurrent, historyStatus.notificationAuthorityRevision,
+    knownHead, request, snapshot.rows.length, snapshot.rows.at(-1)?.seqHigh]);
 
   // Home is a semantic walk, not a physical scroll callback. Keep the one
   // current intent alive while History supplies older pages, then expose one

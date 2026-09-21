@@ -293,16 +293,18 @@ function evaluatePresentation(owner, entries = [], {
   sourceChangeBase = 0, sourceChanges = [],
 } = {}) {
   const viewChanged = nextViewID !== owner.viewID;
+  const epochChanged = epoch !== owner.snapshot.epoch;
+  const ownerIdentityChanged = viewChanged || epochChanged;
   const viewID = nextViewID;
   const revision = owner.revision;
-  let sourceRevision = viewChanged ? 0 : owner.sourceRevision;
-  let entriesReference = viewChanged ? null : owner.entriesReference;
-  let entriesByID = viewChanged ? new Map() : owner.entriesByID;
-  let indexesByID = viewChanged ? new Map() : owner.indexesByID;
-  let rowsByID = viewChanged ? new Map() : owner.rowsByID;
-  let signatures = viewChanged ? new Map() : owner.signatures;
-  let contentVersions = viewChanged ? new Map() : owner.contentVersions;
-  let currentEntryEligibility = viewChanged ? new Map() : owner.currentEntryEligibility;
+  let sourceRevision = ownerIdentityChanged ? 0 : owner.sourceRevision;
+  let entriesReference = ownerIdentityChanged ? null : owner.entriesReference;
+  let entriesByID = ownerIdentityChanged ? new Map() : owner.entriesByID;
+  let indexesByID = ownerIdentityChanged ? new Map() : owner.indexesByID;
+  let rowsByID = ownerIdentityChanged ? new Map() : owner.rowsByID;
+  let signatures = ownerIdentityChanged ? new Map() : owner.signatures;
+  let contentVersions = ownerIdentityChanged ? new Map() : owner.contentVersions;
+  let currentEntryEligibility = ownerIdentityChanged ? new Map() : owner.currentEntryEligibility;
   let snapshot = owner.snapshot;
   const incrementalChanges = sourceChanges.filter((change) => Number(change.revision) > sourceRevision);
   const revisionAdvanced = Number(nextSourceRevision) > sourceRevision;
@@ -310,7 +312,7 @@ function evaluatePresentation(owner, entries = [], {
     entries.length === snapshot.orderedIDs.length
     && entries.every((entry, index) => identityOf(entry) === snapshot.orderedIDs[index])
   );
-  const canIncrement = !viewChanged
+  const canIncrement = !ownerIdentityChanged
     && snapshot.epoch === epoch
     && sameEntryOrder
     && sourceRevision >= Number(sourceChangeBase || 0)
@@ -417,7 +419,7 @@ function evaluatePresentation(owner, entries = [], {
   const nextEligibility = new Map();
   const preparedEntries = [...entries];
   const ordered = preparedEntries.map(identityOf);
-  const visualSlots = replacementSlots(owner, preparedEntries, ordered, viewChanged, epoch);
+  const visualSlots = replacementSlots(owner, preparedEntries, ordered, ownerIdentityChanged, epoch);
   const inserted = [];
   const updated = [];
   for (let index = 0; index < preparedEntries.length; index += 1) {
@@ -463,7 +465,7 @@ function evaluatePresentation(owner, entries = [], {
   }
   const previousIDs = snapshot.orderedIDs;
   const previousStart = previousIDs.length ? ordered.indexOf(previousIDs[0]) : -1;
-  const orderedPrevious = !viewChanged && previousStart >= 0
+  const orderedPrevious = !ownerIdentityChanged && previousStart >= 0
     && !removed.length
     && previousIDs.every((id, index) => ordered[previousStart + index] === id);
   const frontCandidate = orderedPrevious ? ordered.slice(0, previousStart) : [];
@@ -494,7 +496,7 @@ function evaluatePresentation(owner, entries = [], {
       local: nextRows.get(currentEntryRow)?.body?.local === true,
     })
     : null;
-  const firstItemIndex = viewChanged || previousIDs.length === 0
+  const firstItemIndex = ownerIdentityChanged || previousIDs.length === 0
     ? FIRST_ITEM_INDEX_ORIGIN
     : continuousPrevious && prefixCount > 0
       ? Math.max(1, snapshot.firstItemIndex - prefixCount)
@@ -504,7 +506,7 @@ function evaluatePresentation(owner, entries = [], {
     firstItemIndex, currentEntryCandidate, orderedIDs: Object.freeze([...ordered]),
     entities: readonlyIndex(nextRows), rows,
     changes: Object.freeze({
-      kind: viewChanged ? 'rebase' : structuralKind,
+      kind: ownerIdentityChanged ? 'rebase' : structuralKind,
       prefixCount: continuousPrevious ? prefixCount : 0,
       frontInsertedIDs, backInsertedIDs,
       inserted: Object.freeze(inserted), updated: Object.freeze(updated), removed: Object.freeze(removed),

@@ -117,6 +117,20 @@ describe('immutable conversation presentation', () => {
     expect(rebased.entities.get('new').visualSlotID).toBe('new');
   });
 
+  it('rebases committed identities when a new authority epoch reuses the same view', () => {
+    const projector = createConversationPresentation();
+    const first = publish(projector, [message('m1', 1), message('m2', 2)], {
+      nextViewID: 'c0:all', epoch: 'generation:1:authority:1', sourceRevision: 2,
+    });
+    const second = publish(projector, [message('m1', 1), message('m2', 2), message('m3', 3)], {
+      nextViewID: 'c0:all', epoch: 'generation:1:authority:2', sourceRevision: 3,
+    });
+
+    expect(second.changes.kind).toBe('rebase');
+    expect(second.changes.inserted).toEqual(['m1', 'm2', 'm3']);
+    expect(second.entities.get('m1')).not.toBe(first.entities.get('m1'));
+  });
+
   it('retains the original visual slot across committed reciprocal replacement chains', () => {
     const projector = createConversationPresentation();
     publish(projector, [turnEntry('a', 1, { replacedBy: 'b' })], {

@@ -42,6 +42,7 @@ export function historySourceKey(status = {}) {
   return JSON.stringify([
     Number(status.generation || 0), status.attached === true,
     status.localReplicaReady === true, String(status.sourceLease || ''),
+    Number(status.notificationAuthorityRevision || 0),
   ]);
 }
 

@@ -156,6 +156,11 @@ function traceReadingOwnerCommit({ channelID, viewKey, viewport, snapshot }) {
     .map((id) => String(id || ''))
     .filter(Boolean))];
   const insertedIDs = ids(changes.inserted);
+  // readingTrace applies a bounded diagnostic value policy. Preserve the
+  // newest committed delta when a rebase contains more IDs than that bound;
+  // the current tail must remain observable without changing the Presentation
+  // owner commit or manufacturing a second event.
+  const tracedInsertedIDs = insertedIDs.length > 50 ? insertedIDs.slice(-50) : insertedIDs;
   const updatedIDs = ids(changes.updated);
   const removedIDs = ids(changes.removed);
   if (!insertedIDs.length && !updatedIDs.length && !removedIDs.length) return;
@@ -167,7 +172,7 @@ function traceReadingOwnerCommit({ channelID, viewKey, viewport, snapshot }) {
     presentationRevision: Number(snapshot?.revision || 0),
     sourceRevision: Number(snapshot?.sourceRevision || 0),
     kind: String(changes.kind || ''),
-    insertedIDs,
+    insertedIDs: tracedInsertedIDs,
     frontInsertedIDs: ids(changes.frontInsertedIDs),
     backInsertedIDs: ids(changes.backInsertedIDs),
     updatedIDs,
@@ -1577,7 +1582,7 @@ export function useConversationProjection({
         channelID: state.channelId,
         viewKey: messageListKey,
         viewport,
-        snapshot: projection.presentationCandidate?.snapshot,
+        snapshot: presentationRef.current.current(),
       });
       return;
     }
@@ -1594,7 +1599,7 @@ export function useConversationProjection({
       channelID: state.channelId,
       viewKey: messageListKey,
       viewport,
-      snapshot: projection.presentationCandidate?.snapshot,
+      snapshot: presentationRef.current.current(),
     });
   }, [
     history.status?.presentationAdmission,
