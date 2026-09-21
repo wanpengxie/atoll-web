@@ -559,8 +559,12 @@ export function ChannelAdministrationPanel({ channel, port = {}, initialTab = 'm
   const resolvedInitialTab = ['overview', 'info'].includes(initialTab) ? 'overview' : ['members', 'danger'].includes(initialTab) ? initialTab : 'members';
   const [tab, setTab] = useState(resolvedInitialTab);
   useEffect(() => setTab(resolvedInitialTab), [resolvedInitialTab]);
-  const refreshOperation = typeof port.commands?.refresh === 'function'
-    ? () => port.commands.refresh('operation')
+  // Directory/member refresh is not an operation-result refresh. Only an
+  // explicitly typed operation receipt port may offer that action; the
+  // Workspace channel owner currently has no reliable one, so unavailable
+  // terminal results expose the canonical re-entry path only.
+  const refreshOperation = typeof port.commands?.refreshOperation === 'function'
+    ? () => port.commands.refreshOperation()
     : undefined;
   const reenterChannel = typeof port.commands?.enterChannel === 'function' && channel?.id
     ? () => port.commands.enterChannel({ channelId: channel.id, view: 'conversation' })

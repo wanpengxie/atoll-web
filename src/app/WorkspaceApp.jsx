@@ -237,10 +237,17 @@ function channelCreationOperation(turn, channel) {
     ? result.value
     : result;
   const status = String(result.status || '');
-  const state = resultState.phase === 'unavailable'
-    ? 'uncertain'
-    : !turn.terminal
-      ? 'active'
+  const resultPhase = !turn.terminal
+    ? 'pending'
+    : status === 'failed' || status === 'cancelled'
+      ? 'failed'
+      : resultState.phase === 'unavailable'
+        ? 'unavailable'
+        : 'available';
+  const state = !turn.terminal
+    ? 'active'
+    : resultPhase === 'unavailable'
+      ? 'uncertain'
       : status === 'completed'
         ? 'completed'
         : status === 'cancelled'
@@ -261,8 +268,10 @@ function channelCreationOperation(turn, channel) {
     kindLabel: ACTIVITY_KIND_LABELS.operation,
     title: `创建频道 ${String(body.name || targetId || '未命名频道')}`,
     state,
+    resultPhase,
     channelId: channel.id,
     channelName: channel.qualified_name || channel.name || channel.id,
+    message: detail,
     detail,
     updatedAt: turn.terminal?.ts || request.ts || turn.requestSeq || 0,
     source: Object.freeze({
@@ -1581,6 +1590,17 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       }),
     },
   };
+  const channelOperation = useMemo(() => {
+    const channel = navigation.activeChannel;
+    if (!channel?.id) return null;
+    const operations = timelineTurns(feed.stateFor(channel.id)?.timeline || [])
+      .map((turn) => channelCreationOperation(turn, channel))
+      .filter(Boolean);
+    // Feed timeline order is the canonical ledger order. Do not re-sort by
+    // presentation timestamps (which may be ISO strings) or invent a second
+    // latest-operation authority in the Shell.
+    return operations.at(-1) || null;
+  }, [feed, navigation.activeChannel, navigation.activeChannelId]);
   const channelCreation = useMemo(() => {
     const request = channelCreationRequest;
     if (!request) return null;
@@ -1674,6 +1694,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     channel: {
       disabled: !canWrite,
       children: navigation.channels.filter((channel) => channel.parent_id === navigation.activeChannelId),
+      operation: channelOperation,
       creation: channelCreation,
       // Templates are a directory projection only when the session owner has
       // actually supplied them. `null` keeps the unavailable distinction; the
