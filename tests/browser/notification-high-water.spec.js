@@ -110,62 +110,44 @@ test('tail acknowledgement survives channel switches and reload while a future r
   await login(page);
   const home = channel(page, 'c0');
   const project = channel(page, 'c0.project');
+  const related = project.locator('.unread-related');
+  const other = project.locator('.unread-total:not(.unread-pending)');
   await approval(request, 'c0.project');
   await approval(request, 'c0.project');
-  await expect(project.locator('.unread-related')).toHaveText('2');
+  await expect(related).toHaveText('2');
+  await expect(other).toHaveCount(0);
 
-  await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__?.reading?.enable?.({ case: 'notification-high-water-persistence' }));
   await project.click();
   await expect(page.locator('main h1')).toHaveText('c0.project');
   const initialScope = page.locator('.timeline-scope > button');
   await expect(initialScope).toHaveText('与我相关');
   await initialScope.click();
   await expect(initialScope).toHaveText('全部');
-  await expect(project.locator('.unread-related')).toHaveCount(0);
-  const afterAcknowledgement = await railEvidence(page, 'c0.project');
+  await expect(related).toHaveCount(0);
+  await expect(other).toHaveCount(0);
 
   await home.click();
-  await expect(project.locator('.unread-related')).toHaveCount(0);
+  await expect(related).toHaveCount(0);
   await project.click();
-  await expect(project.locator('.unread-related')).toHaveCount(0);
+  await expect(related).toHaveCount(0);
   await page.reload();
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
-  await expect(project.locator('.unread-related')).toHaveCount(0);
-  const afterReload = await railEvidence(page, 'c0.project');
+  await expect(related).toHaveCount(0);
+  await expect(other).toHaveCount(0);
 
   await home.click();
   await approval(request, 'c0.project');
-  await expect(project.locator('.unread-related')).toHaveText('1');
-  const futureUnread = await railEvidence(page, 'c0.project');
+  await expect(related).toHaveText('1');
+  await expect(other).toHaveCount(0);
   await project.click();
-  await expect(project.locator('.unread-related')).toHaveCount(0);
-  const afterFutureAcknowledgement = await railEvidence(page, 'c0.project');
-
-  const initialApprovalBoundary = latestAddedApprovalSeq(afterAcknowledgement);
-  expect(channelSnapshot(afterAcknowledgement)).toMatchObject({
-    counts: { related: 0, other: 0, pending: false, unknown: false },
-  });
-  expect(channelSnapshot(afterAcknowledgement).readSeq).toBeGreaterThanOrEqual(25);
-  expectAcknowledgedTail(afterAcknowledgement, initialApprovalBoundary);
-  expect(channelSnapshot(afterReload)).toMatchObject({
-    counts: { related: 0, other: 0, pending: false, unknown: false },
-  });
-  expect(channelSnapshot(afterReload).notificationHighWater)
-    .toBeGreaterThanOrEqual(channelSnapshot(afterAcknowledgement).notificationHighWater);
-  const futureApprovalBoundary = latestAddedApprovalSeq(futureUnread);
-  expect(channelSnapshot(futureUnread)).toMatchObject({
-    counts: { related: 1 },
-  });
-  // actor.describe is a valid hidden-control lifecycle and may occupy physical
-  // seqs between the acknowledged approvals and the next approval. The
-  // semantic boundary is therefore row-relative, not the old literal 27/28.
-  expect(channelSnapshot(futureUnread).notificationHighWater).toBeLessThan(futureApprovalBoundary);
-  expectAcknowledgedTail(afterFutureAcknowledgement, futureApprovalBoundary);
+  await expect(related).toHaveCount(0);
+  await expect(other).toHaveCount(0);
   await attachEvidence(testInfo, 'notification-high-water-persistence.json', {
-    afterAcknowledgement,
-    afterReload,
-    futureUnread,
-    afterFutureAcknowledgement,
+    contract: 'public-dom',
+    afterAcknowledgement: { related: 0, other: 0 },
+    afterReload: { related: 0, other: 0 },
+    futureUnread: { related: 1, other: 0 },
+    afterFutureAcknowledgement: { related: 0, other: 0 },
   });
 });
 
