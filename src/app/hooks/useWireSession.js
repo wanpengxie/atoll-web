@@ -756,7 +756,17 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
   const channels = useMemo(() => {
     const authoritative = accessRef.current?.rows?.() || [];
     const rows = authoritative.length ? authoritative : [...profiles.values()];
-    return [...rows].sort((left, right) => {
+    // A retired profile can remain in the last directory snapshot while the
+    // access owner is publishing the terminal fact.  It is not a selectable
+    // shell channel during that handoff: keeping it here leaves the active id
+    // apparently valid and lets a right panel render with a null channel.
+    const visible = rows.filter((row) => {
+      const state = accessRef.current?.state?.(row.id);
+      return row?.status !== 'retired'
+        && row?.access !== 'retired'
+        && state?.existence !== 'retired';
+    });
+    return [...visible].sort((left, right) => {
       if (left.id === 'c0') return -1;
       if (right.id === 'c0') return 1;
       return String(left.qualified_name || left.name || left.id).localeCompare(String(right.qualified_name || right.name || right.id));
@@ -769,6 +779,7 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
       if (activeChannelId && accessRef.current?.state?.(activeChannelId)?.existence === 'retired') onNotice(`${activeChannelId} 已退役，已切换到其他可用频道。`);
       const requested = channels.find((row) => row.id === initialRef.current.channelId);
       const next = requested || channels.find((row) => row.access === 'member_active') || channels[0];
+      if (!next) return;
       const hasValidRequest = requested?.id === next.id;
       const nextFocus = hasValidRequest ? initialRef.current.focus : null;
       // A stale/unknown URL is only a channel selection request. Its Files
@@ -779,8 +790,9 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
       commitActiveView(nextView);
       commitFocus(nextFocus);
       writeRoute(next.id, nextView, true, nextFocus);
+      if (activeChannelId) onSelect(next.id);
     }
-  }, [accessRef, activeChannelId, channels, commitActiveChannel, commitActiveView, commitFocus, onNotice]);
+  }, [accessRef, activeChannelId, channels, commitActiveChannel, commitActiveView, commitFocus, onNotice, onSelect]);
 
   // Terminal visibility is a navigation fact, so directory/world replacement
   // must retire facts for identities that are no longer in the public channel

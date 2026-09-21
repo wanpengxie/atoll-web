@@ -77,4 +77,17 @@ describe('Governance UI owner contracts', () => {
     expect(screen.getByText('空间根频道 c0 受后端保护，不能退役。')).toBeTruthy();
     expect(screen.queryByRole('button', { name: '退役当前频道' })).toBeNull();
   });
+
+  it('keeps a null channel projection renderable during directory handoff', () => {
+    render(<ChannelAdministrationPanel
+      channel={null}
+      initialTab="overview"
+      port={{ children: [], commands: {} }}
+      onClose={vi.fn()}
+    />);
+
+    expect(screen.getByRole('heading', { name: '频道详情' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: '当前频道' })).toBeTruthy();
+    expect(screen.getAllByText('状态未知').length).toBeGreaterThan(0);
+  });
 });

@@ -94,13 +94,15 @@ function participantTypeLabel(kind) {
 }
 
 function displayChannelName(channel = {}) {
-  return channel.qualified_name || channel.name || channel.id || '当前频道';
+  const current = channel || {};
+  return current.qualified_name || current.name || current.id || '当前频道';
 }
 
 function channelStatusLabel(channel = {}) {
-  if (channel.open === true || channel.serving === true) return '服务中';
-  if (channel.open === false || channel.serving === false) return '未服务';
-  return channel.status || '状态未知';
+  const current = channel || {};
+  if (current.open === true || current.serving === true) return '服务中';
+  if (current.open === false || current.serving === false) return '未服务';
+  return current.status || '状态未知';
 }
 
 function actorRuntime(row = {}) {
@@ -131,6 +133,7 @@ function compareParticipantCandidates(left, right) {
 }
 
 function ChannelOverview({ channel, port }) {
+  const currentChannel = channel || {};
   const [description, setDescription] = useState(channel?.description || '');
   const [child, setChild] = useState({ name: '', purpose: '', templateId: '' });
   const action = useCommand(port.commands, 'channel');
@@ -148,7 +151,7 @@ function ChannelOverview({ channel, port }) {
     <OperationState operation={action.operation} />
     {port.candidatesUnavailable && <p className="governance-error" role="status">成员候选目录当前不可用；已有名册仍可查看和刷新。</p>}
     <PanelCard className="channel-facts">
-      <header><h3>{displayChannelName(channel)}</h3><span className={channel.open === true || channel.serving === true ? 'fact-ok' : 'fact-warn'}>{channelStatusLabel(channel)}</span></header>
+      <header><h3>{displayChannelName(currentChannel)}</h3><span className={currentChannel.open === true || currentChannel.serving === true ? 'fact-ok' : 'fact-warn'}>{channelStatusLabel(currentChannel)}</span></header>
       <dl>
         <dt>ID</dt><dd>{channel?.id || '—'}</dd>
         <dt>父级</dt><dd>{channel?.parent_id || '无（空间根）'}</dd>
