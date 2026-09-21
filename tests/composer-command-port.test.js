@@ -161,14 +161,19 @@ describe('current Composer command owner', () => {
     });
   });
 
-  it('projects request-allowed describe words into slash entries and typed payloads', () => {
+  it('[TC0657/AD-363] projects request-allowed describe words into slash entries and typed payloads', () => {
     const capabilityIndex = new Map([[AGENT.id, {
       describe: { types: new Map([
         ['agent.custom-control', {
           description: '自定义控制',
           inputSchema: {
             type: 'object',
-            properties: { count: { type: 'integer' }, enabled: { type: 'boolean' } },
+            properties: {
+              count: { type: 'integer' },
+              enabled: { type: 'boolean' },
+              tags: { type: 'array', items: { type: 'string' } },
+              level: { type: 'string', enum: ['low', 'high'] },
+            },
             required: ['count'],
           },
         }],
@@ -177,15 +182,26 @@ describe('current Composer command owner', () => {
     const menu = model('/', { capabilityIndex });
     expect(menu.commandMenu.rows.map((row) => row.command)).toContain('custom-control');
 
-    const ready = model('/custom-control {"count":3,"enabled":true}', { capabilityIndex });
+    const ready = model('/custom-control {"count":3,"enabled":true,"tags":["x"],"level":"high"}', { capabilityIndex });
     expect(createComposerCommandRequest(ready)).toEqual({
       channelId: 'c0',
       text: '',
       msgType: 'agent.custom-control',
       audience: [AGENT.id],
       targetLabel: AGENT.name,
-      payload: { count: 3, enabled: true },
+      payload: { count: 3, enabled: true, tags: ['x'], level: 'high' },
     });
+
+    for (const text of [
+      '/custom-control {"enabled":true}',
+      '/custom-control {"count":"3"}',
+      '/custom-control {"count":3,"tags":[3]}',
+      '/custom-control {"count":3,"level":"medium"}',
+    ]) {
+      expect(() => createComposerCommandRequest(model(text, { capabilityIndex }))).toThrowError(
+        expect.objectContaining({ code: 'composer_command_payload_invalid' }),
+      );
+    }
   });
 
   it('fails closed for unknown, non-request, and schema-less describe words', () => {
