@@ -2947,6 +2947,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
   it('message-list-lifecycle TC-0984: an underfilled committed range returns a typed acquisition wake to the current owner', async () => {
     const pending = Promise.resolve({ kind: 'consumer-recheck', reason: 'supply-progressed' });
     const reading = round34Reading({ mode: READING_MODE.browsing });
+    reading.session = { ...reading.session, intentRevision: 0 };
     reading.status = {
       attached: true,
       generation: 7,
@@ -2958,6 +2959,7 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
     };
     reading.bottomReady = true;
     reading.onUnderfill = vi.fn(() => pending);
+    reading.onReadingSample = vi.fn();
     vendorHarness.rootMetrics = { clientHeight: 600, scrollHeight: 500, scrollTop: 0 };
     render(
       <VendorListExecutor
@@ -2970,21 +2972,48 @@ describe('I-M exact-path public-owner recovery (round 35–36 reading-adapter an
         renderRow={(row) => <article>{row.id}</article>}
       />,
     );
+    await act(async () => {
+      await new Promise((resolve) => globalThis.requestAnimationFrame(resolve));
+    });
     const scroller = setRound35Geometry(vendorHarness.root, {
       clientHeight: 600,
       scrollHeight: 500,
       scrollTop: 0,
     });
-    act(() => vendorHarness.props.rangeChanged({ startIndex: 0, endIndex: 1 }));
-
-    await waitFor(() => expect(reading.onUnderfill).toHaveBeenCalled());
-    expect(reading.onUnderfill.mock.calls[0][0]).toMatchObject({ demandUnits: expect.any(Number) });
-    await act(async () => {
-      await pending;
-      await new Promise((resolve) => globalThis.requestAnimationFrame(resolve));
+    const rowNode = scroller.querySelector('[data-presentation-row-id]');
+    rowNode.getBoundingClientRect = () => ({
+      top: 0,
+      bottom: 90,
+      left: 0,
+      right: 800,
+      width: 800,
+      height: 90,
     });
-    expect(scroller.getBoundingClientRect().height).toBe(600);
-    expect(reading.onReadingObservation).toHaveBeenCalled();
+    const previousElementFromPoint = document.elementFromPoint;
+    Object.defineProperty(document, 'elementFromPoint', {
+      configurable: true,
+      value: vi.fn(() => rowNode),
+    });
+    try {
+      act(() => vendorHarness.props.rangeChanged({ startIndex: 0, endIndex: 1 }));
+
+      await waitFor(() => expect(reading.onUnderfill).toHaveBeenCalled());
+      expect(reading.onUnderfill.mock.calls[0][0]).toMatchObject({ demandUnits: expect.any(Number) });
+      await act(async () => {
+        await pending;
+        await new Promise((resolve) => globalThis.requestAnimationFrame(resolve));
+      });
+      expect(scroller.getBoundingClientRect().height).toBe(600);
+      expect(reading.onReadingSample).toHaveBeenCalledTimes(1);
+      expect(reading.onReadingSample.mock.calls[0][0].visibleRows).toEqual([
+        { messageID: 'underfill-first', seqHigh: 1 },
+      ]);
+    } finally {
+      Object.defineProperty(document, 'elementFromPoint', {
+        configurable: true,
+        value: previousElementFromPoint,
+      });
+    }
   });
 
   it('message-list-lifecycle TC-0985: the following owner, not vendor followOutput, performs one bottom write', () => {
