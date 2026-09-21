@@ -265,7 +265,7 @@ describe('ContentPlan', () => {
     }
   });
 
-  it('resolves a saved text point by context after text is inserted before it', () => {
+  it('[TC-0544] resolves a saved text point by context after text is inserted before it', () => {
     const text = 'alpha beta target gamma omega';
     const point = createContentTextPoint({
       blockID: 'block:1',
