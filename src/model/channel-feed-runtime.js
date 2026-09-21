@@ -465,6 +465,7 @@ function historyInitial(channelId) {
     messageCurrent: false, controlCurrent: false,
     controlCoverage: [], controlTailCoverage: false, controlParentClosure: false,
     notificationAuthorityRevision: 0,
+    notificationContextReady: false,
     hasOlder: false, loading: false, foregroundLoading: false, backgroundLoading: false,
     error: '', errorCode: '', completedPages: 0, coverage: [], lastSource: '', buffered: 0,
     historyDemand: Object.freeze({ revision: 0, phase: 'idle', error: '' }),
@@ -1011,6 +1012,17 @@ export function createChannelFeedRuntime(options = {}) {
       accepted.push(result.row);
       discoveredChannels.add(row.channel_id);
       const status = histories.get(row.channel_id);
+      // An inactive grant with no local Meta/rows must not advance its
+      // notification boundary merely because the server advertised a head.
+      // The first post-grant live row is the narrow point at which the
+      // existing tail can become a usable baseline; history/cache admission
+      // keeps its own closure rules.
+      if (source === 'live' && status?.attached && status.generation === generation
+        && status.notificationContextReady !== true
+        && historyNumeric(row.seq) > historyNumeric(status.headSeq)
+        && cursors.isReadAuthorityReady()) {
+        cursors.baselineNotifications(row.channel_id, status.headSeq);
+      }
       if (source !== 'cache' && status?.attached && status.generation === generation
         && historyNumeric(row.seq) > 0
         && (!coverageRows || coverageRows.has(historyNumeric(row.seq)))) {
@@ -1127,6 +1139,13 @@ export function createChannelFeedRuntime(options = {}) {
       historyNumeric(status?.headSeq),
       replica.visibleNewest(channelId),
     );
+    // A nonzero grant may have already supplied a durable physical head while
+    // this inactive channel still has no local Meta/rows. Keep that context
+    // unknown even when the cursor was baselined for the normal live-tail
+    // path; the first materialized tail/history rows can then prove it.
+    const reachesGrantedHead = replica.visibleNewest(channelId) >= target;
+    if (target > 0 && status?.notificationContextReady !== true
+      && (!hasRows || !reachesGrantedHead)) unknown = true;
     // A zero-head grant is an authoritative empty context even when the
     // channel is inactive. Only a head ahead of materialized rows, or a
     // sparse physical window, remains unknown; low-frequency identities must
@@ -2432,6 +2451,7 @@ export function createChannelFeedRuntime(options = {}) {
     }
     if (principal && world) cursors.selectReadAuthority({ principalId: principal, serverBoot: world });
     grants.clear();
+    const focus = String(detail.focus || activeChannelRef.current || '');
     for (const entry of entries) {
       const channelId = String(entry?.channel_id || '');
       if (!channelId) continue;
@@ -2439,12 +2459,18 @@ export function createChannelFeedRuntime(options = {}) {
       const status = historyState(channelId);
       const grantedHeadSeq = historyNumeric(entry.head_seq);
       const headSeq = Math.max(status.headSeq, grantedHeadSeq, replica.visibleNewest(channelId));
+      const hasLocalMeta = selectedMeta.has(channelId);
+      const hasLocalRows = replica.visibleNewest(channelId) > 0;
       const authorityChanged = status.generation !== generation
         || status.attached !== true
         || status.messageCurrent !== true
         || status.controlCurrent !== true;
       Object.assign(status, {
         generation, attached: true, messageCurrent: true, headSeq,
+        notificationContextReady: grantedHeadSeq === 0
+          || channelId === focus
+          || hasLocalMeta
+          || hasLocalRows,
         controlCurrent: false,
         // Durable cache rows are readable but do not prove that current
         // queued controls have no later terminal. Only this attach's network
@@ -2461,11 +2487,12 @@ export function createChannelFeedRuntime(options = {}) {
       replica.installMeta(channelId, { headSeq: entry.head_seq, coverage: selectedMeta.get(channelId)?.coverage });
       if (cursors.isReadAuthorityReady()) {
         cursors.baselineRead(channelId, grantedHeadSeq);
-        cursors.baselineNotifications(channelId, grantedHeadSeq);
+        if (status.notificationContextReady === true) {
+          cursors.baselineNotifications(channelId, grantedHeadSeq);
+        }
         cursors.clampNotificationsToHead(channelId, grantedHeadSeq);
       }
     }
-    const focus = String(detail.focus || activeChannelRef.current || '');
     let focusHydration = null;
     if (focus && selectedMeta.has(focus) && replica.visibleNewest(focus) === 0) {
       const head = historyNumeric(selectedMeta.get(focus)?.headSeq || selectedMeta.get(focus)?.newestSeq);
