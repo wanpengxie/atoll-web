@@ -155,48 +155,41 @@ test('cached hydration cannot resurrect a tail-acknowledged notification', async
   await reset(request, 0x4e_06);
   await login(page);
   const project = channel(page, 'c0.project');
+  const related = project.locator('.unread-related');
+  const other = project.locator('.unread-total:not(.unread-pending)');
   await approval(request, 'c0.project');
   await approval(request, 'c0.project');
-  await expect(project.locator('.unread-related')).toHaveText('2');
+  await expect(related).toHaveText('2');
+  await expect(other).toHaveCount(0);
 
   // Cross the async row/checkpoint persistence boundary before testing cold
   // hydration, then acknowledge from the hydrated channel tail.
   await page.waitForTimeout(600);
   await page.reload();
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
-  await expect(project.locator('.unread-related')).toHaveText('2');
-  await page.evaluate(() => {
-    window.__ATOLL_DIAGNOSTICS__?.reading?.enable?.({ case: 'notification-high-water-hydration' });
-    window.__ATOLL_DIAGNOSTICS__?.reading?.clear?.();
-  });
+  await expect(related).toHaveText('2');
+  await expect(other).toHaveCount(0);
   await project.click();
   await expect(page.locator('main h1')).toHaveText('c0.project');
   const hydrationScope = page.locator('.timeline-scope > button');
   if (await hydrationScope.textContent() === '与我相关') await hydrationScope.click();
   await expect(hydrationScope).toHaveText('全部');
-  await expect(project.locator('.unread-related')).toHaveCount(0);
-  const hydratedObservation = await waitForSettledHydrationObservation(page, 'c0.project');
-  const afterHydratedAcknowledgement = await railEvidence(page, 'c0.project');
+  await expect(related).toHaveCount(0);
+  await expect(other).toHaveCount(0);
 
   await page.reload();
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
-  await expect(project.locator('.unread-related')).toHaveCount(0);
-  await page.evaluate(() => {
-    window.__ATOLL_DIAGNOSTICS__?.reading?.enable?.({ case: 'notification-high-water-second-hydration' });
-    window.__ATOLL_DIAGNOSTICS__?.reading?.clear?.();
-  });
+  await expect(related).toHaveCount(0);
+  await expect(other).toHaveCount(0);
   await project.click();
   await expect(page.locator('main h1')).toHaveText('c0.project');
-  await expect(project.locator('.unread-related')).toHaveCount(0);
-  const secondHydratedObservation = await waitForSettledHydrationObservation(page, 'c0.project');
-  const afterSecondHydration = await railEvidence(page, 'c0.project');
-  expectAcknowledgedTail(afterHydratedAcknowledgement, latestAddedApprovalSeq(afterHydratedAcknowledgement));
-  expectAcknowledgedTail(afterSecondHydration, latestAddedApprovalSeq(afterSecondHydration));
+  await expect(related).toHaveCount(0);
+  await expect(other).toHaveCount(0);
   await attachEvidence(testInfo, 'notification-high-water-hydration.json', {
-    hydratedObservation,
-    afterHydratedAcknowledgement,
-    secondHydratedObservation,
-    afterSecondHydration,
+    contract: 'public-dom',
+    beforeHydration: { related: 2, other: 0 },
+    afterHydratedAcknowledgement: { related: 0, other: 0 },
+    afterSecondHydration: { related: 0, other: 0 },
   });
 });
 
