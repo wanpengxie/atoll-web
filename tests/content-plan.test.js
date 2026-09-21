@@ -247,7 +247,7 @@ describe('ContentPlan', () => {
     }
   });
 
-  it('differentially matches full parsing for deterministic append fuzz', () => {
+  it('[TC-0543][AD-249] differentially matches full parsing for deterministic append fuzz', () => {
     const fragments = [
       'word', ' ', '\n', '\n\n', '*', '**', '`', '```', '-', '> ', '# ',
       '[label](https://example.test)', '| cell |', '$x$', '<span>', '</span>',

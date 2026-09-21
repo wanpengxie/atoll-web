@@ -58,3 +58,31 @@ untracked test infrastructure and must not be committed.
 This is an atomic claim: this reservation report is committed before changing
 the test declaration. Closeout will append the focused, adjacent, semantic,
 and build evidence plus the final PASS or bounded regression disposition.
+
+## Closeout — 2026-09-22
+
+- **Reservation commit:** `aad4481` (`claim TC0543 deterministic append fuzz
+  baseline`).
+- **Migration:** the existing declaration is tagged
+  `[TC-0543][AD-249]`; the deterministic fragment list, seed, 64-append loop,
+  public `plan` calls, independent full parse, and per-step projection equality
+  assertion are unchanged. No declaration was deleted/skipped and no private
+  oracle or compatibility path was added.
+- **Focused:**
+  `npm test -- tests/content-plan.test.js --run -t 'TC-0543' --reporter=verbose`
+  — **1 passed, 18 selection skips**; the skips are Vitest selection output,
+  not skipped declarations.
+- **Adjacent owner suite:**
+  `npm test -- tests/content-plan.test.js --run --reporter=verbose` — **19
+  passed, 0 failed**.
+- **Adjacent semantic suite:**
+  `npm test -- tests/content-plan-semantics.test.jsx --run --reporter=dot` —
+  **10 passed**. It retains the pre-existing empty-`src` React warnings; no
+  assertion failed.
+- **Build:** `npm run build` — **passed**; Vite emitted only the existing
+  large-chunk advisory.
+- **Disposition:** **PASS / MIGRATED**, credit `1`. At every deterministic
+  append the current public incremental projection remained byte-for-byte
+  equivalent to the independent full projection. No product change or
+  semantic weakening was required.
+- **Final commit:** recorded below after this closeout and test-only tag.
