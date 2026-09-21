@@ -112,6 +112,8 @@ describe('TC-0337 file ticket recovery', () => {
     await waitFor(() => expect(fetchImpl).toHaveBeenCalled());
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain('403');
+    expect(alert.textContent).toContain('ticket expired');
+    expect(alert.textContent).toContain('上传失败，可重新获取票据');
     expect(screen.getByRole('region', { name: '频道文件' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'c0' })).toBeTruthy();
     expect(screen.getByText('local-device')).toBeTruthy();

@@ -241,7 +241,13 @@ async function uploadChannelFile({ file, channel, deviceName, uploadName, direct
     body: file,
     signal,
   });
-  if (!response.ok) throw new TypeError(`上传失败 (${response.status})`);
+  if (!response.ok) {
+    const status = Number(response.status || 0);
+    const detail = status === 403
+      ? '上传票据已过期（ticket expired）。上传失败，可重新获取票据'
+      : `上传失败 (${status})`;
+    throw new TypeError(status === 403 ? `上传失败 (${status})：${detail}` : detail);
+  }
   const attachment = {
     resource_id: String(ticket.resource_id || address),
     address,
