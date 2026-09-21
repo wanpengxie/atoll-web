@@ -372,7 +372,7 @@ describe('reading session authority', () => {
     });
   });
 
-  it('only current downward user evidence can resume following', () => {
+  it('[TC-0562][AD-268] only current downward user evidence can resume following', () => {
     let current = takeReadingControl(session(), { direction: 'older', gestureID: 'up' });
     current = observeReading(current, {
       activationID: 'a1', atTail: true, source: 'user', inputEpoch: current.inputEpoch,
