@@ -556,6 +556,7 @@ export function useAttachmentTransactions({
     targetDeviceId = deviceId,
     cursor = '',
     append = false,
+    clearError = true,
   } = {}) => {
     if (!channelId) return [];
     const request = beginRequest(directoryRequestRef, channelId);
@@ -587,7 +588,7 @@ export function useAttachmentTransactions({
       return [];
     }
     setFilesBusy(true);
-    setFilesError('');
+    if (clearError) setFilesError('');
     try {
       const prefix = resourcePrefix(channel, device, normalized);
       const receipt = await runFileOperation({ channelId, access: 'read', signal: request.controller.signal }, (operation) => operation.resource({
@@ -706,7 +707,7 @@ export function useAttachmentTransactions({
       skipChannelDirectoryEffectRef.current = '';
       return;
     }
-    void refreshDirectory({ channelId: activeChannelId, targetDirectory: directory, targetDeviceId: deviceId });
+    void refreshDirectory({ channelId: activeChannelId, targetDirectory: directory, targetDeviceId: deviceId, clearError: false });
   }, [activeChannelId, deviceId, directory, refreshDirectory, wireState]);
 
   const navigateFiles = useCallback((value) => {
