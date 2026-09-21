@@ -138,7 +138,7 @@ describe('ContentPlan', () => {
     expect(store.get('strict-candidate')).toBe(first);
   });
 
-  it('never treats a different abandoned candidate as committed previous identity', () => {
+  it('[TC-0536][AD-242] never treats a different abandoned candidate as committed previous identity', () => {
     const store = createContentPlanStore({ limit: 2 });
     const abandoned = store.prepare('concurrent-candidate', 'abandoned');
     const replacement = store.prepare('concurrent-candidate', 'replacement');
