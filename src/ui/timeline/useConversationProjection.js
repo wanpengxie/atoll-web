@@ -150,6 +150,79 @@ function sameTailEvidence(left, right) {
     && leftVisibleRowIDs.every((id, index) => id === rightVisibleRowIDs[index]);
 }
 
+// A pending notification retry may survive only a Meta/head publication.  It
+// must not cross a new Reading owner, root, Presentation, intent, or
+// visibility boundary.  Head/boundary are intentionally excluded here: the
+// retry carries the original frozen boundary while the current head is
+// allowed to advance. `caughtUp` and `settled` remain explicit guards so a
+// physically stale observation cannot be mistaken for a current receipt.
+function sameTailReceiptAuthority(left, right) {
+  if (!left || !right) return false;
+  const leftAuthority = left.authority || {};
+  const rightAuthority = right.authority || {};
+  const leftOwner = left.owner || {};
+  const rightOwner = right.owner || {};
+  const leftCaptured = left.captured || {};
+  const rightCaptured = right.captured || {};
+  const leftVisible = Array.isArray(left.visibleRowIDs) ? left.visibleRowIDs : [];
+  const rightVisible = Array.isArray(right.visibleRowIDs) ? right.visibleRowIDs : [];
+  const leftCapturedVisible = Array.isArray(leftCaptured.visibleRowIDs)
+    ? leftCaptured.visibleRowIDs : [];
+  const rightCapturedVisible = Array.isArray(rightCaptured.visibleRowIDs)
+    ? rightCaptured.visibleRowIDs : [];
+  if (!String(left.channelId || '')
+    || !String(left.viewKey || '')
+    || !String(left.activationID || '')
+    || !String(leftAuthority.channelId || '')
+    || !String(leftAuthority.principalId || '')
+    || !String(leftAuthority.serverBoot || '')
+    || !String(leftOwner.channelId || '')
+    || !String(leftOwner.viewKey || '')
+    || !String(leftOwner.activationID || '')
+    || Number(left.rootIdentity) <= 0
+    || !left.rootNode
+    || !String(left.tailID || '')
+    || leftVisible.length === 0) return false;
+  return String(left.channelId || '') === String(right.channelId || '')
+    && String(left.viewKey || '') === String(right.viewKey || '')
+    && String(left.activationID || '') === String(right.activationID || '')
+    && left.caughtUp === true
+    && right.caughtUp === true
+    && left.settled === true
+    && right.settled === true
+    && Number(left.inputEpoch) === Number(right.inputEpoch)
+    && Number(left.intentRevision) === Number(right.intentRevision)
+    && Number(left.visibilityEpoch) === Number(right.visibilityEpoch)
+    && Number(left.generation) === Number(right.generation)
+    && Number(left.authorityRevision) === Number(right.authorityRevision)
+    && String(leftAuthority.channelId || '') === String(rightAuthority.channelId || '')
+    && String(leftAuthority.principalId || '') === String(rightAuthority.principalId || '')
+    && String(leftAuthority.serverBoot || '') === String(rightAuthority.serverBoot || '')
+    && String(leftOwner.channelId || '') === String(rightOwner.channelId || '')
+    && String(leftOwner.viewKey || '') === String(rightOwner.viewKey || '')
+    && String(leftOwner.activationID || '') === String(rightOwner.activationID || '')
+    && Number(leftOwner.generation) === Number(rightOwner.generation)
+    && Number(left.presentationRevision) === Number(right.presentationRevision)
+    && Number(left.sourceRevision) === Number(right.sourceRevision)
+    && Number(left.installedHighSeq) === Number(right.installedHighSeq)
+    && Number(leftCaptured.presentationRevision) === Number(rightCaptured.presentationRevision)
+    && Number(leftCaptured.sourceRevision) === Number(rightCaptured.sourceRevision)
+    && Number(leftCaptured.installedHighSeq) === Number(rightCaptured.installedHighSeq)
+    && Number(left.rootIdentity) === Number(right.rootIdentity)
+    && left.rootNode === right.rootNode
+    && String(left.tailID || '') === String(right.tailID || '')
+    && left.following === true
+    && right.following === true
+    && left.atTail === true
+    && right.atTail === true
+    && left.surfaceVisible === true
+    && right.surfaceVisible === true
+    && leftVisible.length === rightVisible.length
+    && leftVisible.every((id, index) => id === rightVisible[index])
+    && leftCapturedVisible.length === rightCapturedVisible.length
+    && leftCapturedVisible.every((id, index) => id === rightCapturedVisible[index]);
+}
+
 function traceReadingOwnerCommit({ channelID, viewKey, viewport, snapshot }) {
   const changes = snapshot?.changes || {};
   const ids = (value) => [...new Set((Array.isArray(value) ? value : [])
@@ -800,6 +873,7 @@ function useProjectionReadingOwner({
     const after = controller.update((active) => revokePositionRowLease(active, command, options));
     return after !== before;
   }, [controller]);
+  const visibilityEpoch = Number(visibilityBoundaryRef.current.visibilityEpoch || 0);
   const tailCaughtUp = useMemo(() => {
     const evidence = observationRef.current;
     const scope = historyViewSpec?.scope || '';
@@ -869,12 +943,17 @@ function useProjectionReadingOwner({
         generation,
       }),
       inputEpoch: Number(session.inputEpoch || 0),
+      intentRevision: Number(session.intentRevision || 0),
+      visibilityEpoch,
+      settled: evidence.settled === true,
       captured: Object.freeze({
         presentationRevision: Number(evidence.presentationRevision || 0),
         sourceRevision: Number(evidence.sourceRevision || 0),
         installedHighSeq: Number(evidence.installedHighSeq || 0),
         visibleRowIDs: Object.freeze([...(evidence.visibleRowIDs || [])]),
       }),
+      rootIdentity: Number(evidence.rootIdentity || 0),
+      rootNode: evidence.rootNode || null,
       caughtUp,
       scope,
       actorFiltered: actorFilterCount > 0,
@@ -885,6 +964,7 @@ function useProjectionReadingOwner({
       sourceRevision: Number(evidence.sourceRevision || 0),
       presentationRevision: Number(evidence.presentationRevision || 0),
       installedHighSeq: Number(evidence.installedHighSeq || 0),
+      tailID: String(evidence.tailID || ''),
       visibleRowIDs: Object.freeze([...(evidence.visibleRowIDs || [])]),
       // Tail entry is a frozen backlog observation. The value is captured
       // beside the evidence/head equality above; the callback must not
@@ -906,7 +986,9 @@ function useProjectionReadingOwner({
   }, [
     channelID, controller, documentVisible, historyStatus.attached, historyStatus.generation,
     historyStatus.headSeq, historyStatus.messageCurrent, historyStatus.presentationRevision,
-    historyStatus.notificationAuthorityRevision, historyViewSpec, observationRevision,
+    historyStatus.notificationAuthorityRevision, historyStatus.authority?.channelId,
+    historyStatus.authority?.principalId, historyStatus.authority?.serverBoot,
+    historyViewSpec, observationRevision, visibilityEpoch,
     session.inputEpoch, session.intentRevision, session.mode, snapshot.revision,
     snapshot.sourceRevision, viewKey,
   ]);
@@ -1366,6 +1448,10 @@ export function useConversationProjection({
 }) {
   const presentationRef = useRef(null);
   const tailReceiptRef = useRef(null);
+  // A rejected notification acknowledgement is a one-document, ephemeral
+  // retry.  Keep the exact typed receipt (including its frozen boundary), not
+  // a mutable head or a second notification authority.
+  const pendingTailReceiptRef = useRef(null);
   // Cross-messageListKey reading continuity is a one-document successor
   // handoff. It is deliberately not stored in viewSessions and is never
   // represented as a durable bookmark.
@@ -1392,6 +1478,7 @@ export function useConversationProjection({
     tailCallbackRef.current = onTailCaughtUp;
   }, [onTailCaughtUp]);
   const revokeTailLease = useCallback((receipt) => {
+    pendingTailReceiptRef.current = null;
     tailReceiptRef.current = receipt;
     tailCallbackRef.current?.(receipt);
   }, []);
@@ -1677,30 +1764,103 @@ export function useConversationProjection({
     presentationOwner: presentationRef.current,
   });
   useLayoutEffect(() => {
-    if (typeof onTailCaughtUp !== 'function') return undefined;
+    const callback = tailCallbackRef.current;
+    if (typeof callback !== 'function') {
+      pendingTailReceiptRef.current = null;
+      return undefined;
+    }
     const previous = tailReceiptRef.current;
     const next = viewport.tailCaughtUp;
-    tailReceiptRef.current = next;
+    const currentHeadSeq = Number(history.status?.headSeq || 0);
+    const currentPresentationRevision = Number(history.status?.presentationRevision || 0);
+    const stableTail = previous?.caughtUp === true
+      && currentPresentationRevision === Number(previous.presentationRevision || 0)
+      && sameTailReceiptAuthority(previous, next);
+    // A Meta-only head publication is not a physical leave. Keep the last
+    // positive owner available so a later visibility/native transition can
+    // still revoke it, while a root/presentation/visibility/following change
+    // advances the receipt to the new negative observation below.
+    if (!stableTail) tailReceiptRef.current = next;
+
+    const pending = pendingTailReceiptRef.current;
+    const pendingReceiptForFence = pending ? Object.freeze({
+      ...pending.receipt,
+      installedHighSeq: pending.observedInstalledHighSeq,
+      captured: Object.freeze({
+        ...pending.receipt.captured,
+        installedHighSeq: pending.observedInstalledHighSeq,
+      }),
+    }) : null;
+    // A notification retry has no authority while the Feed is detached or
+    // the current message is not authoritative.  `tailCaughtUp.caughtUp`
+    // intentionally describes the physical Reading sample and therefore does
+    // not carry these Feed lifecycle gates; consult the current status here
+    // before allowing a rejected receipt to survive a Meta publication.
+    const pendingAuthorityReady = history.status?.attached === true
+      && history.status?.messageCurrent === true;
+    const pendingCurrent = Boolean(pending
+      && pendingAuthorityReady
+      && next.caughtUp === true
+      && next.settled === true
+      && Number(pending.historyPresentationRevision) === currentPresentationRevision
+      && Number(pending.lastHeadSeq) <= currentHeadSeq
+      && Number(pending.observedInstalledHighSeq) === Number(next.installedHighSeq)
+      && sameTailReceiptAuthority(pendingReceiptForFence, next));
+    if (pending && !pendingCurrent) pendingTailReceiptRef.current = null;
+
+    const deliver = (receipt, observedInstalledHighSeq = receipt.installedHighSeq) => {
+      const result = callback(receipt);
+      if (result === false) {
+        pendingTailReceiptRef.current = Object.freeze({
+          receipt,
+          observedInstalledHighSeq: Number(observedInstalledHighSeq || 0),
+          historyPresentationRevision: currentPresentationRevision,
+          lastHeadSeq: currentHeadSeq,
+          retryAttempted: false,
+        });
+      } else {
+        pendingTailReceiptRef.current = null;
+      }
+      return result;
+    };
+
+    const activePending = pendingCurrent ? pending : null;
+    if (activePending
+      && activePending.retryAttempted !== true
+      && currentHeadSeq > Number(activePending.lastHeadSeq || 0)) {
+      const result = callback(activePending.receipt);
+      if (result === false) {
+        pendingTailReceiptRef.current = Object.freeze({
+          ...activePending,
+          lastHeadSeq: currentHeadSeq,
+          retryAttempted: true,
+        });
+      } else {
+        pendingTailReceiptRef.current = null;
+      }
+    }
+
     if (next.caughtUp === true) {
       const enteringTail = previous?.caughtUp !== true;
       if (enteringTail && Number(next.entryBoundary || 0) > 0) {
         const boundary = Number(next.entryBoundary);
-        onTailCaughtUp(Object.freeze({
+        deliver(Object.freeze({
           ...next,
           cause: 'tail-backlog',
           captured: Object.freeze({ ...next.captured, installedHighSeq: boundary }),
           installedHighSeq: boundary,
           boundary,
-        }));
-      } else {
-        onTailCaughtUp(next);
+        }), next.installedHighSeq);
+      } else if (enteringTail || !sameTailReceiptAuthority(previous, next)) {
+        deliver(next);
       }
     } else if (previous?.caughtUp === true
       && (next.following !== true || next.atTail !== true || next.surfaceVisible !== true)) {
       // A stale status/head render while following keeps the observation
       // lease alive until the next DOM sample. Retract only after the
       // committed reader leaves its physical visible tail.
-      onTailCaughtUp(typedTailLeaseRevoke(
+      pendingTailReceiptRef.current = null;
+      callback(typedTailLeaseRevoke(
         previous,
         next.surfaceVisible === true ? 'physical-leave' : 'surface-hidden',
         next.inputEpoch,
@@ -1708,7 +1868,18 @@ export function useConversationProjection({
       ));
     }
     return undefined;
-  }, [onTailCaughtUp, viewport.tailCaughtUp]);
+  }, [
+    history.status?.headSeq,
+    history.status?.generation,
+    history.status?.notificationAuthorityRevision,
+    history.status?.presentationRevision,
+    history.status?.authority?.channelId,
+    history.status?.authority?.principalId,
+    history.status?.authority?.serverBoot,
+    history.status?.attached,
+    history.status?.messageCurrent,
+    viewport.tailCaughtUp,
+  ]);
   useLayoutEffect(() => () => {
     const receipt = tailReceiptRef.current;
     if (receipt?.caughtUp !== true || typeof tailCallbackRef.current !== 'function') return;

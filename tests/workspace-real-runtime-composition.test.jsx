@@ -648,7 +648,22 @@ describe('真实 Workspace owner composition', () => {
 
       // This callback represents the old A surface unmounting after B has
       // committed. Its receipt remains the only valid channel identity.
-      act(() => mocks.layoutProps.conversation.onTailCaughtUp(receipt));
+      const beforeRejectedHighWater = feed.historyFor(mocks.channelId).notificationHighWater;
+      let rejectedSettlement;
+      act(() => {
+        rejectedSettlement = mocks.layoutProps.conversation.onTailCaughtUp({
+          ...receipt,
+          authorityRevision: receipt.authorityRevision + 100,
+        });
+      });
+      expect(rejectedSettlement).toBe(false);
+      expect(feed.historyFor(mocks.channelId).notificationHighWater).toBe(beforeRejectedHighWater);
+
+      let settlement;
+      act(() => {
+        settlement = mocks.layoutProps.conversation.onTailCaughtUp(receipt);
+      });
+      expect(settlement).toBe(1);
       expect(feed.historyFor(mocks.channelId).notificationHighWater).toBe(1);
     } finally {
       mocks.navigation.channels = previousChannels;

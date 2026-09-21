@@ -1347,7 +1347,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
         || (receipt?.authority?.channelId
           && String(receipt.authority.channelId) !== receiptChannelId)) return;
       feed.markRead(receiptChannelId, receipt);
-      feed.acknowledgeNotifications(receiptChannelId, receipt);
+      return feed.acknowledgeNotifications(receiptChannelId, receipt);
     },
     onResolve: submission.resolve,
     onCancel: submission.cancel,
