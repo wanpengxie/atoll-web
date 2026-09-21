@@ -367,11 +367,6 @@ function useProjectionReadingOwner({
     globalThis.document?.addEventListener?.('visibilitychange', publish);
     return () => globalThis.document?.removeEventListener?.('visibilitychange', publish);
   }, [advanceVisibilityEpoch]);
-  useEffect(() => {
-    if (session.mode !== READING_MODE.following || surfaceVisible !== true) return;
-    arrivals?.acknowledge?.(Number(arrivals.revision || 0));
-  }, [arrivals, session.mode, surfaceVisible]);
-
   const syncStatus = historyStatus.sync;
   const syncObservationCurrent = Number(syncStatus.interestRevision || 0) > 0
     && Number(syncStatus.fulfilledRevision || 0) >= Number(syncStatus.interestRevision || 0);
@@ -894,6 +889,16 @@ function useProjectionReadingOwner({
     session.inputEpoch, session.intentRevision, session.mode, snapshot.revision,
     snapshot.sourceRevision, viewKey,
   ]);
+
+  // A following intent is not evidence that the user saw the arrival.  The
+  // physical root must publish its current settled tail receipt first; a
+  // wheel can take control while the command is still held before paint.
+  // Acknowledging on the semantic mode transition would drop that arrival
+  // and make the next badge under-count (1 instead of 2).
+  useEffect(() => {
+    if (tailCaughtUp.caughtUp !== true || Number(tailCaughtUp.boundary) <= 0) return;
+    arrivals?.acknowledge?.(Number(arrivals.revision || 0));
+  }, [arrivals, tailCaughtUp.boundary, tailCaughtUp.caughtUp]);
 
   useLayoutEffect(() => {
     if (tailCaughtUp.caughtUp === true && Number(tailCaughtUp.boundary) > 0) {

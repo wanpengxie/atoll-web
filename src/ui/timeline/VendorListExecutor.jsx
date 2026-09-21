@@ -278,6 +278,10 @@ export function VendorListExecutor({
   const [rootIdentity, setRootIdentity] = useState(0);
   const [anchorRetentionExtent, setAnchorRetentionExtent] = useState(0);
   const geometryRevisionRef = useRef(0);
+  // Virtuoso may report the same committed height more than once while its
+  // layout observers settle. A callback is a new geometry fence only when
+  // the mounted root's physical tail extent or viewport actually changed.
+  const tailGeometryRef = useRef({ root: null, scrollHeight: NaN, clientHeight: NaN });
   const observationFrameRef = useRef(0);
   const observationRequestRef = useRef(null);
   // A delayed content-anchor restore is a typed command transaction, not a
@@ -347,6 +351,7 @@ export function VendorListExecutor({
     // while the existing RAF/event cleanup already retires the old root.
     if (!node) {
       tailWriteRef.current = null;
+      tailGeometryRef.current = { root: null, scrollHeight: NaN, clientHeight: NaN };
       rootMountedRef.current = false;
       rootRef.current = null;
       return;
@@ -354,6 +359,7 @@ export function VendorListExecutor({
     rootMountedRef.current = true;
     if (rootIdentityRef.current.node !== node) {
       tailWriteRef.current = null;
+      tailGeometryRef.current = { root: null, scrollHeight: NaN, clientHeight: NaN };
       const generation = rootIdentityRef.current.generation + 1;
       rootIdentityRef.current = {
         node,
@@ -1666,7 +1672,17 @@ export function VendorListExecutor({
       if (!callbackRoot || rootRef.current !== callbackRoot
         || String(liveOwner?.activationID || liveSession?.activationID || '') !== callbackActivationID
         || Number(liveOwner?.status?.generation || 0) !== callbackGeneration) return;
-      geometryRevisionRef.current += 1;
+      const nextGeometry = {
+        root: callbackRoot,
+        scrollHeight: Number(callbackRoot.scrollHeight),
+        clientHeight: Number(callbackRoot.clientHeight),
+      };
+      const previousGeometry = tailGeometryRef.current;
+      const geometryChanged = previousGeometry.root !== nextGeometry.root
+        || !Object.is(previousGeometry.scrollHeight, nextGeometry.scrollHeight)
+        || !Object.is(previousGeometry.clientHeight, nextGeometry.clientHeight);
+      tailGeometryRef.current = nextGeometry;
+      if (geometryChanged) geometryRevisionRef.current += 1;
       restoreContentAnchor('layout');
       issueBottomIntent();
       enforceFollowingTail('layout');
