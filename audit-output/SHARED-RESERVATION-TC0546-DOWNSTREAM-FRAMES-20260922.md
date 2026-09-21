@@ -51,3 +51,12 @@ Only the explicit `[TC-0546]` label and this audit report may change. The
 existing fixture, loop, parser call, and invalid/version/unknown assertions
 are preserved byte-for-byte in meaning. Closeout will append focused,
 adjacent, and build evidence plus the final PASS/REGRESSION disposition.
+
+## Closeout
+
+- **Focused:** `npm test -- tests/contract-fixtures.test.js --run -t 'TC-0546' --reporter=verbose` — `1 passed, 3 skipped by Vitest selection` (no test declarations were skipped).
+- **Adjacent:** `npm test -- tests/contract-fixtures.test.js --run --reporter=dot` — `4 passed`.
+- **Protocol adjacent:** `npm test -- tests/frame.test.js --run --reporter=dot` — `5 passed`.
+- **Build:** `npm run build` — passed; Vite retained its existing advisory about chunks larger than 500 kB.
+- **Diff hygiene:** only the `[TC-0546]` declaration and this audit report changed; the fixture, parser call, loop, and invalid/version/unknown assertions are unchanged. No skip/filter/private oracle, product, package, protocol, or compatibility change was introduced.
+- **Disposition:** `PASS / MIGRATED`; **credit: 1**. The existing public `parseDownstream` owner recognizes all six authoritative v5 downstream frame shapes while preserving the strict malformed/version/unknown rejection boundary.
