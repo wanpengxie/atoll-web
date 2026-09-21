@@ -778,6 +778,11 @@ export function useComposerSubmissionRuntime({
       if (failed) publishPending((rows) => rows.map((row) => row.messageId === submission.messageId ? failed : row));
       if (state === 'uncertain') onNotice('发送结果待确认，正在通过重连账本核对。');
       if (state === 'rejected') {
+        // A prior transport close may have published an uncertain notice for
+        // this same durable intent.  Once the backend gives its definitive
+        // rejection, that transient projection is no longer truthful; the
+        // Composer's rejected row is the single public failure surface.
+        onNotice('');
         forgetLeaseCorrelation(lease, {
           channelId: submission.channelId,
           messageId: submission.messageId,
