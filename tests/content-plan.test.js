@@ -45,7 +45,7 @@ describe('ContentPlan', () => {
       .toBe(first.blocks.find((block) => block.source === 'omega').blockID);
   });
 
-  it('treats ambiguous duplicate insertion as replacement instead of transferring identity', () => {
+  it('[TC-0528][AD-234] treats ambiguous duplicate insertion as replacement instead of transferring identity', () => {
     const first = plan({ contentKey: 'message:m2:body', source: 'same\n\nsame' });
     const next = plan({ contentKey: 'message:m2:body', source: 'same\n\nsame\n\nsame', previous: first });
     const oldIDs = new Set(first.blocks.map((block) => block.blockID));
