@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 // NR09-02: public mobile process presentation must not mutate the durable row.
 // The test deliberately enters through TimelineRowRenderer and the public
-// Replica/cache owners. It must stay red until one existing presentation owner
-// owns a bounded tool-output copy; no deleted payload helper is reintroduced.
+// Replica/cache owners. The source row remains durable while the presentation
+// owns only a bounded mobile tool-output copy; no deleted helper is reintroduced.
 import 'fake-indexeddb/auto';
 import React from 'react';
 import { cleanup, fireEvent, render } from '@testing-library/react';
@@ -149,6 +149,9 @@ describe('NR09-02 public mobile tool-output presentation owner', () => {
       await cache.ensureOwner('nr09-02-test', { world: 'public-red' });
       await cache.clear();
       await cache.saveRows([sourceProcess]);
+      const persistedBefore = await cache.readBefore(CHANNEL, 3, 10, 2_000_000);
+      const replicaFingerprint = JSON.stringify(replica.state(CHANNEL).rows.get(sourceProcess.seq));
+      const indexedDbFingerprint = JSON.stringify(persistedBefore.rows);
 
       openToolDrawer(turn);
 
@@ -156,11 +159,13 @@ describe('NR09-02 public mobile tool-output presentation owner', () => {
       expect(sourceProcess).toEqual(originalProcess);
       expect(replica.state(CHANNEL).rows.get(sourceProcess.seq)).toEqual(originalProcess.envelope);
       expect(replica.state(CHANNEL).rows.get(sourceProcess.seq).payload.body.process.output).toBe(TOOL_OUTPUT);
+      expect(JSON.stringify(replica.state(CHANNEL).rows.get(sourceProcess.seq))).toBe(replicaFingerprint);
 
       const persisted = await cache.readBefore(CHANNEL, 3, 10, 2_000_000);
       expect(persisted.rows).toHaveLength(1);
       expect(persisted.rows[0]).toEqual(originalProcess);
       expect(persisted.rows[0].envelope.payload.body.process.output).toBe(TOOL_OUTPUT);
+      expect(JSON.stringify(persisted.rows)).toBe(indexedDbFingerprint);
     } finally {
       await cache.destroy();
     }

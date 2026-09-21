@@ -18,7 +18,9 @@ async function loginMobile(page) {
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
 }
 
-test('NR09-02 mobile bounds tool output in the public drawer without exposing the tail', async ({ page, request }) => {
+for (const width of [320, 390]) {
+test(`NR09-02 mobile ${width}px bounds tool output and returns focus`, async ({ page, request }) => {
+  await page.setViewportSize({ width, height: 844 });
   await reset(request);
   await loginMobile(page);
 
@@ -62,7 +64,8 @@ test('NR09-02 mobile bounds tool output in the public drawer without exposing th
   await trail.getByRole('button', { name: /展开过程详情/ }).click();
   const row = trail.locator('.progress-row').filter({ hasText: 'tool: cat 完成' });
   await expect(row).toBeVisible();
-  await row.locator('button[title="查看完整内容"]').click();
+  const detailTrigger = row.locator('button[title="查看完整内容"]');
+  await detailTrigger.click();
   const drawer = page.getByRole('dialog', { name: /过程详情/ });
   await expect(drawer).toBeVisible();
   await expect(drawer).toContainText(head);
@@ -70,4 +73,40 @@ test('NR09-02 mobile bounds tool output in the public drawer without exposing th
   await expect(drawer).not.toContainText(tail);
   const visible = await drawer.locator('.progress-drawer-body').textContent();
   expect(visible.length).toBeLessThan(4_700);
+  const geometry = await drawer.locator('.progress-drawer-body').evaluate((node) => ({
+    clientWidth: node.clientWidth,
+    scrollWidth: node.scrollWidth,
+    clientHeight: node.clientHeight,
+    scrollHeight: node.scrollHeight,
+  }));
+  expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth + 1);
+  expect(geometry.scrollHeight).toBeGreaterThan(geometry.clientHeight);
+
+  await drawer.getByRole('button', { name: '关闭详情' }).click();
+  await expect(drawer).toHaveCount(0);
+  await expect.poll(() => detailTrigger.evaluate((node) => document.activeElement === node)).toBe(true);
+
+  const nonToolHead = `NR09-02-NON-TOOL-${width}-HEAD-`;
+  const nonToolTail = `-NR09-02-NON-TOOL-${width}-TAIL`;
+  const nonToolResponse = await request.post(`${MOCK}/mock/control/action`, {
+    data: {
+      type: 'push_provisional',
+      channel_id: 'c0',
+      request_id: requestId,
+      status: 'processing',
+      payload: {
+        process: {
+          kind: 'stage',
+          stage: 'text',
+          text: `${nonToolHead}${'n'.repeat(8_000)}${nonToolTail}`,
+        },
+      },
+    },
+  });
+  expect(nonToolResponse.ok()).toBe(true);
+  const answer = turn.locator('.agent-progress-text').last();
+  await expect(answer).toContainText(nonToolHead);
+  await expect(answer).toContainText(nonToolTail);
+  await expect(answer).not.toContainText('省略');
 });
+}

@@ -235,7 +235,14 @@
 .progress-drawer-header small { margin-left: 8px; opacity: 0.6; }
 .progress-drawer-close { border: 0; background: none; font-size: 20px; line-height: 1; color: var(--text); opacity: 0.6; cursor: pointer; }
 .progress-drawer-close:hover { opacity: 1; }
-.progress-drawer-body { overflow: auto; padding: 14px; font-size: 13.5px; line-height: 1.6; color: var(--text); }
+.progress-drawer-body {
+  min-width: 0; max-width: 100%; overflow: auto; padding: 14px;
+  font-size: 13.5px; line-height: 1.6; color: var(--text);
+  overflow-wrap: anywhere; word-break: break-word;
+}
+.progress-drawer-body .markdown-content,
+.progress-drawer-body .markdown-content > * { min-width: 0; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
+.progress-drawer-body .code-block-line { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
 .progress-drawer-body pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: 12.5px/1.55 var(--mono, monospace); }
 .progress-tool-data { display: grid; gap: 10px; }
 .progress-json-shell { max-height: min(52vh, 460px); overflow: auto; padding: 9px 10px; border: 1px solid var(--line-subtle); border-radius: var(--radius-object); background: var(--surface-code); }
