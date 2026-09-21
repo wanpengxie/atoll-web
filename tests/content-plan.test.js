@@ -107,7 +107,7 @@ describe('ContentPlan', () => {
     expect(list.blocks[0].kind).toBe('list');
   });
 
-  it('persists plans across unmount-like release and bounds retained sources', () => {
+  it('[TC-0533][AD-239] persists plans across unmount-like release and bounds retained sources', () => {
     const store = createContentPlanStore({ limit: 2 });
     const first = store.plan('a', 'one\n\ntwo');
     expect(store.plan('a', 'one\n\ntwo')).toBe(first);
