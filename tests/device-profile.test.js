@@ -11,7 +11,7 @@ const storage = () => {
 };
 
 describe('性能路径的判据', () => {
-  it('触屏 + 窄屏 → 移动端', () => {
+  it('[TC-0602][AD-308] 触屏 + 窄屏 → 移动端', () => {
     expect(detectProfile({ matchMedia: media({ '(pointer: coarse)': true, '(max-width: 900px)': true }), search: '', storage: storage() })).toBe(PROFILE_MOBILE);
   });
 
