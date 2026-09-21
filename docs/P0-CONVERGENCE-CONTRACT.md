@@ -21,6 +21,38 @@ It has three ordered obligations:
 Ephemeral work may be discarded. Durable facts may not be guessed. A local,
 understandable fail-stop is preferable to a larger recovery state machine.
 
+## Backend truth and frontend projection
+
+The backend is the sole authority for business facts and permissions. A
+message client is necessarily asynchronous: its channel, membership,
+permission, task, and submission projections may be late or temporarily
+inconsistent. Projection delay is not itself a correctness failure.
+
+The frontend must not try to eliminate that delay by creating RPC-style state
+synchronization, waiting for several local owners to agree before every
+request, or maintaining a second authoritative copy of backend facts. A local
+preflight check may improve feedback or avoid an obviously invalid request,
+but it is an optimization, not a safety proof. The backend response determines
+whether the business operation was accepted or rejected.
+
+For requests, the frontend contract is therefore:
+
+- submit through the typed request owner without reporting speculative
+  acceptance as success;
+- project backend accepted, rejected, and uncertain outcomes honestly;
+- settle each local attempt idempotently, without infinite retry or revival of
+  a terminal rejection;
+- preserve user-recoverable input when the request fails, and provide a clear
+  retry, refresh, or correction path;
+- fence late responses from obsolete local lifecycles without turning the
+  fence into a second business authority.
+
+Tests must not require zero wire traffic merely because a frontend projection
+already appears stale. They must model the backend's authoritative rejection
+and verify the resulting user-visible terminal state. Stronger synchronous
+frontend consistency is required only for frontend-owned facts such as focus,
+scroll intent, draft presentation, and DOM-writer ownership.
+
 ## User-experience parity
 
 Internal simplification does not authorize a visible product regression. The
