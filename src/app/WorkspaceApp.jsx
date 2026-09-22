@@ -1351,7 +1351,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     }));
     return objectId;
   }, [navigation.activeChannelId]);
-  const openTurnDetail = useCallback((turn) => {
+  const openTurnDetail = useCallback((turn, rowKey = '') => {
     const requestId = String(turn?.requestId || turn?.request?.id || '');
     const channelId = navigation.activeChannelId;
     const currentTurn = timelineTurnForRequest(feed.stateFor(channelId), requestId);
@@ -1361,7 +1361,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     }
     navigation.setActiveView('conversation');
     if (typeof navigation.setFocus === 'function') navigation.setFocus({ type: 'turn', key: requestId });
-    setPanel({ kind: 'turn', channelId, requestId });
+    setPanel({ kind: 'turn', channelId, requestId, ...(rowKey ? { rowKey: String(rowKey) } : {}) });
     return currentTurn;
   }, [feed, navigation.activeChannelId, navigation.setActiveView, navigation.setFocus]);
   const conversationPort = {

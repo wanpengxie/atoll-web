@@ -8,7 +8,6 @@ import { argsOf, hasCanonicalBody } from '../../protocol/envelope.js';
 import { DECISIONS, isSystemWord, TYPES } from '../../protocol/vocab.js';
 import { messageTimeLabel } from '../../util/time.js';
 import { MarkdownContent } from '../MarkdownContent.jsx';
-import { useModalFocus } from '../primitives/useModalFocus.js';
 import { FoldableBody } from './FoldableBody.jsx';
 import { lostReason, memberRestarts } from '../../model/request-lifecycle.js';
 
@@ -917,38 +916,51 @@ function RowMeta({ row, active = false, now = 0 }) {
   </span>;
 }
 
-function ProcessDetailDrawer({ row, onClose }) {
-  const dialogRef = useRef(null);
-  const closeRef = useRef(null);
-  useModalFocus({ dialogRef, initialFocusRef: closeRef, onClose });
+// The full content of one process record. It is shown in the one process
+// panel on the right (the same surface as 查看过程), never in a drawer inside
+// the list, whose stacking the composer and floating buttons paint over.
+function ProcessRowDetail({ row }) {
   const body = typeof row.body === 'string' ? row.body.trim() : '';
   const rawToolData = row.kind === 'tool' && hasToolData(row.toolData) ? row.toolData : null;
   // Mobile already receives the bounded output markdown owned by this same
-  // row projection. Do not duplicate that output in the structured tree;
-  // desktop keeps both typed input and output sections in the drawer.
+  // row projection. Do not duplicate that output in the structured tree.
   const toolData = rawToolData && row.mobileOutputShown ? toolInputOnly(rawToolData) : rawToolData;
-  return <div className="progress-drawer-backdrop" data-modal-layer role="presentation" onMouseDown={(event) => {
-    if (event.target === event.currentTarget) onClose?.();
-  }}>
-    <aside ref={dialogRef} tabIndex={-1} className="progress-drawer" role="dialog" aria-modal="true" aria-label={`过程详情：${row.line}`}>
-      <header className="progress-drawer-header">
-        <div><strong>{row.line}</strong>{timestampLabel(row.ts) && <small>{timestampLabel(row.ts)}</small>}</div>
-        <button ref={closeRef} type="button" className="progress-drawer-close" aria-label="关闭详情" onClick={onClose}>×</button>
-      </header>
-      <div className="progress-drawer-body">
-        {row.kind === 'tool' ? <div className="progress-tool-data">
-          {toolData && <div className="progress-json-shell" aria-label="工具输入输出"><StructuredTree value={toolData} /></div>}
-          {body && <div className="progress-tool-detail"><strong>执行说明</strong><MarkdownContent contentKey={`progress-detail:${row.key}:body`} text={body} /></div>}
-          {!toolData && !body && <p className="progress-empty">这次调用没有返回可展示的数据。</p>}
-        </div> : body ? <MarkdownContent contentKey={`progress-detail:${row.key}:body`} text={body} /> : <p className="progress-empty">这次过程没有留下可展示的正文。</p>}
-      </div>
-    </aside>
+  return <div className="progress-drawer-body">
+    {row.kind === 'tool' ? <div className="progress-tool-data">
+      {toolData && <div className="progress-json-shell" aria-label="工具输入输出"><StructuredTree value={toolData} /></div>}
+      {body && <div className="progress-tool-detail"><strong>执行说明</strong><MarkdownContent contentKey={`progress-detail:${row.key}:body`} text={body} /></div>}
+      {!toolData && !body && <p className="progress-empty">这次调用没有返回可展示的数据。</p>}
+    </div> : body ? <MarkdownContent contentKey={`progress-detail:${row.key}:body`} text={body} /> : <p className="progress-empty">这次过程没有留下可展示的正文。</p>}
   </div>;
+}
+
+// The process panel's body: every record of one turn, the selected one open.
+export function ProcessRecords({ turn, selectedKey = '', onSelect }) {
+  const rows = progressRows(turn);
+  const selectedRef = useRef(null);
+  useEffect(() => {
+    selectedRef.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [selectedKey]);
+  if (!rows.length) return <p className="progress-empty">这一轮还没有过程记录。</p>;
+  return <ol className="process-records">
+    {rows.map((row) => {
+      const selected = row.key === selectedKey;
+      const openable = !row.stateOnly;
+      return <li key={row.key} ref={selected ? selectedRef : null} className={`process-record${selected ? ' is-selected' : ''}`}>
+        {openable
+          ? <button type="button" className="process-record-line" aria-expanded={selected} onClick={() => onSelect?.(selected ? '' : row.key)}>
+            <span>{row.line}</span>{timestampLabel(row.ts) && <time dateTime={new Date(row.ts).toISOString()}>{timestampLabel(row.ts)}</time>}
+          </button>
+          : <div className="process-record-line is-state"><span>{row.line}</span>{timestampLabel(row.ts) && <time dateTime={new Date(row.ts).toISOString()}>{timestampLabel(row.ts)}</time>}</div>}
+        {selected && openable && <ProcessRowDetail row={row} />}
+      </li>;
+    })}
+  </ol>;
 }
 
 function TrailRow({ row, onOpen, active = false, now = 0, showTime = false }) {
   const meta = showTime ? <RowMeta row={row} active={active} now={now} /> : null;
-  if (row.stateOnly) return <li className="progress-row is-state"><span className="progress-row-line">{row.line}</span>{meta}</li>;
+  if (row.stateOnly || !onOpen) return <li className={`progress-row${row.stateOnly ? ' is-state' : ''}`}><span className="progress-row-line">{row.line}</span>{meta}</li>;
   return <li className="progress-row"><button type="button" onClick={() => onOpen?.(row)} title="查看完整内容"><span className="progress-row-line">{row.line}</span>{meta}</button></li>;
 }
 
@@ -956,24 +968,12 @@ function PreviewRow({ row, active, now }) {
   return <li className={`progress-row${row.stateOnly ? ' is-state' : ''}`}><span className="progress-row-line">{row.line}</span><RowMeta row={row} active={active} now={now} /></li>;
 }
 
-function ProgressTrail({ turn, title, ended = false }) {
+function ProgressTrail({ turn, title, ended = false, onOpenRow }) {
   const [open, setOpen] = useState(false);
-  const [detailRow, setDetailRow] = useState(null);
   const [now, setNow] = useState(() => Date.now());
   const rows = progressRows(turn);
   // A lost turn has no terminal and never will; it is not running either.
   const running = !turn.terminal && !ended;
-
-  // A tool row keeps one stable public key while its started observation is
-  // replaced by the ended observation. If the drawer is already open, keep
-  // the same owner surface on the newest row (key/seq) so late detail becomes
-  // visible without a second host/store or a user reopen.
-  useEffect(() => {
-    if (!detailRow) return;
-    const next = rows.find((row) => row.key === detailRow.key);
-    if (!next || Number(next.seq) === Number(detailRow.seq)) return;
-    setDetailRow(next);
-  }, [detailRow, rows]);
 
   useEffect(() => {
     if (!running || rows.length === 0) return undefined;
@@ -1002,7 +1002,7 @@ function ProgressTrail({ turn, title, ended = false }) {
         </button>
         {open && (
           <ol className="progress-trail-list">
-            {rows.map((row) => <TrailRow key={row.key} row={row} onOpen={setDetailRow} />)}
+            {rows.map((row) => <TrailRow key={row.key} row={row} onOpen={onOpenRow} />)}
           </ol>
         )}
       </div>
@@ -1013,7 +1013,7 @@ function ProgressTrail({ turn, title, ended = false }) {
         <TrailRow
           key={row.key}
           row={row}
-          onOpen={setDetailRow}
+          onOpen={onOpenRow}
           active={row.key === latestKey}
           now={now}
           showTime
@@ -1043,7 +1043,7 @@ function ProgressTrail({ turn, title, ended = false }) {
     );
   }
 
-  return <>{content}{detailRow && <ProcessDetailDrawer row={detailRow} onClose={() => setDetailRow(null)} />}</>;
+  return content;
 }
 function finalEchoObservation(observations, terminalText) {
   const answer = String(terminalText || '').trim(); const last = String(observations.at(-1)?.process?.text || '').trim();
@@ -1078,7 +1078,7 @@ function supersededTurn(turn) {
 
 const LOST_LABEL = Object.freeze({ restart: '未完成 · Agent 已重启', expired: '未完成 · 已过期' });
 
-function AgentAnswer({ turn, names, fold, lost = '', onDownload, onPreview, onReply, onOpen }) {
+function AgentAnswer({ turn, names, fold, lost = '', onDownload, onPreview, onReply, onOpen, onOpenRow }) {
   const request = turn.request; const terminal = terminalContentEnvelope(turn);
   const stopped = isInterruptedTerminal(turn);
   const liveEnvelope = terminal || turn.provisional?.at(-1)?.envelope || null;
@@ -1105,7 +1105,7 @@ function AgentAnswer({ turn, names, fold, lost = '', onDownload, onPreview, onRe
     <header><strong>{nameOf(agentId, names)}</strong><small className="ai-label">AI</small>{liveEnvelope?.ts && <time>{messageTimeLabel(liveEnvelope.ts)}</time>}{turn.terminal && (stopped ? null : turn.status === 'failed' ? <span className="response-failed">处理失败</span> : <small>已完成</small>)}{!turn.terminal && lost && <span className="response-failed">{LOST_LABEL[lost] || LOST_LABEL.expired}</span>}</header>
     {content.length > 0 && <div className="response-content"><FoldableBody id={`${turn.requestId}:response`} text={foldText} exempt={fold?.latest === true} automaticExpanded={fold?.automaticExpanded === true} expanded={fold?.overrides?.get(`${turn.requestId}:response`)} onToggle={fold?.onToggle}>{content}</FoldableBody></div>}
     {stopped && <p className="agent-stopped">✗ 已停止 · 发消息即继续</p>}
-    <ProgressTrail turn={turn} title={textOf(request)} ended={Boolean(lost)} />{turn.terminalClosureOnly && <p className="terminal-result-unavailable">{terminalResultState(turn).error}</p>}<Attachments envelope={answerEnvelope} onDownload={onDownload} onPreview={onPreview} />
+    <ProgressTrail turn={turn} title={textOf(request)} ended={Boolean(lost)} onOpenRow={onOpenRow} />{turn.terminalClosureOnly && <p className="terminal-result-unavailable">{terminalResultState(turn).error}</p>}<Attachments envelope={answerEnvelope} onDownload={onDownload} onPreview={onPreview} />
   </ReplyableMessageFrame>;
 }
 
@@ -1155,7 +1155,8 @@ function TurnCard({ turn, names, selfId, access, targetAuthority, fold, lost = '
       <header><strong>{nameOf(request.sender?.id, names)}</strong>{request.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{messageTimeLabel(request.ts)}</time>{recipients && <span className="recipient-label">发送给 {recipients}</span>}{local && <small>{local}</small>}</header>
       <div className="request-text"><EnvelopeBody envelope={request} fold={fold} onDownload={onDownload} onPreview={onPreview} contentKeyPrefix="request" /></div>{editing?.targetId === turn.requestId && <small className="message-editing-state">正在输入框中编辑</small>}
     </ReplyableMessageFrame>
-    <AgentAnswer turn={turn} names={names} fold={fold} lost={lost} onDownload={onDownload} onPreview={onPreview} onReply={onReply} onOpen={onOpenProcess} />
+    <AgentAnswer turn={turn} names={names} fold={fold} lost={lost} onDownload={onDownload} onPreview={onPreview} onReply={onReply} onOpen={onOpenProcess}
+      onOpenRow={onOpen ? (row) => onOpen(turn, row.key) : undefined} />
     {/* A superseded turn produced nothing: no answer bubble, and no record of
         the calls it made on the way there either. Leaving the calls behind put
         a bare 「1 次关联调用」 tail under a message whose body was suppressed. */}

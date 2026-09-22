@@ -676,7 +676,7 @@ describe('A-D round 24 public-owner evidence', () => {
       turn={openedTurn}
       onClose={vi.fn()}
     />);
-    const detail = screen.getByRole('region', { name: '回合详情' });
+    const detail = screen.getByRole('complementary', { name: '回合详情' });
     expect(detail.textContent).toContain('audit-202');
     expect(detail.textContent).toContain('audit-call-1');
     expect(detail.textContent).not.toContain('must-not-render');

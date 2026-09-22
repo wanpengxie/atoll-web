@@ -10,6 +10,7 @@ import { SearchFeature } from './search/SearchFeature.jsx';
 import { TaskDetailPanel } from './tasks/TaskDetailPanel.jsx';
 import { TasksFeature } from './tasks/TasksFeature.jsx';
 import { PanelCard } from '../primitives/PanelCard.jsx';
+import { ProcessRecords } from '../timeline/TimelineRowRenderer.jsx';
 import { SidePanel } from '../primitives/SidePanel.jsx';
 import { useModalFocus } from '../primitives/useModalFocus.js';
 
@@ -46,24 +47,32 @@ function processFactLabel(fact) {
   return fact.phase ? `${kind} · ${fact.phase}` : kind;
 }
 
-function TurnDetailPanel({ turn, onClose }) {
+// The one process panel. 查看过程 and a click on any process record both open
+// it; a record click opens that record in place.
+function TurnDetailPanel({ turn, rowKey = '', onClose }) {
+  const [selectedKey, setSelectedKey] = useState(rowKey);
+  useEffect(() => { setSelectedKey(rowKey); }, [rowKey]);
   const request = argsOf(turn?.request);
   const terminal = argsOf(turn?.terminal);
   const processFacts = turnProcessAuditFacts(turn);
-  const value = terminal.value && typeof terminal.value === 'object' && !Array.isArray(terminal.value)
-    ? terminal.value
-    : terminal;
   const title = String(request.name || request.text || request.description || turn?.request?.type || '频道回合');
-  return <section className="turn-detail-page" role="region" aria-label="回合详情">
-    <header className="turn-detail-header"><button type="button" onClick={onClose}>← 返回动态</button><div><p className="eyebrow">WORK TURN</p><h2>回合详情</h2></div></header>
-    <div className="turn-detail-scroll"><div className="turn-detail-content">
-      <h3>{title}</h3>
-      <dl><dt>请求编号</dt><dd>{turn?.requestId || turn?.request?.id || '—'}</dd><dt>类型</dt><dd>{turn?.request?.type || '—'}</dd><dt>状态</dt><dd>{terminal.status || turn?.status || '进行中'}</dd>{turn?.requestSeq != null && <><dt>账本序号</dt><dd>{turn.requestSeq}</dd></>}{turn?.terminal?.id && <><dt>终态编号</dt><dd>{turn.terminal.id}</dd></>}</dl>
-      {processFacts.length > 0 && <section className="turn-detail-process" aria-label="执行过程"><h3>执行过程</h3><ol>{processFacts.map((fact) => <li key={`${fact.seq}:${fact.identifiers.map((item) => item.value).join('|')}`}><strong>{processFactLabel(fact)}</strong><small>账本序号 {fact.seq}</small>{fact.identifiers.length > 0 && <dl>{fact.identifiers.map((item) => <div key={`${item.label}:${item.value}`}><dt>{item.label}</dt><dd>{item.value}</dd></div>)}</dl>}</li>)}</ol></section>}
-      {value.channel_id && <p>目标频道：{value.channel_id}</p>}
+  return <SidePanel className="turn-detail-page" ariaLabel="回合详情" eyebrow="过程" title={title} closeLabel="关闭过程" onClose={onClose}>
+    <section className="turn-detail-records" aria-label="过程记录">
+      <ProcessRecords turn={turn} selectedKey={selectedKey} onSelect={setSelectedKey} />
+    </section>
+    <details className="turn-detail-ledger">
+      <summary>账本信息</summary>
+      <dl>
+        <dt>请求编号</dt><dd>{turn?.requestId || turn?.request?.id || '—'}</dd>
+        <dt>类型</dt><dd>{turn?.request?.type || '—'}</dd>
+        <dt>状态</dt><dd>{terminal.status || turn?.status || '进行中'}</dd>
+        {turn?.requestSeq != null && <><dt>账本序号</dt><dd>{turn.requestSeq}</dd></>}
+        {turn?.terminal?.id && <><dt>终态编号</dt><dd>{turn.terminal.id}</dd></>}
+      </dl>
+      {processFacts.length > 0 && <ol className="turn-detail-process">{processFacts.map((fact) => <li key={`${fact.seq}:${fact.identifiers.map((item) => item.value).join('|')}`}><strong>{processFactLabel(fact)}</strong><small>账本序号 {fact.seq}</small>{fact.identifiers.length > 0 && <dl>{fact.identifiers.map((item) => <div key={`${item.label}:${item.value}`}><dt>{item.label}</dt><dd>{item.value}</dd></div>)}</dl>}</li>)}</ol>}
       {terminal.detail && <p>{terminal.detail}</p>}
-    </div></div>
-  </section>;
+    </details>
+  </SidePanel>;
 }
 
 // The picker is a presentation of the existing Files owner. It never keeps a
@@ -443,7 +452,7 @@ export function WorkspaceRightPanel({ panel, channel, files = {}, tasks = {}, ro
   }
   else if (kind === 'turn') {
     focusKey = `${kind}:${typeof panel === 'object' ? panel.requestId || panel.key || '' : ''}`;
-    content = <TurnDetailPanel turn={turn} onClose={onClose} />;
+    content = <TurnDetailPanel turn={turn} rowKey={typeof panel === 'object' ? panel.rowKey || '' : ''} onClose={onClose} />;
   }
   else if (kind === WORKSPACE_FEATURE_PANEL.automation) content = <ChannelAutomationPanel channel={channel} port={automation} onClose={onClose} />;
   else if (kind === WORKSPACE_FEATURE_PANEL.channelAdministration) {
