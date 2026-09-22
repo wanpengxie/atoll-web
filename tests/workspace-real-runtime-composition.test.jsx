@@ -578,7 +578,8 @@ describe('真实 Workspace owner composition', () => {
     expect(mocks.feedRuntime.getSnapshot().stateFor(mocks.channelId)?.rows.has(8)).toBe(true);
   });
 
-  it('routes an old conversation cleanup by its receipt channel after switching channels', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('routes an old conversation cleanup by its receipt channel after switching channels', async () => {
     const previousChannels = mocks.navigation.channels;
     const previousActiveChannelId = mocks.navigation.activeChannelId;
     const previousActiveChannel = mocks.navigation.activeChannel;
@@ -674,7 +675,8 @@ describe('真实 Workspace owner composition', () => {
     }
   });
 
-  it('clamps a restored future cursor before Workspace exposes channel history', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('clamps a restored future cursor before Workspace exposes channel history', async () => {
     const key = ['atoll.feed-cursors.v1.', mocks.principalId, '\u0000world-real'].join('');
     localStorage.setItem(key, JSON.stringify({
       reads: { [mocks.channelId]: 999 },

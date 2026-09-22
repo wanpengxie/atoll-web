@@ -76,13 +76,8 @@ const DIRECTORY_INVALIDATION_TYPES = new Set([
 const AGENT_ACTIVITY_LIMIT = 512;
 const TIMER_FIRING_LIMIT = 256;
 const ACCESS_UNAVAILABLE_CODES = new Set(['unavailable', 'channel_unavailable']);
-const CURSOR_STORAGE_PREFIX = 'atoll.feed-cursors.v1.';
-const NOTIFICATION_LEASE_REVOKE = 'notification-lease-revoke';
-const NOTIFICATION_LEASE_REVOKE_REASONS = new Set([
-  'physical-leave',
-  'surface-hidden',
-  'activation-cleanup',
-]);
+const READ_POSITION_STORAGE_PREFIX = 'atoll.read-position.v1.';
+const RETIRED_CURSOR_STORAGE_PREFIX = 'atoll.feed-cursors.v1.';
 
 function invalidatesChannelDirectory(envelope) {
   return DIRECTORY_INVALIDATION_TYPES.has(envelope?.type || '');
@@ -135,11 +130,6 @@ function historyBatchCompletionDetail(batch, result, rows, status, acceptedRows,
   };
 }
 
-function notificationInputEpoch(value) {
-  const result = Number(value);
-  return Number.isSafeInteger(result) && result >= 0 ? result : null;
-}
-
 function historySchedulerPriority(urgency) {
   if (urgency === HISTORY_URGENCY.blocking) return 3;
   if (urgency === HISTORY_URGENCY.interactive) return 2;
@@ -153,13 +143,11 @@ function historyViewSpecSnapshot(viewSpec = {}) {
   return Object.freeze(snapshot);
 }
 
-function notificationOwnerKey(owner) {
-  return `${owner?.viewKey || ''}\u0000${owner?.activationID || ''}\u0000${historyNumeric(owner?.generation)}`;
-}
-
 // The rail has one canonical root ledger.  Keep the two person-visible
 // projections explicit so a filtered/partial observation cannot silently turn
 // `other` into a total or clear a root it never presented.
+const EMPTY_UNREAD_ROOTS = Object.freeze({ related: new Set(), other: new Set() });
+
 function notificationProjection({ related = 0, other = 0, pending = false, unknown = false } = {}) {
   return Object.freeze({
     related: historyNumeric(related),
@@ -167,37 +155,6 @@ function notificationProjection({ related = 0, other = 0, pending = false, unkno
     pending: pending === true,
     unknown: unknown === true,
   });
-}
-
-function notificationScope(value) {
-  return value === 'mine' ? 'mine' : 'all';
-}
-
-function notificationActorFiltered(event) {
-  return event?.actorFiltered === true || historyNumeric(event?.actorFilterCount) > 0;
-}
-
-function sameNotificationRootMask(left = [], right = []) {
-  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
-  const rightIDs = new Set(right.map((id) => String(id || '')));
-  return left.every((id) => rightIDs.has(String(id || '')));
-}
-
-function followingSuppressesNotification(observation, seq, related, rootID = '') {
-  if (!observation || observation.active === false
-    || historyNumeric(seq) > historyNumeric(observation.headSeq)) return false;
-  // An actor-filtered view is a semantic subset only. It cannot suppress
-  // either channel-level projection.
-  if (observation.actorFiltered === true) return false;
-  if (observation.exactRootMask === true) {
-    const maskedRootIDs = new Set(observation.maskedRootIDs || []);
-    if (!rootID || !maskedRootIDs.has(String(rootID))) return false;
-    return observation.scope !== 'mine' || related === true;
-  }
-  // A mine tail is an ephemeral related-only mask. Other roots stay visible
-  // until a separate unfiltered all-channel receipt advances high-water.
-  if (observation.scope === 'mine') return related === true;
-  return true;
 }
 
 function historySourceFor(localMeta, beforeSeq) {
@@ -296,170 +253,112 @@ function isTerminalActivity(envelope) {
     && FINAL.has(argsOf(envelope)?.status);
 }
 
-function createCursorOwner(storage = globalThis.localStorage) {
-  const reads = new Map();
-  const notifications = new Map();
-  // Sparse visible-root receipts live in the same durable cursor record as
-  // the channel high-water. This is not a second acknowledgement owner: the
-  // identity map is only the bounded exception for roots seen beyond a gap.
-  const notificationIdentities = new Map();
+// Where the reader has read to, per channel: the one notification state.
+//
+//   mine  — highest ledger seq seen in any view; unread rows related to the
+//           reader (sender or audience) are those above it
+//   all   — highest ledger seq seen in the unfiltered "all" view; unread rows
+//           not related to the reader are those above it
+//
+// A channel first seen on this device starts at its head: history is never
+// new. Both positions only move forward, so a late or repeated report is a
+// no-op, never a corruption. Stored per principal and ledger world.
+function createReadPositions(storage = globalThis.localStorage) {
+  const positions = new Map();
   let authority = '';
-  const identityCount = () => [...notificationIdentities.values()]
-    .reduce((count, entries) => count + entries.size, 0);
-  const identitiesFor = (channelId, create = false) => {
-    let entries = notificationIdentities.get(channelId);
-    if (!entries && create) {
-      entries = new Map();
-      notificationIdentities.set(channelId, entries);
-    }
-    return entries;
-  };
-  const persistedKeys = () => {
-    if (!storage || typeof storage.key !== 'function') return [];
-    const keys = [];
+  const keyFor = (value) => `${READ_POSITION_STORAGE_PREFIX}${value}`;
+  const retireOldCursors = () => {
+    if (!storage || typeof storage.key !== 'function') return;
+    const retired = [];
     for (let index = 0; index < Number(storage.length || 0); index += 1) {
       const key = storage.key(index);
-      if (key?.startsWith(CURSOR_STORAGE_PREFIX)) keys.push(key);
+      if (key?.startsWith(RETIRED_CURSOR_STORAGE_PREFIX)) retired.push(key);
     }
-    return keys;
-  };
-  const resetAuthority = () => {
-    let changed = Boolean(authority || reads.size || notifications.size || identityCount());
-    for (const key of persistedKeys()) {
-      try { storage.removeItem(key); changed = true; } catch { /* best effort */ }
+    for (const key of retired) {
+      try { storage.removeItem(key); } catch { /* best effort */ }
     }
-    authority = '';
-    reads.clear();
-    notifications.clear();
-    notificationIdentities.clear();
-    return changed;
   };
-  // Written only when a cursor actually moves.
   const persist = () => {
     if (!authority || !storage) return;
     try {
-      const persistedIdentities = Object.fromEntries([...notificationIdentities].map(([channelId, entries]) => [
-        channelId,
-        Object.fromEntries(entries),
-      ]));
-      storage.setItem(`${CURSOR_STORAGE_PREFIX}${authority}`, JSON.stringify({
-        reads: Object.fromEntries(reads),
-        notifications: Object.fromEntries(notifications),
-        notificationIdentities: persistedIdentities,
-      }));
-    } catch { /* cursor durability is best effort */ }
+      storage.setItem(keyFor(authority), JSON.stringify(Object.fromEntries(positions)));
+    } catch { /* read position durability is best effort */ }
   };
   const load = () => {
-    reads.clear(); notifications.clear(); notificationIdentities.clear();
-    if (!authority || !storage) return false;
+    positions.clear();
+    if (!authority || !storage) return;
     try {
-      const raw = storage.getItem(`${CURSOR_STORAGE_PREFIX}${authority}`);
-      if (!raw) return false;
-      const value = JSON.parse(raw);
-      for (const [id, seq] of Object.entries(value.reads || {})) reads.set(id, historyNumeric(seq));
-      for (const [id, seq] of Object.entries(value.notifications || {})) notifications.set(id, historyNumeric(seq));
-      for (const [channelId, values] of Object.entries(value.notificationIdentities || {})) {
-        if (!values || typeof values !== 'object' || Array.isArray(values)) continue;
-        const entries = identitiesFor(channelId, true);
-        for (const [rootID, seq] of Object.entries(values)) {
-          const valueSeq = historyNumeric(seq);
-          if (rootID && valueSeq > 0) entries.set(rootID, valueSeq);
-        }
-        if (!entries.size) notificationIdentities.delete(channelId);
+      const value = JSON.parse(storage.getItem(keyFor(authority)) || '{}');
+      for (const [channelId, entry] of Object.entries(value || {})) {
+        const mine = historyNumeric(entry?.mine);
+        const all = historyNumeric(entry?.all);
+        positions.set(channelId, { mine, all: Math.min(all, mine) });
       }
-      return true;
-    } catch { return false; }
+    } catch { positions.clear(); }
   };
+  retireOldCursors();
   return Object.freeze({
     selectReadAuthority({ principalId = '', serverBoot = '' } = {}) {
       const next = principalId && serverBoot ? `${principalId}\u0000${serverBoot}` : '';
-      const changed = next !== authority;
-      if (!changed) return { changed: false, reused: Boolean(authority), fresh: false };
-      // A live authority replacement invalidates every prior principal/world
-      // prefix. The first selection in a fresh runtime is allowed to restore
-      // the exact tuple; its caller handles an actual world transition via
-      // resetAuthority before selecting the replacement.
-      if (authority) resetAuthority();
+      if (next === authority) return false;
+      // A new ledger world is a new history: the old world's positions say
+      // nothing about it.
+      if (authority && storage) {
+        try { storage.removeItem(keyFor(authority)); } catch { /* best effort */ }
+      }
       authority = next;
-      const restored = load();
-      return { changed: true, reused: Boolean(authority) && restored, fresh: Boolean(authority) && !restored };
+      load();
+      return true;
     },
-    clearReadAuthority: resetAuthority,
-    resetAuthority,
+    clearReadAuthority() {
+      authority = '';
+      positions.clear();
+    },
     isReadAuthorityReady: () => Boolean(authority),
-    reconcileReads(snapshot = {}) {
-      for (const [channelId, seq] of Object.entries(snapshot)) {
-        const value = historyNumeric(seq);
-        reads.set(channelId, Math.max(reads.get(channelId) || 0, value));
-      }
+    has: (channelId) => positions.has(channelId),
+    readMine: (channelId) => positions.get(channelId)?.mine || 0,
+    readAll: (channelId) => positions.get(channelId)?.all || 0,
+    // First sight on this device: everything up to the current head is past.
+    baseline(channelId, headSeq) {
+      if (!authority || positions.has(channelId)) return false;
+      const head = historyNumeric(headSeq);
+      positions.set(channelId, { mine: head, all: head });
       persist();
+      return true;
     },
-    resetReads() { reads.clear(); notifications.clear(); notificationIdentities.clear(); persist(); },
-    read: (channelId) => reads.get(channelId) || 0,
-    markRead(channelId, seq) {
-      const current = reads.get(channelId) || 0;
-      const next = Math.max(current, historyNumeric(seq));
-      if (next !== current || !reads.has(channelId)) { reads.set(channelId, next); persist(); }
-      return next;
+    // The ledger head moved below a position (a rebuilt ledger in the same
+    // world): nothing above the head can have been read.
+    clampToHead(channelId, headSeq) {
+      const current = positions.get(channelId);
+      const head = historyNumeric(headSeq);
+      if (!current || (current.mine <= head && current.all <= head)) return false;
+      positions.set(channelId, { mine: Math.min(current.mine, head), all: Math.min(current.all, head) });
+      persist();
+      return true;
     },
-    baselineRead(channelId, seq) { if (!reads.has(channelId)) { reads.set(channelId, historyNumeric(seq)); persist(); } },
-    notificationHighWater: (channelId) => notifications.get(channelId) || 0,
-    notificationIdentities: (channelId) => new Map(identitiesFor(channelId) || []),
-    acknowledgeNotificationIdentities(channelId, identities = new Map()) {
-      const entries = identitiesFor(channelId, true);
-      const current = notifications.get(channelId) || 0;
-      let changed = false;
-      const values = identities instanceof Map ? identities.entries() : Object.entries(identities || {});
-      for (const [rootID, seq] of values) {
-        const key = String(rootID || '');
-        const valueSeq = historyNumeric(seq);
-        if (!key || !valueSeq || valueSeq <= current || (entries.get(key) || 0) >= valueSeq) continue;
-        entries.set(key, valueSeq);
-        changed = true;
+    advance(channelId, seq, { all = false } = {}) {
+      if (!authority) return false;
+      const value = historyNumeric(seq);
+      const current = positions.get(channelId) || { mine: 0, all: 0 };
+      const next = {
+        mine: Math.max(current.mine, value),
+        all: all ? Math.max(current.all, value) : current.all,
+      };
+      if (next.mine === current.mine && next.all === current.all) return false;
+      positions.set(channelId, next);
+      persist();
+      return true;
+    },
+    // Clearing local data forgets where the reader was.
+    forgetAll() {
+      const had = positions.size > 0;
+      positions.clear();
+      if (authority && storage) {
+        try { storage.removeItem(keyFor(authority)); } catch { /* best effort */ }
       }
-      if (!entries.size) notificationIdentities.delete(channelId);
-      if (changed) persist();
-      return changed;
+      return had;
     },
-    acknowledgeNotifications(channelId, seq) {
-      const next = Math.max(notifications.get(channelId) || 0, historyNumeric(seq));
-      notifications.set(channelId, next);
-      const entries = identitiesFor(channelId);
-      if (entries) {
-        for (const [rootID, identitySeq] of entries) {
-          if (identitySeq <= next) entries.delete(rootID);
-        }
-        if (!entries.size) notificationIdentities.delete(channelId);
-      }
-      persist(); return next;
-    },
-    baselineNotifications(channelId, seq) { if (!notifications.has(channelId)) { notifications.set(channelId, historyNumeric(seq)); persist(); } },
-    clampNotificationsToHead(channelId, seq) {
-      const head = historyNumeric(seq);
-      const notification = notifications.get(channelId);
-      const nextNotification = notification === undefined
-        ? undefined
-        : Math.min(notification, head);
-      const changed = nextNotification !== notification;
-      if (nextNotification !== undefined) notifications.set(channelId, nextNotification);
-      const entries = identitiesFor(channelId);
-      let identitiesChanged = false;
-      if (entries) {
-        for (const [rootID, identitySeq] of entries) {
-          if (identitySeq > head) {
-            entries.delete(rootID);
-            identitiesChanged = true;
-          }
-        }
-        if (!entries.size) {
-          notificationIdentities.delete(channelId);
-          identitiesChanged = true;
-        }
-      }
-      if (changed || identitiesChanged) persist();
-      return changed || identitiesChanged;
-    },
-    destroy() { authority = ''; reads.clear(); notifications.clear(); notificationIdentities.clear(); },
+    destroy() { authority = ''; positions.clear(); },
   });
 }
 
@@ -530,131 +429,6 @@ function controlParentClosure(state, tail) {
 // Replica's envelope index. This is deliberately a Feed/Replica join rather
 // than a second notification fold: a late parent must be able to make the
 // earlier terminal visible even after a tail observation has arrived.
-function closedNotificationBoundary(state, boundary, previous = 0) {
-  if (!state || !(state.rows instanceof Map)) return previous;
-  const target = historyNumeric(boundary);
-  let closed = historyNumeric(previous);
-  for (let seq = closed + 1; seq <= target; seq += 1) {
-    if (!state.rows.has(seq)) break;
-    const envelope = state.rows.get(seq);
-    if (envelope?.kind === 'response'
-      && envelope.parent_id
-      && FINAL.has(argsOf(envelope)?.status)
-      && !state._envelopesById?.has?.(String(envelope.parent_id))) break;
-    closed = seq;
-  }
-  return closed;
-}
-
-function notificationReceiptVisibleIDs(event) {
-  const directRoots = Array.isArray(event?.visibleRootIDs)
-    ? event.visibleRootIDs
-    : Array.isArray(event?.captured?.visibleRootIDs)
-      ? event.captured.visibleRootIDs
-      : null;
-  if (directRoots) {
-    return Object.freeze([...new Set(directRoots.map((id) => String(id || '')).filter(Boolean))]);
-  }
-  const rows = Array.isArray(event?.visibleRowIDs)
-    ? event.visibleRowIDs
-    : Array.isArray(event?.captured?.visibleRowIDs)
-      ? event.captured.visibleRowIDs
-      : null;
-  return rows
-    ? Object.freeze([...new Set(rows.map((id) => String(id || '')).filter(Boolean))])
-    : null;
-}
-
-function notificationReceiptRootIDs(state, event) {
-  const visibleIDs = notificationReceiptVisibleIDs(event);
-  if (!visibleIDs) return null;
-  if (Array.isArray(event?.visibleRootIDs) || Array.isArray(event?.captured?.visibleRootIDs)) {
-    return visibleIDs;
-  }
-  const rowsByID = new Map();
-  for (const envelope of state?.rows?.values?.() || []) {
-    if (envelope?.id) rowsByID.set(String(envelope.id), envelope);
-  }
-  const rootIDs = new Set();
-  for (const messageID of visibleIDs) {
-    const envelope = state?._envelopesById?.get?.(messageID) || rowsByID.get(messageID);
-    const rootID = envelope ? notificationRootID(state, envelope) : messageID;
-    if (rootID) rootIDs.add(String(rootID));
-  }
-  return Object.freeze([...rootIDs]);
-}
-
-// Persist only the visible roots that sit beyond the durable contiguous
-// frontier. On reload these identities continue to suppress their own rows,
-// while an unvisited sibling remains an actionable unread root.
-function notificationIdentityEntries(state, boundary, visibleRootIDs) {
-  if (!state || !(state.rows instanceof Map) || !Array.isArray(visibleRootIDs)) return null;
-  const roots = new Set(visibleRootIDs.map((id) => String(id || '')).filter(Boolean));
-  if (!roots.size) return null;
-  const target = historyNumeric(boundary);
-  const entries = new Map();
-  for (const [seq, envelope] of state.rows) {
-    if (historyNumeric(seq) > target) continue;
-    const rootID = notificationRootID(state, envelope);
-    if (!rootID || !roots.has(String(rootID))) continue;
-    const key = String(rootID);
-    entries.set(key, Math.max(entries.get(key) || 0, historyNumeric(seq)));
-  }
-  return entries;
-}
-
-// A durable all-channel receipt may only advance through the canonical
-// contiguous frontier.  The frozen DOM root mask is evidence of what was
-// presented, not permission to jump over an unvisited sibling or a physical
-// response-first gap.
-function notificationBoundaryForVisibleRoots(state, boundary, previous, visibleRootIDs, selfID) {
-  if (!state || !(state.rows instanceof Map)) return previous;
-  const target = historyNumeric(boundary);
-  const visited = new Set(visibleRootIDs || []);
-  let closed = historyNumeric(previous);
-  for (let seq = closed + 1; seq <= target; seq += 1) {
-    if (!state.rows.has(seq)) break;
-    const envelope = state.rows.get(seq);
-    if (envelope?.kind === 'response'
-      && envelope.parent_id
-      && FINAL.has(argsOf(envelope)?.status)
-      && !state._envelopesById?.has?.(String(envelope.parent_id))) break;
-    const disposition = notificationDisposition(state, envelope, selfID);
-    if (isRailNotifiableDisposition(disposition)) {
-      const rootID = notificationRootID(state, envelope);
-      if (!rootID || !visited.has(String(rootID))) break;
-    }
-    closed = seq;
-  }
-  return closed;
-}
-
-// A related-only tail can use the same durable cursor when the frozen
-// boundary contains no outside-scope notification. This is deliberately
-// stricter than a normal mine mask: seeing a related prefix is not enough if
-// the receipt also spans an unvisited `other` root, because a scalar
-// high-water would hide that sibling. In that case the existing ephemeral
-// related lease remains the only valid projection.
-function notificationBoundaryForRelatedOnly(state, boundary, previous, selfID) {
-  if (!state || !(state.rows instanceof Map) || !selfID) return previous;
-  const target = historyNumeric(boundary);
-  let closed = historyNumeric(previous);
-  for (let seq = closed + 1; seq <= target; seq += 1) {
-    if (!state.rows.has(seq)) break;
-    const envelope = state.rows.get(seq);
-    if (envelope?.kind === 'response'
-      && envelope.parent_id
-      && FINAL.has(argsOf(envelope)?.status)
-      && !state._envelopesById?.has?.(String(envelope.parent_id))) break;
-    const disposition = notificationDisposition(state, envelope, selfID);
-    if (disposition === 'notification_context_unknown') break;
-    if (isRailNotifiableDisposition(disposition)
-      && !notificationRelatesTo(state, envelope, selfID)) return previous;
-    closed = seq;
-  }
-  return closed;
-}
-
 function rowsCoverRange(state, after, through) {
   const start = historyNumeric(after) + 1;
   const end = historyNumeric(through);
@@ -673,48 +447,6 @@ function rowsCoverRange(state, after, through) {
   return expected > end;
 }
 
-function unresolvedTerminalBoundary(state, after = 0) {
-  if (!state || !(state.rows instanceof Map)) return 0;
-  const start = historyNumeric(after);
-  const rows = [...state.rows.entries()].sort(([left], [right]) => left - right);
-  for (const [seq, envelope] of rows) {
-    if (seq <= start) continue;
-    if (envelope?.kind === 'response'
-      && envelope.parent_id
-      && FINAL.has(argsOf(envelope)?.status)
-      && !state._envelopesById?.has?.(String(envelope.parent_id))) return seq;
-  }
-  return 0;
-}
-
-// A following observation is an ephemeral lease owned by the exact attached
-// notification authority.  The channel/generation tuple alone is not enough:
-// a same-generation reconnect or regrant advances notificationAuthorityRevision
-// while the old observation object may still be retained until its next
-// positive receipt.  Consumers must therefore ignore that old lease rather
-// than hide rows or extend it across the replacement authority.
-function followingObservationAuthorityCurrent(observation, status, {
-  principal = '', world = '', generation = 0,
-} = {}) {
-  return Boolean(observation
-    && status?.attached === true
-    && status?.messageCurrent === true
-    && status?.generation > 0
-    && status.generation === generation
-    && observation.authority?.principalId === principal
-    && observation.authority?.serverBoot === world
-    && observation.authorityRevision === status.notificationAuthorityRevision
-    && observation.owner?.generation === status.generation);
-}
-
-function followingObservationCurrent(observation, status, authority) {
-  return followingObservationAuthorityCurrent(observation, status, authority)
-    && observation.active !== false;
-}
-
-// One lifetime owner for source admission, canonical commit, cache and
-// publication. Cache/history/live are ingress provenance, never stores that a
-// consumer can observe independently of Replica.commit.
 export function createChannelFeedRuntime(options = {}) {
   const {
     wireRef = { current: null }, rosterRef = { current: null }, accessRef = { current: null },
@@ -724,7 +456,7 @@ export function createChannelFeedRuntime(options = {}) {
   const callback = (name, ...args) => bindings[name]?.(...args);
   const replica = createChannelReplicaStore();
   const cache = createChannelReplicaCache();
-  const cursors = createCursorOwner();
+  const cursors = createReadPositions();
   const admission = createHistoryPresentationAdmission({ onChange: publish });
   const histories = new Map();
   const grants = new Map();
@@ -757,7 +489,6 @@ export function createChannelFeedRuntime(options = {}) {
   // never persisted and never advances high-water by itself; leaving the
   // committed owner revokes it, after which any still-unconfirmed row is
   // visible again.
-  const followingObservations = new Map();
   let generation = 0;
   let semanticAuthorityRevision = 0;
   let principalEpoch = 0;
@@ -803,6 +534,7 @@ export function createChannelFeedRuntime(options = {}) {
       const settledAt = eventTimestamp(envelope);
       activityEntries.set(key, Object.freeze({
         ...current, state: 'settled', updatedAt: settledAt, settledAt,
+        settledSeq: historyNumeric(row.seq),
         outcome: String(argsOf(envelope)?.status || ''),
       }));
       activityRevision += 1;
@@ -859,7 +591,10 @@ export function createChannelFeedRuntime(options = {}) {
     const byChannel = {};
     for (const entry of activityEntries.values()) {
       const visibleActive = entry.state === 'active' && activityConnected && entry.generation === generation;
-      if ((!visibleActive && entry.state !== 'settled') || (channelId && entry.channelId !== channelId)) continue;
+      // A completion the reader has already read past is no longer news.
+      const settledUnread = entry.state === 'settled'
+        && !(entry.settledSeq > 0 && entry.settledSeq <= cursors.readMine(entry.channelId));
+      if ((!visibleActive && !settledUnread) || (channelId && entry.channelId !== channelId)) continue;
       const channel = byChannel[entry.channelId] || { active: [], agents: {} };
       byChannel[entry.channelId] = channel;
       const agent = channel.agents[entry.agentId] || { active: 0, settled: 0, state: '' };
@@ -967,7 +702,6 @@ export function createChannelFeedRuntime(options = {}) {
         status.controlTailCoverage = false;
         status.controlParentClosure = false;
         status.notificationAuthorityRevision = ++notificationAuthorityRevision;
-        followingObservations.delete(channelId);
         feedChanged = true;
       }
       accessRef.current?.forbidden?.(channelId);
@@ -1039,10 +773,9 @@ export function createChannelFeedRuntime(options = {}) {
       // existing tail can become a usable baseline; history/cache admission
       // keeps its own closure rules.
       if (source === 'live' && status?.attached && status.generation === generation
-        && status.notificationContextReady !== true
-        && historyNumeric(row.seq) > historyNumeric(status.headSeq)
-        && cursors.isReadAuthorityReady()) {
-        cursors.baselineNotifications(row.channel_id, status.headSeq);
+        && historyNumeric(row.seq) > historyNumeric(status.headSeq)) {
+        // A channel first seen through a live row starts at the head before it.
+        cursors.baseline(row.channel_id, status.headSeq);
       }
       if (source !== 'cache' && status?.attached && status.generation === generation
         && historyNumeric(row.seq) > 0
@@ -1062,30 +795,6 @@ export function createChannelFeedRuntime(options = {}) {
           // arrive; only the first transition into a current attached
           // authority gets a new authority revision.
           if (!wasCurrent) status.notificationAuthorityRevision = ++notificationAuthorityRevision;
-        }
-        const following = followingObservations.get(row.channel_id);
-        if (followingObservationCurrent(following, status, {
-          principal, world, generation,
-        })) {
-          // A following lease may absorb safe request/event arrivals until
-          // the next observation, but it must remember the first unresolved
-          // terminal it crossed. Once that terminal's parent arrives, a
-          // mutable head must not retroactively expand the old lease and hide
-          // the newly closed notification; only a fresh frozen confirmation
-          // may clear this obligation.
-          const blockedBoundary = following.unresolvedBoundary
-            || unresolvedTerminalBoundary(replica.state(row.channel_id), following.headSeq);
-          const closedHead = closedNotificationBoundary(
-            replica.state(row.channel_id), status.headSeq, following.headSeq,
-          );
-          followingObservations.set(row.channel_id, Object.freeze({
-            ...following,
-            headSeq: Math.max(
-              following.headSeq,
-              blockedBoundary ? Math.min(closedHead, blockedBoundary - 1) : closedHead,
-            ),
-            unresolvedBoundary: blockedBoundary || 0,
-          }));
         }
       }
       if (source === 'live') {
@@ -1193,19 +902,19 @@ export function createChannelFeedRuntime(options = {}) {
     return { pending, unknown };
   }
 
-  function unreadFor(channelId, selfID = '') {
-    const boundary = cursors.notificationHighWater(channelId);
+  // Unread = notifiable rows from others above the reader's read position:
+  // rows related to the reader above `mine`, the rest above `all`. Rows at or
+  // below a position are history to this reader, however they were loaded.
+  function unreadRoots(channelId, selfID = '') {
     const state = replica.state(channelId);
-    const context = notificationContextState(channelId, state, boundary, selfID);
-    if (context.pending && (!cursors.isReadAuthorityReady() || !selfID)) {
-      return notificationProjection({ pending: true, unknown: true });
-    }
-    const following = followingObservations.get(channelId);
-    const acknowledgedIdentities = cursors.notificationIdentities(channelId);
-    const roots = new Map();
-    let unknown = context.unknown;
+    const mine = cursors.readMine(channelId);
+    const all = cursors.readAll(channelId);
+    const low = Math.min(mine, all);
+    const related = new Set();
+    const other = new Set();
+    let unknown = false;
     for (const [seq, envelope] of state?.rows || []) {
-      if (seq <= boundary || samePerson(envelope?.sender?.id, selfID)) continue;
+      if (seq <= low || samePerson(envelope?.sender?.id, selfID)) continue;
       const disposition = notificationDisposition(state, envelope, selfID);
       if (disposition === 'notification_context_unknown') {
         unknown = true;
@@ -1217,114 +926,67 @@ export function createChannelFeedRuntime(options = {}) {
         unknown = true;
         continue;
       }
-      const identitySeq = acknowledgedIdentities.get(String(rootID)) || 0;
-      if (identitySeq > 0 && historyNumeric(seq) <= identitySeq) continue;
-      const related = notificationRelatesTo(state, envelope, selfID);
-      const root = roots.get(rootID) || { related: false, rows: [] };
-      root.related = root.related || related;
-      root.rows.push({ seq, related });
-      roots.set(rootID, root);
+      if (notificationRelatesTo(state, envelope, selfID)) {
+        if (seq > mine) related.add(String(rootID));
+      } else if (seq > all) other.add(String(rootID));
     }
-    const relatedRoots = new Set();
-    const otherRoots = new Set();
-    const observation = followingObservationCurrent(following, histories.get(channelId), {
-      principal, world, generation,
-    }) ? following : null;
-    for (const [rootID, root] of roots) {
-      const visible = root.rows.some(({ seq, related }) => (
-        !followingSuppressesNotification(observation, seq, related, rootID)
-      ));
-      if (!visible) continue;
-      if (root.related) relatedRoots.add(rootID);
-      else otherRoots.add(rootID);
+    // A root belongs to one projection; related wins.
+    for (const rootID of related) other.delete(rootID);
+    return { related, other, unknown, low, state };
+  }
+
+  function unreadFor(channelId, selfID = '') {
+    if (!cursors.isReadAuthorityReady() || !selfID) {
+      return notificationProjection({ pending: true, unknown: true });
     }
-    // A root belongs to exactly one projection. If a turn contains both an
-    // unrelated request and a related readable terminal, related wins.
-    for (const rootID of relatedRoots) otherRoots.delete(rootID);
+    const roots = unreadRoots(channelId, selfID);
+    const context = notificationContextState(channelId, roots.state, roots.low, selfID);
     return notificationProjection({
-      related: relatedRoots.size,
-      other: otherRoots.size,
+      related: roots.related.size,
+      other: roots.other.size,
       pending: context.pending,
-      unknown,
+      unknown: context.unknown || roots.unknown,
     });
   }
 
-  // Diagnostics is an observation port for the existing rail, not another
-  // notification owner. Keep the provider beside Feed's canonical cursor and
-  // Replica state so the public snapshot cannot silently fall back to the
-  // empty provider when the old hook composition is absent.
+  function unreadRootsFor(channelId, selfID = '') {
+    if (!cursors.isReadAuthorityReady() || !selfID) return EMPTY_UNREAD_ROOTS;
+    const roots = unreadRoots(channelId, selfID);
+    return Object.freeze({ related: roots.related, other: roots.other });
+  }
+
+  // The reader has seen `seq` in this channel. In the unfiltered "all" view
+  // everything up to it was on screen; in any other view only rows related to
+  // the reader were. Monotone: a stale or repeated report changes nothing.
+  function markSeen(channelId, seq, { all = false } = {}) {
+    if (destroyed) return false;
+    const status = histories.get(channelId);
+    if (!status?.attached || status.generation !== generation) return false;
+    const bounded = Math.min(historyNumeric(seq), historyNumeric(status.headSeq));
+    if (!(bounded > 0)) return false;
+    const changed = cursors.advance(channelId, bounded, { all });
+    if (changed) publish();
+    return changed;
+  }
+
+  // Diagnostics is an observation port for the rail, not another owner.
   function railDiagnosticSnapshot(requestedChannelId = '') {
-    const channelIDs = new Set([
-      ...replica.states().keys(),
-      ...histories.keys(),
-    ]);
+    const channelIDs = new Set([...replica.states().keys(), ...histories.keys()]);
     const channels = [];
     for (const channelId of channelIDs) {
       if (requestedChannelId && channelId !== requestedChannelId) continue;
-      const state = replica.state(channelId);
       const selfID = rosterRef.current?.self?.(channelId) || '';
-      const notificationHighWater = cursors.notificationHighWater(channelId);
       const counts = unreadFor(channelId, selfID);
-      const status = histories.get(channelId);
-      const following = followingObservations.get(channelId);
-      const acknowledgedIdentities = cursors.notificationIdentities(channelId);
-      const seenRoots = new Set();
-      const rows = [];
-      for (const [seq, envelope] of state?.rows || []) {
-        if (rows.length >= 200) break;
-        const rootID = notificationRootID(state, envelope);
-        let ackReason = '';
-        if (seq <= notificationHighWater) ackReason = 'high_water';
-        else if (samePerson(envelope?.sender?.id, selfID)) ackReason = 'self';
-        else {
-          const disposition = notificationDisposition(state, envelope, selfID);
-          if (!isRailNotifiableDisposition(disposition)) ackReason = disposition;
-          else {
-            const related = notificationRelatesTo(state, envelope, selfID);
-            if (followingSuppressesNotification(
-              followingObservationCurrent(following, status, {
-                principal, world, generation,
-              }) ? following : null,
-              seq,
-              related,
-              rootID,
-            )) ackReason = related && following?.scope === 'mine'
-              ? 'following_related_presented' : 'following_presented';
-            else if (rootID && acknowledgedIdentities.get(String(rootID)) >= seq) {
-              ackReason = 'identity_acknowledged';
-            }
-            else if (!rootID) ackReason = 'missing_root';
-            else if (seenRoots.has(rootID)) ackReason = 'duplicate_root';
-            else {
-              seenRoots.add(rootID);
-              ackReason = related ? 'counted_related' : 'counted_other';
-            }
-          }
-        }
-        rows.push({
-          id: rootID || envelope?.id || '',
-          type: envelope?.type || '',
-          kind: envelope?.kind || '',
-          status: String(argsOf(envelope)?.status || ''),
-          seq,
-          ackReason,
-        });
-      }
       channels.push(Object.freeze({
         channelId,
         authorityReady: cursors.isReadAuthorityReady(),
-        readSeq: cursors.read(channelId),
-        notificationHighWater,
-        counts: {
-          related: counts.related,
-          other: counts.other,
-          pending: counts.pending,
-          unknown: counts.unknown,
-        },
-        rows: Object.freeze(rows),
+        readMine: cursors.readMine(channelId),
+        readAll: cursors.readAll(channelId),
+        headSeq: historyNumeric(histories.get(channelId)?.headSeq),
+        counts: { related: counts.related, other: counts.other, pending: counts.pending, unknown: counts.unknown },
       }));
     }
-    return Object.freeze({ version: 1, channels: Object.freeze(channels) });
+    return Object.freeze({ version: 2, channels: Object.freeze(channels) });
   }
 
   function batchFor(channelId, request = {}) {
@@ -2469,7 +2131,7 @@ export function createChannelFeedRuntime(options = {}) {
       for (const channelId of histories.keys()) admission.reset(channelId);
       clearDeferredHistoryRequests();
       histories.clear(); grants.clear(); replica.reset(); cursors.clearReadAuthority();
-      followingObservations.clear();
+     
       activityEntries.clear(); timerEvents.splice(0); timerOverflow = null;
       timerAcknowledgedRevision = timerRevision; activityConnected = false; activityRevision += 1;
     }
@@ -2485,6 +2147,8 @@ export function createChannelFeedRuntime(options = {}) {
     // The page is ready on memory and the wire. The local cache is read
     // behind it and only ever adds rows and coverage it already holds.
     if (world) cursors.selectReadAuthority({ principalId: principal, serverBoot: world });
+    // Channels granted before the reader was known start at their head too.
+    for (const [channelId, entry] of grants) cursors.baseline(channelId, entry?.head_seq);
     localReplicaReady = true;
     for (const [channelId, status] of histories) refreshControlCurrent(channelId, status);
     publish({ index: true });
@@ -2516,7 +2180,6 @@ export function createChannelFeedRuntime(options = {}) {
         coverage: (value?.coverage || []).reduce((all, range) => mergeReplicaCoverage(all, range), held),
       });
     }
-    if (cursors.isReadAuthorityReady()) cursors.reconcileReads(replicaResumeSnapshot(localMeta));
     for (const [channelId, status] of histories) {
       if (!localMeta.has(channelId) || status.notificationContextReady === true) continue;
       if (status.attached !== true || status.generation !== generation) continue;
@@ -2524,9 +2187,6 @@ export function createChannelFeedRuntime(options = {}) {
       // notification context now, exactly as if the cache had been first.
       status.notificationContextReady = true;
       status.notificationAuthorityRevision = ++notificationAuthorityRevision;
-      if (cursors.isReadAuthorityReady()) {
-        cursors.baselineNotifications(channelId, historyNumeric(grants.get(channelId)?.head_seq));
-      }
     }
     publish({ index: true });
     const hydrate = async (channelId, beforeSeq) => {
@@ -2545,7 +2205,7 @@ export function createChannelFeedRuntime(options = {}) {
       if (!head) continue;
       const focused = channelId === focus && replica.visibleNewest(channelId) === 0;
       const notified = channelId !== focus && histories.has(channelId)
-        && cursors.notificationHighWater(channelId) < head;
+        && cursors.readMine(channelId) < head;
       if (focused || notified) reads.push(hydrate(channelId, head + 1));
     }
     await Promise.all(reads);
@@ -2584,7 +2244,7 @@ export function createChannelFeedRuntime(options = {}) {
       for (const channelId of histories.keys()) admission.reset(channelId);
       clearDeferredHistoryRequests();
       histories.clear(); grants.clear(); replica.reset(); cursors.clearReadAuthority();
-      followingObservations.clear();
+     
       activityEntries.clear();
       timerEvents.splice(0);
       timerAcknowledgedRevision = timerRevision;
@@ -2655,13 +2315,9 @@ export function createChannelFeedRuntime(options = {}) {
           : status.notificationAuthorityRevision,
       });
       replica.installMeta(channelId, { headSeq: entry.head_seq, coverage: selectedMeta.get(channelId)?.coverage });
-      if (cursors.isReadAuthorityReady()) {
-        cursors.baselineRead(channelId, grantedHeadSeq);
-        if (status.notificationContextReady === true) {
-          cursors.baselineNotifications(channelId, grantedHeadSeq);
-        }
-        cursors.clampNotificationsToHead(channelId, grantedHeadSeq);
-      }
+      // First sight of a channel on this device starts at its head.
+      cursors.baseline(channelId, grantedHeadSeq);
+      cursors.clampToHead(channelId, grantedHeadSeq);
     }
     // Deferred demands are this attach's to replay now: nothing above waits.
     for (const channelId of nextChannelIDs) {
@@ -2732,10 +2388,8 @@ export function createChannelFeedRuntime(options = {}) {
         serverBoot: world,
         channelId,
       }),
-      // Read-only rail handoff for the existing Workspace consumer. The
-      // durable value remains owned by this runtime; callers must not inspect
-      // cursor storage or derive it from physical read state.
-      notificationHighWater: cursors.notificationHighWater(channelId),
+      readMine: cursors.readMine(channelId),
+      readAll: cursors.readAll(channelId),
       oldestSeq: replica.visibleOldest(channelId),
       loaded: replica.visibleNewest(channelId) > 0,
       localReplicaReady,
@@ -2778,7 +2432,7 @@ export function createChannelFeedRuntime(options = {}) {
     clearDeferredHistoryRequests();
     histories.clear(); grants.clear();
     activityEntries.clear();
-    followingObservations.clear();
+   
     timerEvents.splice(0);
     timerAcknowledgedRevision = timerRevision;
     timerOverflow = null;
@@ -2790,8 +2444,7 @@ export function createChannelFeedRuntime(options = {}) {
 
   function resetNotificationAuthority() {
     if (destroyed) return false;
-    const changed = cursors.resetAuthority();
-    followingObservations.clear();
+    const changed = cursors.forgetAll();
     if (changed) publish();
     return changed;
   }
@@ -2833,7 +2486,7 @@ export function createChannelFeedRuntime(options = {}) {
         status.notificationAuthorityRevision = ++notificationAuthorityRevision;
       }
     }
-    followingObservations.clear();
+   
     attachEpoch += 1;
     cancelPhysicalOperations('history disconnected', 'stale-generation');
     if (activityConnected) { activityConnected = false; activityRevision += 1; }
@@ -2847,319 +2500,6 @@ export function createChannelFeedRuntime(options = {}) {
     if (destroyed) return false;
     if (requestGeneration && generation && requestGeneration !== generation) return false;
     incompatible = true; disconnectHistory(generation); return true;
-  }
-  function markRead(channelId, acknowledgement = {}) {
-    if (destroyed) return false;
-    const status = histories.get(channelId);
-    const physicalSeq = historyNumeric(acknowledgement.physicalSeq);
-    const authority = acknowledgement.authority;
-    if (!authority
-      || authority.channelId !== channelId
-      || authority.principalId !== principal
-      || authority.serverBoot !== world
-      || !cursors.isReadAuthorityReady() || !status?.attached || !status.messageCurrent
-      || acknowledgement.generation !== status.generation
-      || acknowledgement.authorityRevision !== status.notificationAuthorityRevision
-      || physicalSeq <= 0 || physicalSeq > status.headSeq) return false;
-    return cursors.markRead(channelId, physicalSeq);
-  }
-  // Commit one frozen notification confirmation. The event carries the
-  // boundary selected by its producing Presentation/DOM observation; this
-  // reducer must never replace it with the mutable current head.
-  function acknowledgeNotifications(channelOrEvent, maybeConfirmation = {}) {
-    if (destroyed) return false;
-    const event = channelOrEvent && typeof channelOrEvent === 'object'
-      ? channelOrEvent
-      : maybeConfirmation;
-    const channelId = String(
-      (typeof channelOrEvent === 'string' ? channelOrEvent : '')
-      || event?.channelId
-      || event?.authority?.channelId
-      || '',
-    );
-    const status = histories.get(channelId);
-    const authority = event?.authority;
-    const owner = event?.owner;
-    const captured = event?.captured;
-    const eventGeneration = historyNumeric(event?.generation);
-    const authorityRevisionValue = historyNumeric(event?.authorityRevision);
-    const boundary = historyNumeric(event?.boundary);
-    const cause = event?.cause;
-    const typedRevoke = event?.kind === NOTIFICATION_LEASE_REVOKE;
-    const hasInputEpoch = Boolean(event && Object.prototype.hasOwnProperty.call(event, 'inputEpoch'));
-    const inputEpoch = hasInputEpoch ? notificationInputEpoch(event.inputEpoch) : null;
-    const receiptInputEpoch = inputEpoch === null ? 0 : inputEpoch;
-    const retracting = typedRevoke || event?.caughtUp !== true
-      || event?.atTail !== true
-      || event?.following !== true
-      || event?.surfaceVisible !== true;
-
-    if ((hasInputEpoch && inputEpoch === null)
-      || (typedRevoke && (inputEpoch === null
-        || !NOTIFICATION_LEASE_REVOKE_REASONS.has(String(event.reason || ''))))) return false;
-
-    // A notification confirmation is an immutable cross-owner event. Do not
-    // accept the former flat channel/generation shape: without the exact
-    // authority tuple, committed owner identity, revision, and captured DOM
-    // boundary, a late callback could borrow a newer head.
-    if (!authority || !owner || !captured
-      || !String(authority.principalId || '')
-      || !String(authority.serverBoot || '')
-      || !String(authority.channelId || '')
-      || !String(owner.viewKey || '')
-      || !String(owner.activationID || '')
-      || !Number.isSafeInteger(Number(owner.generation))
-      || !Number.isSafeInteger(Number(event.generation))
-      || !Number.isSafeInteger(Number(event.authorityRevision))
-      || !Number.isSafeInteger(Number(captured.presentationRevision))
-      || !Number.isSafeInteger(Number(captured.sourceRevision))
-      || !Number.isSafeInteger(Number(captured.installedHighSeq))
-      || authority.channelId !== channelId
-      || authority.principalId !== principal
-      || authority.serverBoot !== world
-      || owner.channelId && owner.channelId !== channelId
-      || Number(owner.generation) !== eventGeneration
-      || (retracting
-        ? boundary !== 0
-        : boundary !== historyNumeric(captured.installedHighSeq))) return false;
-
-    // Retractions are authority-boundary events too.  In particular, do not
-    // let a typed physical-leave receipt install a fence while its channel is
-    // disconnected or while a same-generation regrant has already advanced
-    // the current authority revision.  Such a receipt belongs to the retired
-    // attach, even if its owner/generation tuple happens to be reused.
-    const currentAuthority = Boolean(status?.attached === true
-      && status.messageCurrent === true
-      && status.generation > 0
-      && status.generation === generation
-      && eventGeneration === status.generation
-      && authorityRevisionValue === status.notificationAuthorityRevision);
-    if (!currentAuthority) return false;
-
-    const observation = followingObservations.get(channelId);
-    const ownerKey = notificationOwnerKey(owner);
-    const observationCurrent = followingObservationAuthorityCurrent(observation, status, {
-      principal, world, generation,
-    });
-    const currentObservation = observationCurrent ? observation : null;
-    const observationKey = currentObservation ? notificationOwnerKey(currentObservation.owner) : '';
-    const sameOwner = Boolean(currentObservation && observationKey === ownerKey);
-    const retiredOwnerKeys = Array.isArray(currentObservation?.retiredOwnerKeys)
-      ? currentObservation.retiredOwnerKeys : [];
-    // A receipt that explicitly reports the committed owner no longer being
-    // at a visible tail revokes only that same owner. A stale cleanup from a
-    // replaced activation cannot revoke the new owner’s short observation
-    // lease. This is a retraction, not a notification confirmation.
-    if (retracting) {
-      // Browsing -> following promotion can publish a transient negative
-      // receipt while the committed DOM is still at the physical tail.  It
-      // is never a revoke, including when the previous observation was
-      // invalidated by a reconnect.
-      if (event.atTail === true && event.surfaceVisible === true) return false;
-      if (typedRevoke && !currentObservation) {
-        // Keep the revoke epoch even when no active lease is visible. A
-        // positive receipt issued before this input may still be queued and
-        // must not recreate the lease after the synchronous revoke.
-        followingObservations.set(channelId, Object.freeze({
-          authority: Object.freeze({ ...authority }),
-          owner: Object.freeze({ ...owner }),
-          authorityRevision: authorityRevisionValue,
-          active: false,
-          scope: notificationScope(event?.scope),
-          actorFiltered: notificationActorFiltered(event),
-          relatedMask: false,
-          exactRootMask: false,
-          maskedRootIDs: Object.freeze([]),
-          inputEpoch,
-          revokeInputEpoch: inputEpoch,
-          retiredOwnerKeys: Object.freeze([]),
-          headSeq: cursors.notificationHighWater(channelId),
-        }));
-        publish();
-        return false;
-      }
-      if (sameOwner) {
-        // During browsing -> following promotion the reading surface can
-        // publish one intermediate receipt with `following: false` while
-        // the committed DOM is still at the physical tail. That receipt is
-        // not evidence that the user left the tail: dropping the lease here
-        // would make every live arrival re-count from the mutable head and
-        // flash a rail badge until the next positive observation. A real
-        // leave changes the physical-tail or surface-visible fact, so only
-        // that boundary may revoke the existing observation.
-        if (!typedRevoke) {
-          followingObservations.delete(channelId);
-          publish();
-          return false;
-        }
-        const observationEpoch = notificationInputEpoch(observation.inputEpoch) ?? 0;
-        const previousFence = notificationInputEpoch(observation.revokeInputEpoch) ?? -1;
-        if (inputEpoch < observationEpoch || inputEpoch < previousFence) return false;
-        followingObservations.set(channelId, Object.freeze({
-          ...observation,
-          active: false,
-          inputEpoch: Math.max(observationEpoch, inputEpoch),
-          revokeInputEpoch: Math.max(previousFence, inputEpoch),
-        }));
-        publish();
-      }
-      return false;
-    }
-
-    if (!cursors.isReadAuthorityReady() || !status?.attached || !status.messageCurrent
-      || !eventGeneration || eventGeneration !== status.generation
-      || authorityRevisionValue !== status.notificationAuthorityRevision
-      || (cause !== 'tail-backlog' && cause !== 'presented-follow')
-      || boundary <= 0 || boundary > status.headSeq) return false;
-
-    const previous = cursors.notificationHighWater(channelId);
-    const scope = notificationScope(event?.scope);
-    const actorFiltered = notificationActorFiltered(event);
-    const durableAll = scope === 'all' && !actorFiltered;
-    const mineOnly = scope === 'mine' && !actorFiltered;
-    const state = replica.state(channelId);
-    const selfID = rosterRef.current?.self?.(channelId) || '';
-    const receiptRootIDs = notificationReceiptRootIDs(state, event);
-    // Sparse exact-root receipts are durable only for an unfiltered all view.
-    // A mine tail normally installs an ephemeral related-only mask; the
-    // related-only frontier below may use the scalar cursor only when the
-    // whole frozen range is provably in-scope.
-    const exactRootMask = durableAll && Array.isArray(receiptRootIDs);
-    const maskedRootIDs = exactRootMask ? receiptRootIDs : [];
-    // Only an unfiltered all-channel receipt may make sparse visible roots
-    // durable. A mine receipt never persists sparse identities; it may only
-    // close a wholly related numeric frontier below.
-    const identityEntries = durableAll
-      ? notificationIdentityEntries(state, boundary, receiptRootIDs)
-      : null;
-    const relatedOnlyBoundary = mineOnly
-      ? notificationBoundaryForRelatedOnly(state, boundary, previous, selfID)
-      : previous;
-    const durableMine = mineOnly && relatedOnlyBoundary > previous;
-    const durableReceipt = durableAll || durableMine;
-    // The installed boundary is captured by Presentation, but only the
-    // canonical Feed rows can prove that it is a continuous, parent-closed
-    // notification frontier. In particular, do not let a response-first
-    // terminal disappear behind high-water before its request arrives.
-    const acknowledgedBoundary = exactRootMask
-      ? notificationBoundaryForVisibleRoots(
-        state,
-        boundary,
-        previous,
-        receiptRootIDs,
-        selfID,
-      )
-      : durableMine
-        ? relatedOnlyBoundary
-        : closedNotificationBoundary(replica.state(channelId), boundary, previous);
-    if (currentObservation && sameOwner) {
-      const previousFence = notificationInputEpoch(currentObservation.revokeInputEpoch) ?? -1;
-      // A revoke is a tombstone for the whole receipt epoch.  A positive
-      // callback issued in that same epoch may be late, but it is not a new
-      // observation and must not re-install the lease.  Only a strictly newer
-      // input epoch can prove a fresh tail observation for this owner.
-      if (previousFence >= 0 && (!hasInputEpoch || receiptInputEpoch <= previousFence)) return false;
-    } else if (currentObservation && retiredOwnerKeys.includes(ownerKey)) {
-      return false;
-    }
-    const nextRetiredOwnerKeys = currentObservation && !sameOwner
-      ? Object.freeze([...new Set([...retiredOwnerKeys, observationKey].filter(Boolean))].slice(-8))
-      : Object.freeze(retiredOwnerKeys);
-    const identityChanged = identityEntries
-      ? cursors.acknowledgeNotificationIdentities(channelId, identityEntries)
-      : false;
-    if (!durableReceipt) {
-      // A mine receipt that spans an outside-scope root remains a session-only
-      // related mask. Actor-filtered receipts are even narrower and cannot
-      // suppress either channel-level projection. Neither path may advance
-      // the one durable channel high-water.
-      const maskBoundary = mineOnly
-        ? closedNotificationBoundary(replica.state(channelId), boundary, previous)
-        : previous;
-      const unresolvedBoundary = mineOnly
-        ? unresolvedTerminalBoundary(replica.state(channelId), maskBoundary)
-        : 0;
-      const nextHeadSeq = Math.max(previous, exactRootMask ? boundary : maskBoundary);
-      const duplicateObservation = currentObservation
-        && notificationOwnerKey(currentObservation.owner) === ownerKey
-        && currentObservation.authorityRevision === authorityRevisionValue
-        && notificationInputEpoch(currentObservation.inputEpoch) === receiptInputEpoch
-        && currentObservation.scope === scope
-        && currentObservation.actorFiltered === actorFiltered
-        && currentObservation.relatedMask === mineOnly
-        && currentObservation.exactRootMask === exactRootMask
-        && sameNotificationRootMask(currentObservation.maskedRootIDs, maskedRootIDs)
-        && historyNumeric(currentObservation.headSeq) === nextHeadSeq
-        && historyNumeric(currentObservation.unresolvedBoundary) === unresolvedBoundary;
-      if (duplicateObservation) return false;
-      followingObservations.set(channelId, Object.freeze({
-        authority: Object.freeze({ ...authority }),
-        owner: Object.freeze({ ...owner }),
-        authorityRevision: authorityRevisionValue,
-        active: mineOnly,
-        scope,
-        actorFiltered,
-        relatedMask: mineOnly,
-        exactRootMask,
-        maskedRootIDs: Object.freeze(maskedRootIDs),
-        inputEpoch: receiptInputEpoch,
-        revokeInputEpoch: -1,
-        retiredOwnerKeys: nextRetiredOwnerKeys,
-        headSeq: nextHeadSeq,
-        unresolvedBoundary,
-      }));
-      publish();
-      return false;
-    }
-    if (acknowledgedBoundary > 0 && acknowledgedBoundary <= previous) {
-      followingObservations.set(channelId, Object.freeze({
-        authority: Object.freeze({ ...authority }),
-        owner: Object.freeze({ ...owner }),
-        authorityRevision: authorityRevisionValue,
-        active: true,
-        scope,
-        actorFiltered,
-        relatedMask: false,
-        exactRootMask,
-        maskedRootIDs: Object.freeze(maskedRootIDs),
-        inputEpoch: receiptInputEpoch,
-        revokeInputEpoch: -1,
-        retiredOwnerKeys: nextRetiredOwnerKeys,
-        // A positive receipt at an already-confirmed boundary still installs
-        // the short following lease for future live ingress.
-        headSeq: Math.max(
-          previous,
-          exactRootMask ? boundary : historyNumeric(currentObservation?.headSeq),
-        ),
-      }));
-      if (identityChanged) publish();
-      return previous || false;
-    }
-    if (acknowledgedBoundary <= previous) {
-      if (identityChanged) publish();
-      return previous || false;
-    }
-    const acknowledged = cursors.acknowledgeNotifications(channelId, acknowledgedBoundary);
-    followingObservations.set(channelId, Object.freeze({
-      authority: Object.freeze({ ...authority }),
-      owner: Object.freeze({ ...owner }),
-      authorityRevision: authorityRevisionValue,
-      active: true,
-      scope,
-      actorFiltered,
-      relatedMask: false,
-      exactRootMask,
-      maskedRootIDs: Object.freeze(maskedRootIDs),
-      inputEpoch: receiptInputEpoch,
-      revokeInputEpoch: -1,
-      retiredOwnerKeys: nextRetiredOwnerKeys,
-      // Only facts at or below the frozen DOM boundary are confirmed. A
-      // lower backlog receipt must leave later already-committed rows
-      // visible; subsequent live ingress advances this lease incrementally.
-      headSeq: exactRootMask ? boundary : acknowledged,
-    }));
-    if (acknowledged > previous) publish();
-    return acknowledged;
   }
   function acknowledgeAgentActivity(channelId, agentId) {
     if (destroyed) return false;
@@ -3237,7 +2577,7 @@ export function createChannelFeedRuntime(options = {}) {
         publish();
         return true;
       },
-      loadHistory, requestBackgroundInterest, markRead, acknowledgeNotifications,
+      loadHistory, requestBackgroundInterest, markSeen, unreadRootsFor,
       agentActivityFor: (channelId) => agentActivity.byChannel[channelId]
         || Object.freeze({ active: Object.freeze([]), agents: Object.freeze({}) }),
       acknowledgeAgentActivity,
@@ -3270,7 +2610,7 @@ export function createChannelFeedRuntime(options = {}) {
     clearDeferredHistoryRequests();
     for (const channelId of histories.keys()) admission.reset(channelId);
     histories.clear(); grants.clear();
-    activityEntries.clear(); followingObservations.clear(); timerEvents.splice(0);
+    activityEntries.clear(); timerEvents.splice(0);
     replica.destroy(); cursors.destroy(); void cache.destroy();
     subscribers.clear(); ownerCommands.clear(); ownerSnapshots.clear();
   }

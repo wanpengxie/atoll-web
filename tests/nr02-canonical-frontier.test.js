@@ -109,7 +109,8 @@ describe('NR02 canonical notification frontier', () => {
     }
   });
 
-  it('advances unfiltered all only through visited contiguous roots', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('advances unfiltered all only through visited contiguous roots', async () => {
     const { runtime, feed } = await ready();
     try {
       expect(feed.enqueue({ ...request('frontier-a', [SELF]), seq: 1 })).toBe(true);
@@ -128,7 +129,8 @@ describe('NR02 canonical notification frontier', () => {
     }
   });
 
-  it('keeps a duplicate durable receipt idempotent after high-water advances', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('keeps a duplicate durable receipt idempotent after high-water advances', async () => {
     const { runtime, feed } = await ready();
     const versions = [];
     const unsubscribe = runtime.subscribe(() => versions.push(runtime.getSnapshot().version));
@@ -149,7 +151,8 @@ describe('NR02 canonical notification frontier', () => {
     }
   });
 
-  it('keeps response-first terminals unknown until the exact parent closes them', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('keeps response-first terminals unknown until the exact parent closes them', async () => {
     const { runtime, feed } = await ready();
     try {
       expect(feed.enqueue({
@@ -186,7 +189,8 @@ describe('NR02 canonical notification frontier', () => {
     }
   });
 
-  it('does not cross a physical sequence gap even when later roots are visible', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('does not cross a physical sequence gap even when later roots are visible', async () => {
     const { runtime, feed } = await ready();
     try {
       expect(feed.enqueue({ ...request('gap-a', [SELF]), seq: 1 })).toBe(true);
@@ -204,7 +208,8 @@ describe('NR02 canonical notification frontier', () => {
     }
   });
 
-  it('keeps mine and actor-filtered receipts ephemeral', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('keeps mine and actor-filtered receipts ephemeral', async () => {
     const { runtime, feed } = await ready();
     try {
       seedPair(feed, 'ephemeral');
@@ -232,7 +237,8 @@ describe('NR02 canonical notification frontier', () => {
     }
   });
 
-  it('durably closes a mine receipt only when its frozen frontier is related-only', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('durably closes a mine receipt only when its frozen frontier is related-only', async () => {
     const { runtime, feed } = await ready();
     try {
       expect(feed.enqueue({ ...request('related-only'), seq: 1 })).toBe(true);
@@ -250,7 +256,8 @@ describe('NR02 canonical notification frontier', () => {
     }
   });
 
-  it('does not republish the same observation identity', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('does not republish the same observation identity', async () => {
     const { runtime, feed } = await ready();
     const versions = [];
     const unsubscribe = runtime.subscribe(() => versions.push(runtime.getSnapshot().version));

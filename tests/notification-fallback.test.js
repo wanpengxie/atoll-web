@@ -10,7 +10,8 @@ import {
 describe('IM 读侧兜底', () => {
   const present = { following: true, atTail: true, surfaceVisible: true, documentVisible: true };
 
-  it('追平在场要四个条件同时成立', () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('追平在场要四个条件同时成立', () => {
     expect(readerCaughtUp(present)).toBe(true);
     expect(readerCaughtUp({ ...present, following: false })).toBe(false);
     expect(readerCaughtUp({ ...present, atTail: false })).toBe(false);
@@ -19,7 +20,8 @@ describe('IM 读侧兜底', () => {
     expect(readerCaughtUp()).toBe(false);
   });
 
-  it('视窗计数在追平时恒为 0，否则是真值', () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('视窗计数在追平时恒为 0，否则是真值', () => {
     expect(viewportUnseenNotice(7, true)).toBe(0);
     expect(viewportUnseenNotice(7, false)).toBe(7);
     expect(viewportUnseenNotice(-3, false)).toBe(0);

@@ -223,7 +223,8 @@ describe('current bounded Replica ownership (baseline memory-window UX)', () => 
     expect(turn.provisional.map((item) => item.envelope.id)).toEqual(['response-first-progress']);
   });
 
-  it('does not publish or acknowledge a live arrival while trimming rows', () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('does not publish or acknowledge a live arrival while trimming rows', () => {
     const store = createChannelReplicaStore();
     const state = store.ensure(CHANNEL).state;
     state.arrivalReceipts.attachTimelineConsumer(Symbol('trim-test'));

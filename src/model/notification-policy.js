@@ -92,29 +92,8 @@ export function notificationDisposition(channelState, envelope, selfId = '') {
   return 'final';
 }
 
-// The semantic classifier is shared, but its consumers intentionally differ.
-// A channel badge wakes only for a conversation turn (request/final). A
-// standalone readable event may still be a new dynamic inside the open
-// viewport without making every public event a channel-level notification.
+// Unread counts only conversation turns (request/final); progress, events,
+// system and timer rows never make a message unread.
 export function isRailNotifiableDisposition(disposition) {
   return disposition === 'request' || disposition === 'final';
-}
-
-export function isViewportNotifiableDisposition(disposition) {
-  return disposition === 'request' || disposition === 'final' || disposition === 'event';
-}
-
-// 追平在场：四个条件同时成立才算"用户此刻就在这条视图的最新端看着"。
-export function readerCaughtUp({
-  following = false,
-  atTail = false,
-  surfaceVisible = false,
-  documentVisible = false,
-} = {}) {
-  return following === true && atTail === true && surfaceVisible === true && documentVisible === true;
-}
-
-export function viewportUnseenNotice(unseen, caughtUp = false) {
-  if (caughtUp === true) return 0;
-  return Math.max(0, Number(unseen) || 0);
 }

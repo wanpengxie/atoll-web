@@ -1112,6 +1112,9 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const history = historyStatus ? {
     status: { ...historyStatus, localReplicaReady: feed.localReplicaReady },
     request: (request) => feedCommands.loadHistory(navigation.activeChannelId, request),
+    // The reader saw this seq in the active channel (monotone; see markSeen).
+    markSeen: (seq, options) => feed.markSeen(navigation.activeChannelId, seq, options),
+    unreadRoots: feed.unreadRootsFor?.(navigation.activeChannelId, selfId),
     refreshLatest: () => feedCommands.refreshChannel(navigation.activeChannelId),
     retryLocalReplica: () => feedCommands.retryLocalReplica({ focus: navigation.activeChannelId }),
     debugSnapshot: () => feed.coldEntryDiagnosticsFor(navigation.activeChannelId),
@@ -1379,17 +1382,6 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     access: activeAccess,
     surfaceVisible: contentVisible && (navigation.activeView === 'conversation' || navigation.terminalVisible),
     composer: <Composer model={composer.model} commands={composer.commands} />,
-    onTailCaughtUp: (receipt) => {
-      // A surface cleanup can run after navigation has committed its next
-      // channel.  The receipt is the cross-owner identity for that callback;
-      // never borrow the mutable navigation selection for an old surface.
-      const receiptChannelId = String(receipt?.channelId || receipt?.authority?.channelId || '');
-      if (!receiptChannelId
-        || (receipt?.authority?.channelId
-          && String(receipt.authority.channelId) !== receiptChannelId)) return;
-      feed.markRead(receiptChannelId, receipt);
-      return feed.acknowledgeNotifications(receiptChannelId, receipt);
-    },
     onResolve: submission.resolve,
     onCancel: submission.cancel,
     onTaskControl: submission.control,

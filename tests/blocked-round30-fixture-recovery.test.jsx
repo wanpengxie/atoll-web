@@ -124,7 +124,8 @@ describe('A-D round 30 public cursor fixture recovery', () => {
     });
   });
 
-  it('[AD-307] keeps a late older history page behind the acknowledged cursor tail', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('[AD-307] keeps a late older history page behind the acknowledged cursor tail', async () => {
     // 用户能力：已读到 seq 100 后，旧 history 页后到不会重新制造 unread。
     // 不变量：cursor boundary 与物理到达顺序分离，投影只保留 boundary 之后的新 root。
     // 公开 owner：ChannelFeedRuntime.acknowledgeNotifications/unreadFor。

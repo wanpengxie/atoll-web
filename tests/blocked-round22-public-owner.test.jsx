@@ -267,7 +267,8 @@ describe('A-D round 22 public-owner regression and cursor evidence', () => {
     runtime.destroy();
   });
 
-  it('[AD-284] retains an unvisited sibling instead of collapsing identity receipts into high-water', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('[AD-284] retains an unvisited sibling instead of collapsing identity receipts into high-water', async () => {
     // 用户能力：只确认 visible identities 时，unvisited sibling 仍未读。
     // 不变量：sparse identity acknowledgement 不能退化成 boundary-only ack。
     // 公开 owner：ChannelFeedRuntime.acknowledgeNotifications/unreadFor。
@@ -300,7 +301,8 @@ describe('A-D round 22 public-owner regression and cursor evidence', () => {
     resumed.runtime.destroy();
   });
 
-  it('[AD-288] validates persisted cursor facts against the active authority tuple', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('[AD-288] validates persisted cursor facts against the active authority tuple', async () => {
     // 用户能力：旧 principal/world 的持久化事实不能直接污染当前 world。
     // 不变量：cursor restore 必须由当前 principal+boot authority 验证。
     // 公开 owner：ChannelFeedRuntime.prepareLocalReplica/historyFor。
@@ -316,7 +318,8 @@ describe('A-D round 22 public-owner regression and cursor evidence', () => {
     runtime.destroy();
   });
 
-  it('[AD-289] clamps restored cursor facts to the current channel head', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('[AD-289] clamps restored cursor facts to the current channel head', async () => {
     // 用户能力：恢复的 future cursor 不能把不存在的消息标成已读。
     // 不变量：restore high-water 必须不超过当前 ledger head。
     // 公开 owner：ChannelFeedRuntime.historyFor。
@@ -370,7 +373,8 @@ describe('A-D round 22 public-owner regression and cursor evidence', () => {
     runtime.destroy();
   });
 
-  it('[AD-295] treats an earlier human incarnation as the current person', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('[AD-295] treats an earlier human incarnation as the current person', async () => {
     // 用户能力：换 incarnation 后，自己的历史请求不出现在 rail/viewport notice。
     // 不变量：human principal 相同即同一 person，设备 incarnation 不改变 self 归属。
     // 公开 owner：ChannelFeedRuntime + ChannelReplica arrivalReceipts。
@@ -482,7 +486,8 @@ describe('A-D round 22 public-owner regression and cursor evidence', () => {
     runtime.destroy();
   });
 
-  it('[AD-300] does not renotify a conflicting terminal after canonical acknowledgement', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('[AD-300] does not renotify a conflicting terminal after canonical acknowledgement', async () => {
     // 用户能力：canonical answer 确认后，冲突 terminal 不重复唤醒。
     // 不变量：first terminal remains authoritative and high-water is monotone。
     // 公开 owner：ChannelFeedRuntime.acknowledgeNotifications/unreadFor。

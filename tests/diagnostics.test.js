@@ -50,7 +50,8 @@ describe('frontend diagnostics', () => {
     expect(diagnosticsSnapshot()).toEqual([]);
   });
 
-  it('exports an explicit local rail snapshot without retaining its provider after cleanup', () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('exports an explicit local rail snapshot without retaining its provider after cleanup', () => {
     const release = registerRailDiagnosticProvider((channelId) => ({
       version: 1,
       channels: [{

@@ -106,7 +106,8 @@ function confirmationFor(channelId, status, boundary, overrides = {}) {
 }
 
 describe('notification confirmation contract', () => {
-  it('rejects the retired flat receipt and any mutable-boundary substitution', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('rejects the retired flat receipt and any mutable-boundary substitution', async () => {
     const { runtime, channelId, selfId } = await readyRuntime();
     const feed = runtime.getSnapshot();
     feed.enqueue({ ...relatedRequest(channelId, 'approval-1', selfId), seq: 1 });
@@ -130,7 +131,8 @@ describe('notification confirmation contract', () => {
     })).toBe(false);
   });
 
-  it('commits a frozen backlog boundary after the mutable head advances', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('commits a frozen backlog boundary after the mutable head advances', async () => {
     const { runtime, channelId, selfId } = await readyRuntime();
     const feed = runtime.getSnapshot();
     feed.enqueue({ ...relatedRequest(channelId, 'approval-1', selfId), seq: 1 });
@@ -147,7 +149,8 @@ describe('notification confirmation contract', () => {
     expect(feed.acknowledgeNotifications(confirmation)).toBe(1);
   });
 
-  it('clears only the active channel and leaves other channels or non-caught-up state unchanged', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('clears only the active channel and leaves other channels or non-caught-up state unchanged', async () => {
     const { runtime, channelId, selfId, boot } = await readyRuntime();
     const feed = runtime.getSnapshot();
     const otherChannelId = 'c1.project';
@@ -189,7 +192,8 @@ describe('notification confirmation contract', () => {
     });
   });
 
-  it('holds a following observation lease without persisting an unpresented live row', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('holds a following observation lease without persisting an unpresented live row', async () => {
     const { runtime, channelId, selfId } = await readyRuntime();
     const feed = runtime.getSnapshot();
     feed.enqueue({ ...relatedRequest(channelId, 'approval-1', selfId), seq: 1 });
@@ -210,7 +214,8 @@ describe('notification confirmation contract', () => {
     expect(feed.unreadFor(channelId, selfId)).toMatchObject({ related: 1, other: 0, pending: false, unknown: false });
   });
 
-  it('retains the following lease through a browsing promotion at the physical tail', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('retains the following lease through a browsing promotion at the physical tail', async () => {
     const { runtime, channelId, selfId } = await readyRuntime();
     const feed = runtime.getSnapshot();
     feed.enqueue({ ...relatedRequest(channelId, 'promotion-approval-1', selfId), seq: 1 });
@@ -262,7 +267,8 @@ describe('notification confirmation contract', () => {
     expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 2, other: 0, pending: false, unknown: false });
   });
 
-  it('tombstones same-epoch hidden cleanup until a strictly newer observation', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('tombstones same-epoch hidden cleanup until a strictly newer observation', async () => {
     const { runtime, channelId, selfId } = await readyRuntime();
     const feed = runtime.getSnapshot();
     feed.enqueue({ ...relatedRequest(channelId, 'same-epoch-approval-1', selfId), seq: 1 });
@@ -310,7 +316,8 @@ describe('notification confirmation contract', () => {
     expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, other: 0, pending: false, unknown: false });
   });
 
-  it('fences a physical-leave revoke against a late positive from an older input epoch', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('fences a physical-leave revoke against a late positive from an older input epoch', async () => {
     const { runtime, channelId, selfId } = await readyRuntime();
     const feed = runtime.getSnapshot();
     feed.enqueue({ ...relatedRequest(channelId, 'revoke-approval-1', selfId), seq: 1 });
@@ -362,7 +369,8 @@ describe('notification confirmation contract', () => {
     expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, other: 0, pending: false, unknown: false });
   });
 
-  it('does not let hidden cleanup or an old owner revive/revoke a reselected lease', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('does not let hidden cleanup or an old owner revive/revoke a reselected lease', async () => {
     const { runtime, channelId, selfId } = await readyRuntime();
     const feed = runtime.getSnapshot();
     feed.enqueue({ ...relatedRequest(channelId, 'reselect-approval-1', selfId), seq: 1 });
@@ -437,7 +445,8 @@ describe('notification confirmation contract', () => {
     expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, other: 0, pending: false, unknown: false });
   });
 
-  it('drops a typed revoke fence when the notification authority world resets', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('drops a typed revoke fence when the notification authority world resets', async () => {
     const { runtime, channelId, selfId, boot } = await readyRuntime();
     const feed = runtime.getSnapshot();
     feed.enqueue({ ...relatedRequest(channelId, 'world-fence-1', selfId), seq: 1 });
@@ -470,7 +479,8 @@ describe('notification confirmation contract', () => {
     expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, other: 0, pending: false, unknown: false });
   });
 
-  it('retires a following lease and detached revoke at a same-generation regrant', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('retires a following lease and detached revoke at a same-generation regrant', async () => {
     const { runtime, channelId, selfId, boot } = await readyRuntime();
     const feed = runtime.getSnapshot();
     feed.enqueue({ ...relatedRequest(channelId, 'regrant-approval-1', selfId), seq: 1 });
@@ -530,7 +540,8 @@ describe('notification confirmation contract', () => {
     expect(reattachedFeed.unreadFor(channelId, selfId)).toEqual({ related: 0, other: 0, pending: false, unknown: false });
   });
 
-  it('restores channel high-water without allowing cache/grant hydration to resurrect it', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('restores channel high-water without allowing cache/grant hydration to resurrect it', async () => {
     const channelId = 'c0.project';
     const selfId = 'human:notification-persist:1';
     const first = createChannelFeedRuntime(runtimeOptions(selfId));
@@ -557,7 +568,8 @@ describe('notification confirmation contract', () => {
     expect(secondFeed.unreadFor(channelId, selfId)).toMatchObject({ related: 0, other: 0, pending: false, unknown: false });
   });
 
-  it('keeps an inactive nonzero grant unknown until local notification context exists', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('keeps an inactive nonzero grant unknown until local notification context exists', async () => {
     runtimeID += 1;
     const selfId = `human:notification-context:${runtimeID}`;
     const focus = 'c0.project';
@@ -602,7 +614,8 @@ describe('notification confirmation contract', () => {
     runtime.destroy();
   });
 
-  it('accepts one frozen typed acknowledgement after network history admission', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('accepts one frozen typed acknowledgement after network history admission', async () => {
     runtimeID += 1;
     const channelId = 'c0.project';
     const selfId = `human:notification-history:${runtimeID}`;
@@ -676,7 +689,8 @@ describe('notification confirmation contract', () => {
     runtime.destroy();
   });
 
-  it('accepts the same typed acknowledgement after cache-only admission and reload', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('accepts the same typed acknowledgement after cache-only admission and reload', async () => {
     runtimeID += 1;
     const channelId = 'c0.project';
     const selfId = `human:notification-cache-history:${runtimeID}`;
@@ -756,7 +770,8 @@ describe('notification confirmation contract', () => {
     restored.destroy();
   });
 
-  it('clears the old world cursor prefix through the sole notification reset port', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('clears the old world cursor prefix through the sole notification reset port', async () => {
     const { runtime, channelId, selfId, boot } = await readyRuntime();
     const feed = runtime.getSnapshot();
     feed.enqueue({ ...relatedRequest(channelId, 'approval-world-1', selfId), seq: 1 });
@@ -776,7 +791,8 @@ describe('notification confirmation contract', () => {
     expect(Object.keys(localStorage).filter((key) => key.startsWith('atoll.feed-cursors.v1.'))).toEqual([]);
   });
 
-  it('does not let a response-first terminal acknowledgment swallow its late parent', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('does not let a response-first terminal acknowledgment swallow its late parent', async () => {
     const { runtime, channelId, selfId } = await readyRuntime();
     const feed = runtime.getSnapshot();
     const terminal = {
@@ -819,7 +835,8 @@ describe('notification confirmation contract', () => {
     expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, other: 0, pending: false, unknown: false });
   });
 
-  it('keeps an A/B following lease behind an unresolved B terminal across live interleaving and reload', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('keeps an A/B following lease behind an unresolved B terminal across live interleaving and reload', async () => {
     const { runtime, channelId, selfId, boot } = await readyRuntime();
     const feed = runtime.getSnapshot();
     const aRequest = relatedRequest(channelId, 'lease-a-request', selfId);
@@ -1002,7 +1019,8 @@ describe('notification presentation facts', () => {
     expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 1, other: 0, pending: false, unknown: false });
   });
 
-  it('keeps a readable live event in the replica and presentation row path', () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('keeps a readable live event in the replica and presentation row path', () => {
     const replica = createChannelReplicaStore();
     const channelId = 'c0.project';
     const selfId = 'human:notification-event:1';

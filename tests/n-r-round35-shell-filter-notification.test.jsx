@@ -136,7 +136,8 @@ describe('N-R round 35 public shell/composer/notification contracts', () => {
     expect(selection).toMatchObject({ actorId: 'agent:manual', source: 'manual' });
   });
 
-  it('revokes a following notification lease when the real surface leaves, even at the physical tail', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('revokes a following notification lease when the real surface leaves, even at the physical tail', async () => {
     const selfId = 'human:nr-round35:1';
     const channelId = 'c0.project';
     const runtime = createChannelFeedRuntime({

@@ -3,7 +3,6 @@ import {
   createConversationPresentation,
   projectTimeline,
 } from '../../model/conversation-presentation.js';
-import { usePresentationArrivalReceipt } from './useLiveArrivalReceipts.js';
 import { READING_MODE, useTimelineReading } from './useTimelineReading.js';
 
 // Rows reach the list as the replica holds them. Older history needs no
@@ -41,7 +40,6 @@ export function useConversationProjection({
   messageListKey,
   timelineLocalEchoes,
   surfaceVisible,
-  onTailCaughtUp,
 }) {
   const presentationRef = useRef(null);
   if (!presentationRef.current) presentationRef.current = createConversationPresentation();
@@ -77,16 +75,6 @@ export function useConversationProjection({
     history,
     historyViewSpec,
     surfaceVisible,
-    onTailCaughtUp,
-  });
-
-  const livePresentationArrivals = usePresentationArrivalReceipt({
-    state,
-    viewKey: messageListKey,
-    surfaceVisible,
-    sourceRevision: projection.presentation?.sourceRevision,
-    presentation: projection.presentation,
-    presentationOwner: presentationRef.current,
   });
 
   const candidate = projection.presentation.currentEntryCandidate;
@@ -98,6 +86,5 @@ export function useConversationProjection({
     viewport,
     latestRowID,
     browsingExpandedSlots,
-    livePresentationArrivals,
   };
 }

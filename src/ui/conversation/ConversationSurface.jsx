@@ -41,7 +41,6 @@ export function ConversationSurface({
   onRequestCapability,
   access = '',
   surfaceVisible = false,
-  onTailCaughtUp,
   onResolve,
   onCancel,
   onTaskControl,
@@ -129,7 +128,6 @@ export function ConversationSurface({
     messageListKey,
     timelineLocalEchoes,
     surfaceVisible,
-    onTailCaughtUp,
   });
   const filterableAgents = useMemo(() => roster.filter((row) => row.kind === 'agent'), [roster]);
   const rosterActorIDs = useMemo(() => new Set(filterableAgents.map((row) => row.id)), [filterableAgents]);

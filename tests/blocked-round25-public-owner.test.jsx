@@ -317,7 +317,8 @@ describe('A-D round 25 public-owner evidence', () => {
     runtime.destroy();
   });
 
-  it('[AD-288] validates persisted cursor facts against the active authority tuple', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('[AD-288] validates persisted cursor facts against the active authority tuple', async () => {
     // 用户能力：旧 principal/world 的持久化事实不能污染当前世界。
     // 不变量：cursor restore 由当前 authority tuple 校验；公开 owner：prepareLocalReplica/historyFor。
     const principal = 'round25-authority-principal';
@@ -332,7 +333,8 @@ describe('A-D round 25 public-owner evidence', () => {
     runtime.destroy();
   });
 
-  it('[AD-289] clamps restored cursor facts to the current channel head', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('[AD-289] clamps restored cursor facts to the current channel head', async () => {
     // 用户能力：恢复的 future cursor 不能把不存在的消息标成已读。
     // 不变量：恢复 high-water 不得超过当前 ledger head；公开 owner：ChannelFeedRuntime.historyFor。
     const principal = 'round25-clamp-principal';
@@ -440,7 +442,8 @@ describe('A-D round 25 public-owner evidence', () => {
     runtime.destroy();
   });
 
-  it('[AD-284] retains an unvisited sibling instead of collapsing identity receipts into high-water', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('[AD-284] retains an unvisited sibling instead of collapsing identity receipts into high-water', async () => {
     // 用户能力：只确认 visible identities 时，unvisited sibling 仍未读。
     // 不变量：sparse identity acknowledgement 不能退化成 boundary-only ack；公开 owner：acknowledgeNotifications/unreadFor。
     const { runtime, snapshot } = await readyRuntime({ boot: 'round25-sparse-boot' });

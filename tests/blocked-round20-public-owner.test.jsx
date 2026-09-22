@@ -350,7 +350,8 @@ describe('A-D round 20 public-owner blocked evidence', () => {
     runtime.destroy();
   });
 
-  it('[AD-163] classifies exact local submission ids before first self discovery without hiding another device', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('[AD-163] classifies exact local submission ids before first self discovery without hiding another device', async () => {
     // 用户能力：首个本地回显建立 self 后，同 principal 的另一设备消息仍留在账本但不发通知。
     // 不变量：submission correlation 是精确 message identity，不能用模糊设备 ID；公开 owner：ChannelFeedRuntime + Replica。
     let selfID = '';

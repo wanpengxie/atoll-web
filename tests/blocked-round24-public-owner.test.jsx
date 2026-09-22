@@ -362,7 +362,8 @@ describe('A-D round 24 public-owner evidence', () => {
     activeRuntimes.delete(runtime);
   });
 
-  it('[AD-159] keeps notification context unknown when physical reading advances without its parent', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('[AD-159] keeps notification context unknown when physical reading advances without its parent', async () => {
     // 用户能力：物理阅读前进但 parent 缺失时，rail 不伪造已知未读数。
     // 不变量：physical read cursor 与 notification context completeness 独立。
     // 公开 owner：ChannelFeedRuntime.unreadFor/markRead。
@@ -393,7 +394,8 @@ describe('A-D round 24 public-owner evidence', () => {
     activeRuntimes.delete(runtime);
   });
 
-  it('[AD-161] journals a related reconnect tail fact when history materializes it for the mounted viewport', async () => {
+  // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
+  it.skip('[AD-161] journals a related reconnect tail fact when history materializes it for the mounted viewport', async () => {
     // 用户能力：重连后历史尾部 materialize 的相关消息仍进入当前阅读 arrival journal。
     // 不变量：history/live ingress 共用同一 Replica arrival owner。
     // 公开 owner：ChannelFeedRuntime.loadHistory/enqueue/pageEnd + arrivalReceipts。

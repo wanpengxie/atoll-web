@@ -38,7 +38,9 @@ const DEFINITIVE_HISTORY_ERRORS = new Set([
   'forbidden', 'not_member', 'channel_not_found', 'channel_retired', 'access_denied',
 ]);
 const IDLE_DEMAND = Object.freeze({ phase: 'idle', error: '' });
-const NOTIFICATION_LEASE_REVOKE = 'notification-lease-revoke';
+// Scrolling settles this long after the last scroll event; the rows on
+// screen then are what the reader has seen.
+const SEEN_SETTLE_MS = 200;
 
 let activationSequence = 0;
 
@@ -68,7 +70,6 @@ export function useTimelineReading({
   history,
   historyViewSpec,
   surfaceVisible = false,
-  onTailCaughtUp,
 }) {
   const rows = snapshot.rows;
   const firstItemIndex = Number(snapshot.firstItemIndex || 1);
@@ -99,7 +100,7 @@ export function useTimelineReading({
   const atBottomRef = useRef(true);
   const portRef = useRef(null);
   const rangeRef = useRef({ known: false, start: 0, end: 0 });
-  const seenTailRef = useRef('');
+  const seenTimerRef = useRef(null);
   const inputAtRef = useRef(0);
   const movedUpRef = useRef(false);
   const lastTopRef = useRef(0);
@@ -255,6 +256,11 @@ export function useTimelineReading({
             movedUpRef.current = true;
           }
           lastTopRef.current = top;
+          if (seenTimerRef.current) globalThis.clearTimeout(seenTimerRef.current);
+          seenTimerRef.current = globalThis.setTimeout(() => {
+            seenTimerRef.current = null;
+            reportOnScreenRef.current(node);
+          }, SEEN_SETTLE_MS);
           const far = node.scrollHeight - node.clientHeight - top > FAR_FROM_BOTTOM_SCREENS * node.clientHeight;
           if (far !== farRef.current) {
             farRef.current = far;
@@ -267,6 +273,8 @@ export function useTimelineReading({
         node.addEventListener('keydown', onInput);
         node.addEventListener('pointerdown', onInput);
         scrollerCleanupRef.current = () => {
+          if (seenTimerRef.current) globalThis.clearTimeout(seenTimerRef.current);
+          seenTimerRef.current = null;
           node.removeEventListener('scroll', onScroll);
           node.removeEventListener('wheel', onInput);
           node.removeEventListener('touchmove', onInput);
@@ -342,7 +350,6 @@ export function useTimelineReading({
     movedUpRef.current = false;
     farRef.current = false;
     setFarFromBottomState(false);
-    seenTailRef.current = '';
     rangeRef.current = { known: false, start: 0, end: 0 };
     scheduler.token = null;
     scheduler.attempts = 0;
@@ -394,133 +401,57 @@ export function useTimelineReading({
     historyStatus.hasOlder, historyStatus.beforeSeq, historyStatus.completedPages,
   ]);
 
-  // ---- unseen --------------------------------------------------------------
+  // ---- read position and unread -------------------------------------------
 
-  const tailID = String(rows.at(-1)?.id || '');
-  if (mode === READING_MODE.following || !seenTailRef.current) seenTailRef.current = tailID;
-  const unseen = useMemo(() => {
-    if (mode !== READING_MODE.browsing) return 0;
-    const seenIndex = rows.findIndex((row) => String(row?.id || '') === seenTailRef.current);
-    return seenIndex < 0 ? 0 : rows.length - 1 - seenIndex;
-  }, [mode, rows]);
+  // The feed keeps, per channel, how far the reader has read (see
+  // channel-feed-runtime markSeen / unreadRoots). This owner only reports what
+  // was on screen; the unfiltered "all" view also clears rows not related to
+  // the reader, any other view only related ones.
+  const allView = String(historyViewSpec?.scope || '') === 'all'
+    && Number(historyViewSpec?.actorFilter?.size || 0) === 0;
+  const seenOptionsRef = useRef({ all: allView });
+  seenOptionsRef.current = { all: allView };
+  const reportSeen = useCallback((seq) => {
+    if (!(seq > 0) || !surfaceVisibleRef.current || !pageVisible()) return;
+    historyRef.current?.markSeen?.(seq, seenOptionsRef.current);
+  }, []);
+  const reportOnScreenRef = useRef(() => {});
+  reportOnScreenRef.current = (node) => {
+    if (!node?.isConnected) return;
+    const view = node.getBoundingClientRect();
+    const seqByID = new Map(rowsRef.current.map((row) => [String(row?.id || ''), row]));
+    let high = 0;
+    for (const element of node.querySelectorAll('[data-presentation-row-id]')) {
+      const rect = element.getBoundingClientRect();
+      if (rect.height <= 0 || rect.bottom <= view.top || rect.top >= view.bottom) continue;
+      const row = seqByID.get(element.dataset.presentationRowId);
+      if (row && row.local !== true && !row.localState) high = Math.max(high, Number(row.seqHigh || 0));
+    }
+    reportSeen(Math.min(high, Number(statusRef.current?.headSeq || 0)));
+  };
 
-  // ---- tail caught up (read + notification confirmation) -------------------
-
-  const tailCallbackRef = useRef(onTailCaughtUp);
-  tailCallbackRef.current = onTailCaughtUp;
-  const receiptRef = useRef({ positive: null, epoch: 0 });
-  const scope = String(historyViewSpec?.scope || '');
-  const actorFilterCount = Number(historyViewSpec?.actorFilter?.size || 0);
   const generation = Number(historyStatus.generation || 0);
   const headSeq = Number(historyStatus.headSeq || 0);
-  const authorityRevision = Number(historyStatus.notificationAuthorityRevision || 0);
-  const presentationRevision = Number(historyStatus.presentationRevision || 0);
-  const sourceRevision = Number(snapshot.sourceRevision || 0);
   const highSeq = installedHighSeq(rows, headSeq);
-  const caughtUp = mode === READING_MODE.following
-    && atBottom
-    && surfaceVisible === true
-    && documentVisible
-    && historyStatus.attached === true
-    && historyStatus.messageCurrent === true
-    && generation > 0
-    && sourceRevision >= presentationRevision
-    && highSeq > 0;
-
+  // At the bottom of a visible page the reader has seen the newest row.
   useLayoutEffect(() => {
-    const callback = tailCallbackRef.current;
-    if (typeof callback !== 'function') return;
-    const receipts = receiptRef.current;
-    const previous = receipts.positive;
-    if (caughtUp) {
-      if (previous
-        && previous.installedHighSeq === highSeq
-        && previous.generation === generation
-        && previous.authorityRevision === authorityRevision
-        && previous.scope === scope
-        && previous.actorFilterCount === actorFilterCount) return;
-      if (!previous) receipts.epoch += 1;
-      const range = rangeRef.current;
-      const first = firstRef.current;
-      const visibleRowIDs = Object.freeze(range.known
-        ? rows.slice(Math.max(0, range.start - first), Math.max(0, range.end - first) + 1)
-          .map((row) => String(row?.id || '')).filter(Boolean)
-        : [tailID].filter(Boolean));
-      const owner = Object.freeze({ channelId: channelID, viewKey, activationID, generation });
-      const receipt = Object.freeze({
-        channelId: channelID,
-        viewKey,
-        activationID,
-        authority: historyStatus.authority,
-        owner,
-        inputEpoch: receipts.epoch,
-        captured: Object.freeze({
-          presentationRevision,
-          sourceRevision,
-          installedHighSeq: highSeq,
-          visibleRowIDs,
-        }),
-        caughtUp: true,
-        settled: true,
-        scope,
-        actorFiltered: actorFilterCount > 0,
-        actorFilterCount,
-        generation,
-        authorityRevision,
-        cause: 'presented-follow',
-        sourceRevision,
-        presentationRevision,
-        installedHighSeq: highSeq,
-        tailID,
-        visibleRowIDs,
-        atTail: true,
-        following: true,
-        surfaceVisible: true,
-        physicalSeq: scope === 'all' && actorFilterCount === 0 ? highSeq : 0,
-        boundary: highSeq,
-      });
-      receipts.positive = receipt;
-      callback(receipt);
-      return;
-    }
-    if (!previous) return;
-    receipts.positive = null;
-    receipts.epoch += 1;
-    callback(Object.freeze({
-      ...previous,
-      caughtUp: false,
-      atTail: false,
-      following: false,
-      surfaceVisible: false,
-      physicalSeq: 0,
-      boundary: 0,
-      kind: NOTIFICATION_LEASE_REVOKE,
-      reason: surfaceVisible === true && documentVisible ? 'physical-leave' : 'surface-hidden',
-      inputEpoch: receipts.epoch,
-      cause: '',
-    }));
-  });
+    if (mode !== READING_MODE.following || !atBottom || !surfaceVisible || !documentVisible) return;
+    reportSeen(highSeq);
+  }, [allView, atBottom, documentVisible, highSeq, mode, reportSeen, surfaceVisible]);
 
-  useLayoutEffect(() => () => {
-    const receipts = receiptRef.current;
-    const previous = receipts.positive;
-    if (!previous || typeof tailCallbackRef.current !== 'function') return;
-    receipts.positive = null;
-    receipts.epoch += 1;
-    tailCallbackRef.current(Object.freeze({
-      ...previous,
-      caughtUp: false,
-      atTail: false,
-      following: false,
-      surfaceVisible: false,
-      physicalSeq: 0,
-      boundary: 0,
-      kind: NOTIFICATION_LEASE_REVOKE,
-      reason: 'activation-cleanup',
-      inputEpoch: receipts.epoch,
-      cause: '',
-    }));
-  }, [activationID]);
+  // "N 条新动态": unread rows of this view, shown while not at the bottom.
+  // Unread is defined by the feed's read position, so history loaded above
+  // the reader, the reader's own messages and rows already read never count.
+  const unreadRoots = history?.unreadRoots;
+  const unseen = useMemo(() => {
+    if (mode !== READING_MODE.browsing || !unreadRoots) return 0;
+    let count = 0;
+    for (const row of rows) {
+      const id = String(row?.id || '');
+      if (unreadRoots.related?.has(id) || unreadRoots.other?.has(id)) count += 1;
+    }
+    return count;
+  }, [mode, rows, unreadRoots]);
 
   // ---- surface-facing summary ----------------------------------------------
 
@@ -529,7 +460,7 @@ export function useTimelineReading({
     ? (rows.length > 0 || historyStatus.hasOlder === true ? 'readable' : 'empty-known')
     : historyStatus.error && rows.length === 0 ? 'error' : 'pending';
   const historyBoundary = attached && historyStatus.hasOlder === false && demand.phase === 'idle'
-    ? Object.freeze({ kind: 'exhausted', generation, actorFiltered: actorFilterCount > 0 })
+    ? Object.freeze({ kind: 'exhausted', generation, actorFiltered: Number(historyViewSpec?.actorFilter?.size || 0) > 0 })
     : null;
 
   return useMemo(() => Object.freeze({
