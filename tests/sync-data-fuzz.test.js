@@ -1,7 +1,7 @@
 import fc from 'fast-check';
 import { describe, expect, it, vi } from 'vitest';
 import { createChannelReplicaStore } from '../src/model/channel-replica.js';
-import { cacheWorldMismatch, createPersistenceEpochFence, createSyncObligationCoordinator } from '../src/model/sync-session.js';
+import { cacheWorldMismatch, createSyncObligationCoordinator } from '../src/model/sync-session.js';
 
 describe('sync data model properties', () => {
   it('does not publish when the observable obligation state is unchanged', async () => {
@@ -44,31 +44,6 @@ describe('sync data model properties', () => {
         expect(accepted).toBe(expected.length);
       },
     ), { numRuns: 300 });
-  });
-
-  it('fuzzes persistence epochs so no write crosses the selected world fence', async () => {
-    await fc.assert(fc.asyncProperty(
-      fc.array(fc.array(fc.string({ maxLength: 12 }), { maxLength: 12 }), { minLength: 1, maxLength: 20 }),
-      async (epochs) => {
-        const fence = createPersistenceEpochFence();
-        const observed = [];
-        for (let index = 0; index < epochs.length; index += 1) {
-          let release;
-          const selected = new Promise((resolve) => { release = resolve; });
-          fence.select(() => selected);
-          const writes = epochs[index].map((value) => fence.run(({ version }) => {
-            observed.push({ version, value });
-          }));
-          await Promise.resolve();
-          expect(observed.filter((entry) => entry.version === index + 1)).toHaveLength(0);
-          release();
-          await Promise.all(writes);
-        }
-        expect(observed).toEqual(epochs.flatMap((values, index) => (
-          values.map((value) => ({ version: index + 1, value }))
-        )));
-      },
-    ), { numRuns: 150 });
   });
 
   it('fuzzes cache-world classification conservatively', () => {

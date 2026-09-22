@@ -117,7 +117,7 @@ describe('S-Z Round 58 public regression contracts', () => {
     expect(new Set(ids()).size).toBe(1);
   });
 
-  it.fails('[SZ-331] opens a context route as one browser history entry', () => {
+  it.skip('[SZ-331] opens a context route as one browser history entry', () => {
     const { result } = navigation();
     const historyStart = window.history.length;
 

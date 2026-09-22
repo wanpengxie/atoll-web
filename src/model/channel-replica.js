@@ -1232,8 +1232,61 @@ function openCache(indexedDB) {
       if (!db.objectStoreNames.contains('rows')) db.createObjectStore('rows', { keyPath: ['owner', 'channelId', 'seq'] });
       if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta', { keyPath: ['owner', 'channelId'] });
     };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error || new Error('replica cache open failed'));
+    // Another page holding an older version open must not hang every read
+    // and write behind this open: the cache degrades to memory instead.
+    let settled = false;
+    request.onblocked = () => {
+      if (settled) return;
+      settled = true;
+      resolve(null);
+    };
+    request.onsuccess = () => {
+      if (settled) { request.result.close(); return; }
+      settled = true;
+      resolve(request.result);
+    };
+    request.onerror = () => {
+      if (settled) return;
+      settled = true;
+      reject(request.error || new Error('replica cache open failed'));
+    };
+  });
+}
+
+// Rows are keyed [owner, channelId, seq]. A longer array with an equal prefix
+// sorts after its prefix, and an array sorts after every string or number, so
+// these bounds select exactly one owner's (or one channel's) rows.
+function ownerRange(owner) {
+  return globalThis.IDBKeyRange?.bound([owner], [owner, []]);
+}
+
+function channelRange(owner, channelId, beforeSeq = Number.MAX_SAFE_INTEGER) {
+  return globalThis.IDBKeyRange?.bound([owner, channelId, 0], [owner, channelId, beforeSeq], false, true);
+}
+
+// Walk one channel's rows newest-first below `beforeSeq`, stopping after
+// `count` rows. Only the rows a page needs cross into the page thread.
+function readChannelDescending(db, owner, channelId, beforeSeq, count) {
+  return new Promise((resolve, reject) => {
+    const rows = [];
+    const request = db.transaction('rows', 'readonly').objectStore('rows')
+      .openCursor(channelRange(owner, channelId, beforeSeq), 'prev');
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor || rows.length >= count) { resolve(rows); return; }
+      rows.push(cursor.value);
+      cursor.continue();
+    };
+    request.onerror = () => reject(request.error || new Error('replica cache read failed'));
+  });
+}
+
+function readChannelOldestSeq(db, owner, channelId) {
+  return new Promise((resolve, reject) => {
+    const request = db.transaction('rows', 'readonly').objectStore('rows')
+      .openCursor(channelRange(owner, channelId), 'next');
+    request.onsuccess = () => resolve(numeric(request.result?.value?.seq));
+    request.onerror = () => reject(request.error || new Error('replica cache read failed'));
   });
 }
 
@@ -1245,7 +1298,8 @@ export function replicaResumeSnapshot(meta) {
 export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } = {}) {
   let owner = '';
   let ownerEpoch = 0;
-  let dbPromise = openCache(indexedDB);
+  // An unopenable cache is a memory cache, not a failed page.
+  let dbPromise = openCache(indexedDB).catch(() => null);
   let meta = new Map();
   const quotaBounds = new Map();
   let operationTail = Promise.resolve();
@@ -1306,6 +1360,7 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
         channelId,
         seq,
         row: entry.row,
+        ...(entry.redacted ? { redacted: true } : {}),
       });
     }
     for (const row of incoming) {
@@ -1343,7 +1398,8 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
         .filter((row) => row?.channel_id)
         .map((row) => ({ owner: operationOwner, channelId: row.channel_id, seq: numeric(row.seq), row }));
     }
-    const records = await requestResult(db.transaction('rows', 'readonly').objectStore('rows').getAll());
+    const records = await requestResult(db.transaction('rows', 'readonly').objectStore('rows')
+      .getAll(ownerRange(operationOwner)));
     assertOwner(operationOwner, epoch);
     return records.filter((entry) => entry.owner === operationOwner);
   }
@@ -1469,7 +1525,8 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
     const byChannel = new Map();
     for (const entry of physical) {
       const channel = byChannel.get(entry.channelId) || [];
-      channel.push({ ...entry, row: redactSensitive(entry.row) });
+      const { row, changed } = sanitizedCacheRow(entry.row);
+      channel.push({ ...entry, row, redacted: changed });
       byChannel.set(entry.channelId, channel);
     }
 
@@ -1505,19 +1562,28 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
       return;
     }
 
+    // Most opens find nothing to repair. Only rows that fall outside a quota
+    // window or still carry unredacted fields are rewritten; the rest is
+    // left exactly where it is.
     const transaction = db.transaction(['rows', 'meta'], 'readwrite');
     const completion = transactionDone(transaction);
     try {
       const rowsStore = transaction.objectStore('rows');
       const metaStore = transaction.objectStore('meta');
-      for (const entry of physical) rowsStore.delete([operationOwner, entry.channelId, numeric(entry.seq)]);
       for (const [channelId, replacement] of targets) {
-        for (const entry of replacement.target) rowsStore.put({
-          owner: operationOwner,
-          channelId,
-          seq: numeric(entry.seq),
-          row: structuredClone(redactSensitive(entry.row)),
-        });
+        const kept = new Set(replacement.target.map((entry) => numeric(entry.seq)));
+        for (const entry of replacement.existing) {
+          if (!kept.has(numeric(entry.seq))) rowsStore.delete([operationOwner, channelId, numeric(entry.seq)]);
+        }
+        for (const entry of replacement.target) {
+          if (!entry.redacted) continue;
+          rowsStore.put({
+            owner: operationOwner,
+            channelId,
+            seq: numeric(entry.seq),
+            row: structuredClone(entry.row),
+          });
+        }
         metaStore.put({
           owner: operationOwner,
           channelId,
@@ -1542,18 +1608,27 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
     }
   }
 
+  let ownerSelection = null;
   function ensureOwner(principalId, { world = '' } = {}) {
     const selectedOwner = `${String(principalId || '')}\u0000${String(world || '')}`;
+    // Re-selecting the owner already selected keeps what it holds: a
+    // reconnect to the same world is not a reason to forget the snapshot or
+    // to read the store again.
+    if (selectedOwner === owner && ownerSelection) {
+      return ownerSelection.then(() => ({ changed: false, boot: world, meta: new Map(meta) }));
+    }
     const epoch = ++ownerEpoch;
     owner = selectedOwner;
+    // A different owner's facts are not this owner's.
     meta = new Map();
     quotaBounds.clear();
-    return enqueue(async () => {
+    const selection = enqueue(async () => {
       const db = await dbPromise;
       assertOwner(selectedOwner, epoch);
       if (!db) meta = new Map(memoryForOwner().meta);
       else {
-        const entries = await requestResult(db.transaction('meta', 'readonly').objectStore('meta').getAll());
+        const entries = await requestResult(db.transaction('meta', 'readonly').objectStore('meta')
+          .getAll(ownerRange(selectedOwner)));
         assertOwner(selectedOwner, epoch);
         for (const entry of entries) if (entry.owner === selectedOwner) {
           meta.set(entry.channelId, copyMeta(entry.value));
@@ -1562,6 +1637,9 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
       await reconcileOwnerRows(db, selectedOwner, epoch);
       return { changed: false, boot: world, meta: new Map(meta) };
     });
+    ownerSelection = selection;
+    selection.catch(() => { if (ownerSelection === selection) ownerSelection = null; });
+    return selection;
   }
 
   async function saveRowsNow(rows, { coverage } = {}, operationOwner, epoch) {
@@ -1716,42 +1794,15 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
       }
       available.sort((left, right) => numeric(right.seq) - numeric(left.seq));
     } else {
-      const records = await requestResult(db.transaction('rows', 'readonly').objectStore('rows').getAll());
-      const ownedRecords = records.filter((entry) => entry.owner === operationOwner);
-      const sanitizedRecords = [];
-      for (const entry of ownedRecords) {
-        const { row, changed } = sanitizedCacheRow(entry.row);
-        sanitizedRecords.push({ entry, row, changed });
-      }
-      for (const { entry } of sanitizedRecords) {
-        if (entry.channelId !== channelId) continue;
-        const seq = numeric(entry.seq);
-        physicalOldestSeq = physicalOldestSeq ? Math.min(physicalOldestSeq, seq) : seq;
-      }
-      const legacyRows = sanitizedRecords.filter(({ changed }) => changed);
-      if (legacyRows.length) {
-        if (epoch !== ownerEpoch || operationOwner !== owner) {
-          throw Object.assign(new Error('replica cache owner changed'), { code: 'cache_owner_changed' });
-        }
-        const migration = db.transaction('rows', 'readwrite');
-        for (const { entry, row } of legacyRows) migration.objectStore('rows').put({ ...entry, row });
-        try {
-          await new Promise((resolve, reject) => {
-            migration.oncomplete = resolve;
-            migration.onabort = migration.onerror = () => reject(migration.error || new Error('replica cache redaction migration failed'));
-          });
-        } catch (error) {
-          if (isQuotaError(error)) throw cacheUnavailableError();
-          throw error;
-        }
-        if (epoch !== ownerEpoch || operationOwner !== owner) {
-          throw Object.assign(new Error('replica cache owner changed'), { code: 'cache_owner_changed' });
-        }
-      }
-      available = sanitizedRecords
-        .filter(({ entry }) => entry.channelId === channelId && entry.seq < before)
-        .sort(({ entry: left }, { entry: right }) => right.seq - left.seq)
-        .map(({ row }) => row);
+      // One page plus one row answers both "what is on this page" and "is
+      // there anything older below it"; the channel's oldest row closes EOF.
+      const [records, oldestSeq] = await Promise.all([
+        readChannelDescending(db, operationOwner, channelId, before, maximum + 1),
+        readChannelOldestSeq(db, operationOwner, channelId),
+      ]);
+      if (epoch !== ownerEpoch || operationOwner !== owner) throw Object.assign(new Error('replica cache owner changed'), { code: 'cache_owner_changed' });
+      physicalOldestSeq = oldestSeq;
+      available = records.map((entry) => sanitizedCacheRow(entry.row).row);
     }
     const selected = [];
     let bytes = 0;
@@ -1837,6 +1888,10 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
     ensureOwner, saveRows, readBefore, clear,
     saveCoverage: (channelId, lowSeq, highSeq) => saveRows([], { coverage: { channelId, lowSeq, highSeq } }),
     metaSnapshot: () => new Map(meta),
+    // The snapshot only speaks for the owner it was read for.
+    metaSnapshotFor: (principalId, world) => (
+      owner === `${String(principalId || '')}\u0000${String(world || '')}` ? new Map(meta) : new Map()
+    ),
     destroy: async () => { const db = await dbPromise; db?.close(); dbPromise = Promise.resolve(null); },
   });
 }

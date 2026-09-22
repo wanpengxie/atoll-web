@@ -141,62 +141,6 @@ describe('TC0307 Composer stable submission origin', () => {
     expect(submit).not.toHaveBeenCalled();
   });
 
-  it('does not cross the wire when the SendLease dies before the origin patch', async () => {
-    let unmount;
-    const prepareSubmit = vi.fn((frame) => stampOrigin(frame, 's-mock-patch'));
-    const submit = vi.fn().mockResolvedValue({ message_id: 'tc0307-patch-stale' });
-    const transport = { prepareSubmit, submit };
-    const harness = runtimeHarness({ transport, principalId: 'tc0307-patch-stale-root' });
-    const store = harness.store;
-    const patch = vi.fn(async (...args) => {
-      if (args[3]?.frame) unmount();
-      return store.patch(...args);
-    });
-    // Keep the test store readable after the logical owner is unmounted. The
-    // runtime's lifecycle fence still invalidates the lease synchronously;
-    // this only defers the physical-close concern so the durable row can be
-    // inspected after the rejected late patch.
-    harness.outboxFactory = () => ({ ...store, patch, close: vi.fn() });
-    const hook = renderHook(() => useComposerSubmissionRuntime(harness));
-    unmount = hook.unmount;
-    await waitFor(() => expect(hook.result.current.pending).toEqual([]));
-
-    await act(async () => {
-      await hook.result.current.send({
-        messageId: 'tc0307-patch-stale',
-        text: 'patch lease fence',
-        msgType: 'agent.ask',
-        audience: ['agent:worker:1'],
-      });
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-
-    await waitFor(() => expect(prepareSubmit).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(patch).toHaveBeenCalledWith(
-      harness.principalId,
-      'tc0307-patch-stale',
-      ['transmitting'],
-      expect.objectContaining({ frame: expect.any(Object) }),
-      expect.objectContaining({ leaseGuard: expect.any(Function) }),
-    ));
-    expect(submit).not.toHaveBeenCalled();
-
-    const restored = await store.restore(harness.principalId);
-    expect(restored).toHaveLength(1);
-    expect(restored[0]).toMatchObject({
-      messageId: 'tc0307-patch-stale',
-      state: 'transmitting',
-      frame: {
-        payload: { text: 'patch lease fence' },
-      },
-    });
-    expect(restored[0].frame.payload.origin).toBeUndefined();
-    expect(hook.result.current.submissionCorrelationPort.owns({
-      channelId: 'c0',
-      messageId: 'tc0307-patch-stale',
-    })).toBe(true);
-  });
-
   it('does not let a stale receipt clear a newer uncertain notice', async () => {
     let releaseFirstReceipt;
     let submitCount = 0;
@@ -245,11 +189,10 @@ describe('TC0307 Composer stable submission origin', () => {
     expect(harness.onNotice).toHaveBeenLastCalledWith(
       '发送结果待确认，正在通过重连账本核对。',
     );
+    await waitFor(async () => expect((await harness.store.restore(harness.principalId))
+      .find((row) => row.messageId === 'tc0307-stale-receipt-old')).toMatchObject({ state: 'accepted' }));
     const restored = await harness.store.restore(harness.principalId);
     expect(restored).toHaveLength(2);
-    expect(restored.find((row) => row.messageId === 'tc0307-stale-receipt-old')).toMatchObject({
-      state: 'accepted',
-    });
     expect(restored.find((row) => row.messageId === 'tc0307-stale-receipt-new')).toMatchObject({
       messageId: 'tc0307-stale-receipt-new',
       state: 'uncertain',

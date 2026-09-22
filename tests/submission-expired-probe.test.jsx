@@ -81,7 +81,7 @@ describe('a submission carrying an absolute deadline', () => {
 
     await waitFor(() => expect(result.current.pending).toEqual([]));
     expect(config.submit).not.toHaveBeenCalled();
-    expect(await config.store.restore(config.principalId)).toEqual([]);
+    await waitFor(async () => expect(await config.store.restore(config.principalId)).toEqual([]));
     config.store.close();
   });
 

@@ -334,6 +334,7 @@ function createCursorOwner(storage = globalThis.localStorage) {
     notificationIdentities.clear();
     return changed;
   };
+  // Written only when a cursor actually moves.
   const persist = () => {
     if (!authority || !storage) return;
     try {
@@ -395,8 +396,13 @@ function createCursorOwner(storage = globalThis.localStorage) {
     },
     resetReads() { reads.clear(); notifications.clear(); notificationIdentities.clear(); persist(); },
     read: (channelId) => reads.get(channelId) || 0,
-    markRead(channelId, seq) { const next = Math.max(reads.get(channelId) || 0, historyNumeric(seq)); reads.set(channelId, next); persist(); return next; },
-    baselineRead(channelId, seq) { if (!reads.has(channelId)) reads.set(channelId, historyNumeric(seq)); persist(); },
+    markRead(channelId, seq) {
+      const current = reads.get(channelId) || 0;
+      const next = Math.max(current, historyNumeric(seq));
+      if (next !== current || !reads.has(channelId)) { reads.set(channelId, next); persist(); }
+      return next;
+    },
+    baselineRead(channelId, seq) { if (!reads.has(channelId)) { reads.set(channelId, historyNumeric(seq)); persist(); } },
     notificationHighWater: (channelId) => notifications.get(channelId) || 0,
     notificationIdentities: (channelId) => new Map(identitiesFor(channelId) || []),
     acknowledgeNotificationIdentities(channelId, identities = new Map()) {
@@ -427,7 +433,7 @@ function createCursorOwner(storage = globalThis.localStorage) {
       }
       persist(); return next;
     },
-    baselineNotifications(channelId, seq) { if (!notifications.has(channelId)) notifications.set(channelId, historyNumeric(seq)); persist(); },
+    baselineNotifications(channelId, seq) { if (!notifications.has(channelId)) { notifications.set(channelId, historyNumeric(seq)); persist(); } },
     clampNotificationsToHead(channelId, seq) {
       const head = historyNumeric(seq);
       const notification = notifications.get(channelId);
@@ -779,28 +785,11 @@ export function createChannelFeedRuntime(options = {}) {
   let notificationAuthorityRevision = 0;
   let releaseRailDiagnostic = null;
 
+  // The cache is only a cache: its failures are recorded, never surfaced as
+  // an application error and never allowed to stop a flow.
   const cacheError = (error) => {
-    if (!destroyed && error?.code !== 'cache_owner_changed') callback('onError', error);
+    if (!destroyed && error?.code !== 'cache_owner_changed') diagnostic('warn', 'replica_cache.failed', { error });
   };
-
-  function cacheHydrationCurrent(channelId, authority) {
-    return authorityTupleCurrent(channelId, authority);
-  }
-
-  async function hydrateCacheRows(channelId, beforeSeq, authority) {
-    try {
-      const cached = await cache.readBefore(channelId, beforeSeq, HISTORY_PAGE_SIZE, HISTORY_BATCH_BYTES);
-      if (!cacheHydrationCurrent(channelId, authority)) return false;
-      const accepted = applyRows(cached.rows, {
-        source: 'cache', persist: false, publishChange: false,
-      });
-      if (accepted.length) publish({ index: true });
-      return true;
-    } catch (error) {
-      if (cacheHydrationCurrent(channelId, authority)) cacheError(error);
-      return false;
-    }
-  }
 
   function observeAgentActivity(row, source) {
     const envelope = row?.envelope;
@@ -1387,11 +1376,11 @@ export function createChannelFeedRuntime(options = {}) {
     } catch (error) {
       if (signal?.aborted || error?.code === 'history_cancelled') return { kind: 'cancelled' };
       adapters.fail(batch);
-      // A durable cache quota failure is a recoverable source failure, not a
-      // history terminal. Let loadHistory issue the same request against the
-      // network and keep the user-facing diagnostic understandable.
-      if (batch.source === 'indexeddb' && error?.code === 'cache_unavailable') {
-        return { kind: 'cache-miss', cacheUnavailable: true };
+      // Any cache failure — quota, an unreadable store, a page that does not
+      // validate — is a miss: the same request goes to the network.
+      if (batch.source === 'indexeddb') {
+        cacheError(error);
+        return { kind: 'cache-miss', cacheUnavailable: error?.code === 'cache_unavailable' };
       }
       return { kind: 'failed', error };
     } finally {
@@ -1875,27 +1864,9 @@ export function createChannelFeedRuntime(options = {}) {
     const coverageRows = networkRows.length
       ? new Set(networkRows.map((row) => historyNumeric(row?.seq)).filter(Boolean))
       : null;
-    let persistenceError = null;
-    if (networkRows.length) {
-      const persistence = cache.saveRows(networkRows);
-      if (operation.warm) {
-        try {
-          // Warm pages are an anticipatory durable obligation. Do not install
-          // their rows into Replica, advance history status, or publish a
-          // completion until the cache write has settled. This keeps an
-          // attach/world/disconnect replacement during the await from leaking
-          // an old page into the current Replica authority.
-          await persistence;
-        } catch (error) {
-          persistenceError = error;
-          cacheError(error);
-        }
-        if (!physicalAuthorityCurrent(operation)) {
-          return { kind: 'cancelled', reason: 'stale-generation' };
-        }
-        if (persistenceError) return { kind: 'failed', error: persistenceError };
-      } else void persistence.catch(cacheError);
-    }
+    // Rows the network delivered are installed now; their cache copy is
+    // written behind them and never holds a page back, warm or not.
+    if (networkRows.length) void cache.saveRows(networkRows).catch(cacheError);
     if (!physicalAuthorityCurrent(operation)) {
       return { kind: 'cancelled', reason: 'stale-generation' };
     }
@@ -1921,7 +1892,6 @@ export function createChannelFeedRuntime(options = {}) {
     operation.rawResult = Object.freeze({
       kind: 'page', result, rows: Object.freeze([...rows]),
       acceptedRows: accepted.length,
-      persistenceError,
       receipt: physicalReceipt(batch, result, rows, accepted.length),
     });
     operation.committed = true;
@@ -2013,7 +1983,6 @@ export function createChannelFeedRuntime(options = {}) {
       kind,
       released: outcome.acceptedRows,
       revealed,
-      persistenceError: outcome.persistenceError || null,
       firstVisibleSeq: projection.firstVisibleSeq,
       projection,
     });
@@ -2105,7 +2074,6 @@ export function createChannelFeedRuntime(options = {}) {
       settled: false,
       retired: false,
       lastBatch: batch,
-      warm: request.warm === true,
     };
     attachSemanticDemand(operation, semanticDemand);
     physicalOperations.set(key, operation);
@@ -2187,7 +2155,6 @@ export function createChannelFeedRuntime(options = {}) {
     if (!key) return Promise.resolve({ kind: 'cancelled', reason: 'history-not-admitted' });
     let operation = physicalOperations.get(key);
     if (!operation || operation.retired) operation = createPhysicalOperation(channelId, request, key, semanticDemand);
-    if (request.warm === true) operation.warm = true;
     const promise = attachHistoryWaiter(operation, request, semanticDemand);
     publish();
     return promise;
@@ -2280,7 +2247,6 @@ export function createChannelFeedRuntime(options = {}) {
         // Channel-entry warm pages share the canonical physical range key
         // with a foreground request so promotion/join remains exact-once.
         beforeSeq,
-        warm: true,
         signal: record.abortController.signal,
       });
       if (!backgroundInterestCurrent(record)) {
@@ -2296,12 +2262,6 @@ export function createChannelFeedRuntime(options = {}) {
       const durableRows = await durableWarmRows(record.channelId);
       if (!backgroundInterestCurrent(record)) {
         return { kind: 'cancelled', reason: 'background-interest-stale' };
-      }
-      if (outcome.persistenceError) {
-        return {
-          kind: 'unavailable', reason: 'cache-persist-failed',
-          error: outcome.persistenceError, durableRows,
-        };
       }
       const status = historyState(record.channelId);
       if (durableRows >= WARM_CACHE_TARGET_ROWS) {
@@ -2514,8 +2474,7 @@ export function createChannelFeedRuntime(options = {}) {
       timerAcknowledgedRevision = timerRevision; activityConnected = false; activityRevision += 1;
     }
     principal = selectedPrincipal;
-    localReplicaReady = false; localReplicaError = ''; localReplicaErrorCode = '';
-    publish();
+    localReplicaError = ''; localReplicaErrorCode = '';
     if (!principal) {
       cursors.clearReadAuthority();
       localReplicaReady = true;
@@ -2523,30 +2482,73 @@ export function createChannelFeedRuntime(options = {}) {
       publish();
       return { resume: {} };
     }
+    // The page is ready on memory and the wire. The local cache is read
+    // behind it and only ever adds rows and coverage it already holds.
+    if (world) cursors.selectReadAuthority({ principalId: principal, serverBoot: world });
+    localReplicaReady = true;
+    for (const [channelId, status] of histories) refreshControlCurrent(channelId, status);
+    publish({ index: true });
+    // Settles once the cache has been folded in, for a caller that wants to
+    // know; the connection itself never waits on it.
+    await loadLocalReplica(() => !destroyed && epoch === principalEpoch, focus);
+    return { resume: replicaResumeSnapshot(cache.metaSnapshot()) };
+  }
+
+  // Select this principal/world's cache owner and fold what it holds into the
+  // live state: durable coverage, local notification context, and the rows a
+  // focused or notified channel can show before its network page lands.
+  async function loadLocalReplica(isCurrent, focus = '') {
+    let selected;
     try {
-      const selected = await cache.ensureOwner(principal, { world });
-      if (destroyed || epoch !== principalEpoch) return { resume: {} };
-      for (const [channelId, value] of selected.meta) replica.installMeta(channelId, value);
-      if (world) cursors.selectReadAuthority({ principalId: principal, serverBoot: world });
-      cursors.reconcileReads(replicaResumeSnapshot(selected.meta));
-      if (focus && selected.meta.has(focus)) {
-        const before = historyNumeric(selected.meta.get(focus)?.headSeq || selected.meta.get(focus)?.newestSeq) + 1;
-        const cached = await cache.readBefore(focus, before, HISTORY_PAGE_SIZE, HISTORY_BATCH_BYTES);
-        if (destroyed || epoch !== principalEpoch) return { resume: {} };
-        applyRows(cached.rows, { source: 'cache', persist: false, publishChange: false });
-      }
-      localReplicaReady = true;
-      for (const [channelId, status] of histories) refreshControlCurrent(channelId, status);
-      publish({ index: true });
-      return { resume: replicaResumeSnapshot(selected.meta) };
+      selected = await cache.ensureOwner(principal, { world });
     } catch (error) {
-      if (destroyed || epoch !== principalEpoch || error?.code === 'cache_owner_changed') return { resume: {} };
-      localReplicaError = error?.message || '本地缓存初始化失败';
-      localReplicaErrorCode = String(error?.code || 'cache_selection_failed');
-      callback('onError', error);
-      publish();
-      return { resume: {} };
+      if (isCurrent() && error?.code !== 'cache_owner_changed') {
+        diagnostic('warn', 'replica_cache.unavailable', { error });
+      }
+      return;
     }
+    if (!isCurrent()) return;
+    const localMeta = selected.meta;
+    for (const [channelId, value] of localMeta) {
+      const held = replica.record(channelId)?.durableCoverage || [];
+      replica.installMeta(channelId, {
+        ...value,
+        coverage: (value?.coverage || []).reduce((all, range) => mergeReplicaCoverage(all, range), held),
+      });
+    }
+    if (cursors.isReadAuthorityReady()) cursors.reconcileReads(replicaResumeSnapshot(localMeta));
+    for (const [channelId, status] of histories) {
+      if (!localMeta.has(channelId) || status.notificationContextReady === true) continue;
+      if (status.attached !== true || status.generation !== generation) continue;
+      // A grant installed before the cache answered learns its local
+      // notification context now, exactly as if the cache had been first.
+      status.notificationContextReady = true;
+      status.notificationAuthorityRevision = ++notificationAuthorityRevision;
+      if (cursors.isReadAuthorityReady()) {
+        cursors.baselineNotifications(channelId, historyNumeric(grants.get(channelId)?.head_seq));
+      }
+    }
+    publish({ index: true });
+    const hydrate = async (channelId, beforeSeq) => {
+      try {
+        const cached = await cache.readBefore(channelId, beforeSeq, HISTORY_PAGE_SIZE, HISTORY_BATCH_BYTES);
+        if (!isCurrent()) return;
+        const accepted = applyRows(cached.rows, { source: 'cache', persist: false, publishChange: false });
+        if (accepted.length) publish({ index: true });
+      } catch (error) {
+        if (isCurrent()) cacheError(error);
+      }
+    };
+    const reads = [];
+    for (const [channelId, value] of localMeta) {
+      const head = Math.max(historyNumeric(histories.get(channelId)?.headSeq), historyNumeric(value?.headSeq || value?.newestSeq));
+      if (!head) continue;
+      const focused = channelId === focus && replica.visibleNewest(channelId) === 0;
+      const notified = channelId !== focus && histories.has(channelId)
+        && cursors.notificationHighWater(channelId) < head;
+      if (focused || notified) reads.push(hydrate(channelId, head + 1));
+    }
+    await Promise.all(reads);
   }
 
   // Cache recovery remains a Feed command: the caller can request another
@@ -2613,18 +2615,10 @@ export function createChannelFeedRuntime(options = {}) {
       if (detail?.forceReset === true) status.controlCoverage = [];
       status.notificationAuthorityRevision = ++notificationAuthorityRevision;
     }
-    let selectedMeta = cache.metaSnapshot();
-    if (principal && world) {
-      let selected;
-      try {
-        selected = await cache.ensureOwner(principal, { world });
-      } catch (error) {
-        if (destroyed || epoch !== attachEpoch || error?.code === 'cache_owner_changed') return { stale: true, meta: new Map() };
-        throw error;
-      }
-      if (destroyed || epoch !== attachEpoch || generation !== nextGeneration) return { stale: true, meta: new Map() };
-      selectedMeta = selected.meta;
-    }
+    // The grant is installed from the receipt and from what memory already
+    // holds. The cache owner for this world is selected behind it; whatever
+    // it adds is folded in by loadLocalReplica, never waited for here.
+    const selectedMeta = cache.metaSnapshotFor?.(principal, world) || new Map();
     if (principal && world) cursors.selectReadAuthority({ principalId: principal, serverBoot: world });
     grants.clear();
     const focus = String(detail.focus || activeChannelRef.current || '');
@@ -2669,32 +2663,7 @@ export function createChannelFeedRuntime(options = {}) {
         cursors.clampNotificationsToHead(channelId, grantedHeadSeq);
       }
     }
-    let focusHydration = null;
-    if (focus && selectedMeta.has(focus) && replica.visibleNewest(focus) === 0) {
-      const head = historyNumeric(selectedMeta.get(focus)?.headSeq || selectedMeta.get(focus)?.newestSeq);
-      focusHydration = { channelId: focus, beforeSeq: head + 1 };
-    }
-    // A persisted notification obligation is a cache admission demand even
-    // when its channel is not the active focus. Reuse the existing Replica
-    // cache read/commit path; do not create a second notification hydrator or
-    // infer a count from metadata alone. New/bootstrap authorities have
-    // already been baselined above, so only a durable suffix below head is
-    // admitted here.
-    for (const [channelId, meta] of selectedMeta) {
-      if (channelId === focus || !histories.has(channelId)) continue;
-      const targetHead = Math.max(
-        historyNumeric(histories.get(channelId)?.headSeq),
-        historyNumeric(meta?.headSeq || meta?.newestSeq),
-      );
-      if (!targetHead || cursors.notificationHighWater(channelId) >= targetHead) continue;
-      const cached = await cache.readBefore(channelId, targetHead + 1, HISTORY_PAGE_SIZE, HISTORY_BATCH_BYTES);
-      if (destroyed || epoch !== attachEpoch || generation !== nextGeneration) return { stale: true, meta: selectedMeta };
-      applyRows(cached.rows, { source: 'cache', persist: false, publishChange: false });
-    }
-    // Do not consume a deferred demand until every attach-owned cache/meta
-    // await above has passed the current attach epoch fence. A replacement
-    // attach must inherit the obligation instead of losing it to a stale
-    // generation that happened to finish its cache work first.
+    // Deferred demands are this attach's to replay now: nothing above waits.
     for (const channelId of nextChannelIDs) {
       const deferred = takeDeferredHistoryRequest(channelId);
       if (deferred) replayAfterAttach.push([channelId, deferred]);
@@ -2718,22 +2687,12 @@ export function createChannelFeedRuntime(options = {}) {
     for (const [channelId, status] of histories) refreshControlCurrent(channelId, status);
     publish({ index: true });
     // A channel-entry lease may have been acquired while the wire was open
-    // but before its history grant arrived.  Start it only after this attach
-    // has selected the current cache owner and authority.
+    // but before its history grant arrived.
     startAdmittedBackgroundInterests();
-    if (focusHydration) {
-      queueMicrotask(() => {
-        void hydrateCacheRows(
-          focusHydration.channelId,
-          focusHydration.beforeSeq,
-          {
-            principalEpoch,
-            worldEpoch,
-            generation: nextGeneration,
-            attachEpoch: epoch,
-          },
-        );
-      });
+    if (principal && world) {
+      const attachPrincipalEpoch = principalEpoch;
+      void loadLocalReplica(() => !destroyed && epoch === attachEpoch
+        && principalEpoch === attachPrincipalEpoch && generation === nextGeneration, focus);
     }
     for (const [channelId, deferred] of replayAfterAttach) {
       const request = deferred?.request || deferred;

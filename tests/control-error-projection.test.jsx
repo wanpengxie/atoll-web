@@ -104,6 +104,9 @@ describe('Composer public control error projection', () => {
     }));
     await waitFor(() => expect(result.current.pending[0]).toMatchObject({ messageId, state: 'rejected' }));
     expectBounded(result.current.pending[0].error, 'control_rejected', '服务端拒绝该控制命令');
+    // The journal copy follows memory; it is eventually the same row.
+    await waitFor(async () => expect((await config.store.restore(config.principalId))
+      .find((row) => row.messageId === messageId)).toMatchObject({ state: 'rejected' }));
     const persisted = (await config.store.restore(config.principalId)).find((row) => row.messageId === messageId);
     expect(persisted).toMatchObject({ state: 'rejected', controlSubmission: true });
     expectBounded(persisted.error, 'control_rejected', '服务端拒绝该控制命令');
@@ -144,6 +147,8 @@ describe('Composer public control error projection', () => {
     const key = 'c0:request-1:cancel';
     await waitFor(() => expect(result.current.controlStates[key]?.state).toBe('error'));
     expectBounded(result.current.controlStates[key].error, 'cancel_rejected', '服务端拒绝取消命令');
+    await waitFor(async () => expect((await config.store.restore(config.principalId))
+      .find((row) => row.controlKey === key)).toMatchObject({ state: 'error' }));
     const persisted = (await config.store.restore(config.principalId)).find((row) => row.controlKey === key);
     expect(persisted).toMatchObject({ kind: 'control', state: 'error' });
     expectBounded(persisted.error, 'cancel_rejected', '服务端拒绝取消命令');

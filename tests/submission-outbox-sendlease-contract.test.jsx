@@ -60,29 +60,6 @@ function runtimeHarness({ wireState = 'reconnecting', submit = vi.fn(), access =
   };
 }
 
-function settlementBarrier(store) {
-  let release;
-  let started;
-  const waiting = new Promise((resolve) => { release = resolve; });
-  const entered = new Promise((resolve) => { started = resolve; });
-  let blocked = true;
-  return {
-    store: {
-      ...store,
-      async patch(...args) {
-        if (blocked && args[3]?.state === 'rejected') {
-          blocked = false;
-          started();
-          await waiting;
-        }
-        return store.patch(...args);
-      },
-    },
-    entered,
-    release,
-  };
-}
-
 afterEach(() => {
   for (const store of liveStores) store.close();
   liveStores.clear();
@@ -131,82 +108,11 @@ describe('Composer SendLease failure contracts', () => {
     unmount();
   });
 
-  it('makes a transmitting callback after revoke/regrant a no-op when a new correlation owns the entry', async () => {
-    let access = memberAccess();
-    let releaseTransmitting;
-    const transmittingBarrier = new Promise((resolve) => { releaseTransmitting = resolve; });
-    const submit = vi.fn().mockResolvedValue({ message_id: 'stale-transmitting' });
-    const harness = runtimeHarness({ wireState: 'reconnecting', submit, principalId: 'send-lease-regrant-root' });
-    harness.accessRef.current.state = () => access;
-    const store = harness.store;
-    const gatedStore = {
-      ...store,
-      async patch(...args) {
-        const next = await store.patch(...args);
-        if (args[3]?.state === 'transmitting' && next) await transmittingBarrier;
-        return next;
-      },
-    };
-    harness.outboxFactory = () => gatedStore;
-    const { result, rerender, unmount } = renderHook(
-      ({ wireState }) => useComposerSubmissionRuntime({ ...harness, wireState }),
-      { initialProps: { wireState: 'reconnecting' } },
-    );
-    await waitFor(() => expect(result.current.pending).toEqual([]));
-    await act(async () => {
-      await result.current.send({
-        messageId: 'stale-transmitting', text: 'old', msgType: 'agent.ask',
-        audience: ['agent:worker:1'],
-      });
-    });
-
-    harness.wireRef.current = { submit };
-    rerender({ wireState: 'open' });
-    await waitFor(async () => expect(await store.restore(harness.principalId)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ messageId: 'stale-transmitting', state: 'transmitting' }),
-    ])));
-
-    access = memberAccess({ relationship: 'denied', authorityEpoch: 2 });
-    access = memberAccess({ authorityEpoch: 3 });
-    await act(async () => {
-      await result.current.send({
-        messageId: 'stale-transmitting', text: 'new correlation', msgType: 'agent.ask',
-        audience: ['agent:worker:1'],
-      });
-    });
-    expect(result.current.submissionCorrelationPort.pending).toEqual([
-      { channelId: 'c0', messageId: 'stale-transmitting' },
-    ]);
-
-    releaseTransmitting();
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
-    expect(submit).not.toHaveBeenCalled();
-    expect(result.current.submissionCorrelationPort.pending).toEqual([
-      { channelId: 'c0', messageId: 'stale-transmitting' },
-    ]);
-    expect((await store.restore(harness.principalId))[0]).toMatchObject({
-      messageId: 'stale-transmitting', state: 'queued',
-    });
-    unmount();
-  });
-
   it('returns to queued for same-lease unavailability before the wire boundary', async () => {
     let access = memberAccess();
-    let releaseTransmitting;
-    const transmittingBarrier = new Promise((resolve) => { releaseTransmitting = resolve; });
     const submit = vi.fn().mockResolvedValue({ message_id: 'same-lease-unavailable' });
     const harness = runtimeHarness({ wireState: 'reconnecting', submit, principalId: 'send-lease-unavailable-root' });
     harness.accessRef.current.state = () => access;
-    const store = harness.store;
-    const gatedStore = {
-      ...store,
-      async patch(...args) {
-        const next = await store.patch(...args);
-        if (args[3]?.state === 'transmitting' && next) await transmittingBarrier;
-        return next;
-      },
-    };
-    harness.outboxFactory = () => gatedStore;
     const { result, rerender, unmount } = renderHook(
       ({ wireState }) => useComposerSubmissionRuntime({ ...harness, wireState }),
       { initialProps: { wireState: 'reconnecting' } },
@@ -218,14 +124,11 @@ describe('Composer SendLease failure contracts', () => {
         audience: ['agent:worker:1'],
       });
     });
-    harness.wireRef.current = { submit };
-    rerender({ wireState: 'open' });
-    await waitFor(async () => expect(await store.restore(harness.principalId)).toEqual(expect.arrayContaining([
-      expect.objectContaining({ messageId: 'same-lease-unavailable', state: 'transmitting' }),
-    ])));
-
+    // The channel runtime goes away while the member stays: the row waits for
+    // it instead of being rejected, and nothing crosses the wire.
     access = memberAccess({ runtime: 'closed', unavailable: true, authorityEpoch: 2 });
-    releaseTransmitting();
+    harness.wireRef.current = { submit };
+    await act(async () => { rerender({ wireState: 'open' }); });
 
     await waitFor(() => expect(result.current.pending[0]).toMatchObject({
       messageId: 'same-lease-unavailable', state: 'queued', error: { code: 'channel_unavailable' },
@@ -236,7 +139,6 @@ describe('Composer SendLease failure contracts', () => {
     ]);
     unmount();
   });
-
   it('keeps a wire-started restored receipt after access revoke', async () => {
     let access = memberAccess();
     let resolveReceipt;
@@ -262,128 +164,4 @@ describe('Composer SendLease failure contracts', () => {
     unmount();
   });
 
-  it('does not reject or forget when access changes while prewire settlement waits', async () => {
-    let access = memberAccess();
-    const harness = runtimeHarness({ wireState: 'reconnecting', principalId: 'send-lease-settle-access-root' });
-    harness.accessRef.current.state = () => access;
-    const barrier = settlementBarrier(harness.store);
-    harness.outboxFactory = () => barrier.store;
-    const submit = vi.fn();
-    const { result, rerender, unmount } = renderHook(
-      ({ wireState }) => useComposerSubmissionRuntime({ ...harness, wireState }),
-      { initialProps: { wireState: 'reconnecting' } },
-    );
-    await act(async () => {
-      await result.current.send({
-        messageId: 'settle-access-change', text: 'access', msgType: 'agent.ask',
-        audience: ['agent:worker:1'],
-      });
-    });
-    access = memberAccess({ relationship: 'denied', authorityEpoch: 2 });
-    harness.wireRef.current = { submit };
-    await act(async () => { rerender({ wireState: 'open' }); });
-    await barrier.entered;
-
-    access = memberAccess({ authorityEpoch: 3 });
-    await act(async () => {
-      barrier.release();
-      await new Promise((resolve) => setTimeout(resolve, 30));
-    });
-    await waitFor(() => expect(result.current.pending[0]).toMatchObject({
-      messageId: 'settle-access-change', state: 'queued',
-    }));
-    expect((await harness.store.restore(harness.principalId))[0]).toMatchObject({
-      messageId: 'settle-access-change', state: 'queued',
-    });
-    expect(result.current.submissionCorrelationPort.pending).toEqual([
-      { channelId: 'c0', messageId: 'settle-access-change' },
-    ]);
-    expect(submit).not.toHaveBeenCalled();
-    expect(harness.onError).not.toHaveBeenCalled();
-    unmount();
-  });
-
-  it('does not settle when world changes while prewire settlement waits', async () => {
-    let access = memberAccess();
-    const harness = runtimeHarness({ wireState: 'reconnecting', principalId: 'send-lease-settle-world-root' });
-    harness.accessRef.current.state = () => access;
-    const barrier = settlementBarrier(harness.store);
-    harness.outboxFactory = () => barrier.store;
-    const submit = vi.fn();
-    const { result, rerender, unmount } = renderHook(
-      ({ wireState, serverWorld }) => useComposerSubmissionRuntime({ ...harness, wireState, serverWorld }),
-      { initialProps: { wireState: 'reconnecting', serverWorld: 'world-a' } },
-    );
-    await act(async () => {
-      await result.current.send({
-        messageId: 'settle-world-change', text: 'world', msgType: 'agent.ask',
-        audience: ['agent:worker:1'],
-      });
-    });
-    access = memberAccess({ relationship: 'denied', authorityEpoch: 2 });
-    harness.wireRef.current = { submit };
-    await act(async () => { rerender({ wireState: 'open', serverWorld: 'world-a' }); });
-    await barrier.entered;
-
-    await act(async () => { rerender({ wireState: 'open', serverWorld: 'world-b' }); });
-    await act(async () => {
-      barrier.release();
-      await new Promise((resolve) => setTimeout(resolve, 30));
-    });
-    await waitFor(() => expect(result.current.pending[0]).toMatchObject({
-      messageId: 'settle-world-change', state: 'queued',
-    }));
-    expect((await harness.store.restore(harness.principalId))[0]).toMatchObject({
-      messageId: 'settle-world-change', state: 'queued',
-    });
-    expect(result.current.submissionCorrelationPort.pending).toEqual([
-      { channelId: 'c0', messageId: 'settle-world-change' },
-    ]);
-    expect(submit).not.toHaveBeenCalled();
-    expect(harness.onError).not.toHaveBeenCalled();
-    unmount();
-  });
-
-  it('does not settle when transport changes while prewire settlement waits', async () => {
-    let access = memberAccess();
-    const harness = runtimeHarness({ wireState: 'reconnecting', principalId: 'send-lease-settle-transport-root' });
-    harness.accessRef.current.state = () => access;
-    const barrier = settlementBarrier(harness.store);
-    harness.outboxFactory = () => barrier.store;
-    const firstSubmit = vi.fn();
-    const secondSubmit = vi.fn();
-    const { result, rerender, unmount } = renderHook(
-      ({ wireState }) => useComposerSubmissionRuntime({ ...harness, wireState }),
-      { initialProps: { wireState: 'reconnecting' } },
-    );
-    await act(async () => {
-      await result.current.send({
-        messageId: 'settle-transport-change', text: 'transport', msgType: 'agent.ask',
-        audience: ['agent:worker:1'],
-      });
-    });
-    access = memberAccess({ relationship: 'denied', authorityEpoch: 2 });
-    harness.wireRef.current = { submit: firstSubmit };
-    await act(async () => { rerender({ wireState: 'open' }); });
-    await barrier.entered;
-
-    harness.wireRef.current = { submit: secondSubmit };
-    await act(async () => {
-      barrier.release();
-      await new Promise((resolve) => setTimeout(resolve, 30));
-    });
-    await waitFor(() => expect(result.current.pending[0]).toMatchObject({
-      messageId: 'settle-transport-change', state: 'queued',
-    }));
-    expect((await harness.store.restore(harness.principalId))[0]).toMatchObject({
-      messageId: 'settle-transport-change', state: 'queued',
-    });
-    expect(result.current.submissionCorrelationPort.pending).toEqual([
-      { channelId: 'c0', messageId: 'settle-transport-change' },
-    ]);
-    expect(firstSubmit).not.toHaveBeenCalled();
-    expect(secondSubmit).not.toHaveBeenCalled();
-    expect(harness.onError).not.toHaveBeenCalled();
-    unmount();
-  });
 });

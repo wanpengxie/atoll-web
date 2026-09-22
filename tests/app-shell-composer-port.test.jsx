@@ -16,7 +16,7 @@
 // commands 对象引用稳定，内部路由到最近一次 useLayoutEffect 提交的 owner；port.retire()
 // 只在真正卸载时调用，迟到的调用直接拿到 composer_owner_retired 拒绝，不会被误路由。
 // 判定逐条记在 audit-output/RESTORE-MATRIX.md。
-import { act, renderHook } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { createComposerCommandPort } from '../src/ui/composer/command-port.js';
 import { useComposerCommands } from '../src/ui/composer/useComposerCommands.js';
@@ -110,13 +110,7 @@ describe('频道文件选择走 typed attachment owner', () => {
       },
       recipients: [], attachments: [], replyTarget: null, editorRevision: 4,
     };
-    const writeDraft = vi.fn(async (principalId, channelId, draft, expectedRevision) => ({
-      conflict: false,
-      record: {
-        principalId, channelId, revision: Number(expectedRevision || 0) + 1,
-        editorRevision: draft.editorRevision, draft,
-      },
-    }));
+    const putDraft = vi.fn(async () => true);
     const attachmentPort = {
       pickChannelFile: vi.fn().mockResolvedValue(resource),
       attach: vi.fn().mockResolvedValue(resource),
@@ -127,18 +121,19 @@ describe('频道文件选择走 typed attachment owner', () => {
       outboxFactory: () => ({
         restore: vi.fn().mockResolvedValue([]),
         restoreDrafts: vi.fn().mockResolvedValue([]),
-        writeDraft,
+        putDraft,
         close: vi.fn(),
       }),
     });
     const { result } = renderHook(() => useComposerCommands(config));
 
     await expect(result.current.commands.pickChannelFile({ draft: snapshot })).resolves.toEqual(resource);
-    expect(writeDraft).toHaveBeenCalledWith(
-      'root', 'c0', expect.objectContaining({ text: snapshot.text, doc: snapshot.doc }), expect.any(Number),
-    );
     expect(attachmentPort.attach).toHaveBeenCalledWith(resource, 'c0');
-    expect(writeDraft.mock.invocationCallOrder[0]).toBeLessThan(attachmentPort.attach.mock.invocationCallOrder[0]);
+    // The live editor revision is the draft's before the resource is attached;
+    // the journal copy of it follows on its own.
+    await waitFor(() => expect(putDraft).toHaveBeenCalledWith(
+      'root', 'c0', expect.objectContaining({ editorRevision: snapshot.editorRevision }),
+    ));
   });
 
   it('attaches the selected resource exactly once and leaves cancel as a no-op', async () => {

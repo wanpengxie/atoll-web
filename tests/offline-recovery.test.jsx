@@ -198,47 +198,46 @@ describe('W6 offline draft and recovery', () => {
       indexedDBImpl: flakyIndexedDB,
       IDBKeyRangeImpl: globalThis.IDBKeyRange,
     });
-    await expect(store.writeDraft('offline-root', 'c0', draft, 0)).rejects.toThrow('retryable indexeddb failure');
-    await expect(store.writeDraft('offline-root', 'c0', draft, 0)).rejects.toThrow('retryable indexeddb failure');
-    const saved = await store.writeDraft('offline-root', 'c0', { ...draft }, 0);
+    const record = { revision: 1, editorRevision: 1, draft };
+    await expect(store.putDraft('offline-root', 'c0', record)).rejects.toThrow('retryable indexeddb failure');
+    await expect(store.putDraft('offline-root', 'c0', record)).rejects.toThrow('retryable indexeddb failure');
+    await expect(store.putDraft('offline-root', 'c0', record)).resolves.toBe(true);
     expect(opens).toBe(3);
-    expect(saved).toMatchObject({
-      conflict: false,
-      record: { draft: { recipients: ['agent:survives:1'] }, editorRevision: 1 },
-    });
     expect((await store.restoreDrafts('offline-root'))[0]).toMatchObject({
       draft: { recipients: ['agent:survives:1'] }, editorRevision: 1,
     });
     store.close();
 
-    // The public submission runtime owns the optimistic editor projection. A
-    // failed durable write must not erase that dirty draft before the next
-    // explicit save retries the public Outbox port.
+    // The draft is the runtime's memory; a failing journal write neither
+    // rejects the edit nor loses it, and the next write copies it again.
     const runtimeStore = createOutboxStore({ databaseName: `runtime-retry-${crypto.randomUUID()}` });
     let runtimeWrites = 0;
     const runtimeOutbox = {
       ...runtimeStore,
       restore: vi.fn((...args) => runtimeStore.restore(...args)),
       restoreDrafts: vi.fn((...args) => runtimeStore.restoreDrafts(...args)),
-      async writeDraft(...args) {
+      async putDraft(...args) {
         runtimeWrites += 1;
         if (runtimeWrites === 1) throw new Error('retryable draft persistence failure');
-        return runtimeStore.writeDraft(...args);
+        return runtimeStore.putDraft(...args);
       },
     };
     const common = memberHarness({ outboxFactory: () => runtimeOutbox });
     const { result } = renderHook(() => useComposerSubmissionRuntime(common));
     await waitFor(() => expect(runtimeOutbox.restoreDrafts).toHaveBeenCalledOnce());
     await act(async () => {
-      await expect(result.current.updateDraft('c0', draft)).rejects.toMatchObject({ message: 'retryable draft persistence failure' });
+      await expect(result.current.updateDraft('c0', draft)).resolves.toMatchObject({
+        draft: { recipients: ['agent:survives:1'] }, editorRevision: 1,
+      });
     });
     expect(result.current.draftFor('c0')).toMatchObject({ recipients: ['agent:survives:1'], editorRevision: 1 });
-    let runtimeSaved;
     await act(async () => {
-      runtimeSaved = await result.current.updateDraft('c0', draft, { preserveEditorRevision: true });
+      await result.current.updateDraft('c0', draft, { preserveEditorRevision: true });
     });
-    expect(runtimeSaved).toMatchObject({ draft: { recipients: ['agent:survives:1'] }, editorRevision: 1 });
-    expect(result.current.draftFor('c0')).toMatchObject({ recipients: ['agent:survives:1'], editorRevision: 1 });
+    await waitFor(async () => expect((await runtimeStore.restoreDrafts('offline-root'))[0]).toMatchObject({
+      draft: { recipients: ['agent:survives:1'] }, editorRevision: 1,
+    }));
+    expect(runtimeWrites).toBe(2);
   });
 
   it('rejects renderer-only attachment URLs before any durable submission is inserted', async () => {
@@ -274,14 +273,14 @@ describe('W6 offline draft and recovery', () => {
 
   it('never restores a local-only draft attachment as though its object URL were durable', async () => {
     const store = createOutboxStore({ databaseName: `draft-local-attachment-${crypto.randomUUID()}` });
-    await store.writeDraft('offline-root', 'c0', {
+    await store.putDraft('offline-root', 'c0', { revision: 1, editorRevision: 1, draft: {
       text: '正文不入库',
       editorRevision: 1,
       attachments: [
         { name: 'local.png', preview_url: 'blob:local-only' },
         { resource_id: 'file:uploaded', name: 'uploaded.png', preview_url: 'blob:preview' },
       ],
-    }, 0);
+    } });
     const [restored] = await store.restoreDrafts('offline-root');
     expect(restored.draft).toMatchObject({
       attachments: [{ resource_id: 'file:uploaded', name: 'uploaded.png' }],

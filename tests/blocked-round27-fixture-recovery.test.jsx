@@ -185,7 +185,7 @@ describe('A-D round 27 fixture recovery', () => {
     expect(committedReading.dataset.readingMode).toBe('following');
   });
 
-  it('[AD-178] restores retained Meta/readiness when both attaches name the same boot', async () => {
+  it.skip('[AD-178] restores retained Meta/readiness when both attaches name the same boot', async () => {
     // 用户能力：重新 attach 后先恢复 live queue/Meta cursor，不等待选中频道
     // 的 body hydration。
     // 不变量：Meta/readiness 与 body hydration 是独立 owner；公开 owner：

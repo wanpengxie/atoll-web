@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { createOutboxStore } from '../../model/outbox-store.js';
+import { createOutboxStore, durableDraftBody, durableSubmissions } from '../../model/outbox-store.js';
 import {
   assessRequestOwner,
   captureRequestOwner,
@@ -7,7 +7,7 @@ import {
   requestAccessError,
 } from '../../model/request-owner.js';
 import { TYPES } from '../../protocol/vocab.js';
-import { createPersistenceEpochFence } from '../../model/sync-session.js';
+import { diagnostic } from '../../model/diagnostics.js';
 import {
   assertControlAccess,
   createControlCommand,
@@ -26,7 +26,6 @@ const ACTIVE_CONTROL_STATES = new Set(['sending', 'accepted', 'uncertain', 'erro
 const CONTROL_RECORD_PREFIX = 'control:';
 const NOOP = () => {};
 const ZERO_GENERATION = () => 0;
-const STALE_SEND_LEASE = 'send_lease_stale';
 
 function submissionEntryID(principalId, messageId) {
   return `${principalId}\u0000${messageId}`;
@@ -60,47 +59,17 @@ function sameSendLease(left, right) {
     && left.correlationID === right.correlationID);
 }
 
-function sameSubmissionFacts(left, right) {
-  return Boolean(left && right
-    && left.principalId === right.principalId
-    && Object.is(left.principalEpoch, right.principalEpoch)
-    && left.channelId === right.channelId
-    && Object.is(left.worldEpoch, right.worldEpoch)
-    && Object.is(left.attemptEpoch, right.attemptEpoch)
-    && left.access?.epoch === right.access?.epoch
-    && left.access?.relationship === right.access?.relationship
-    && left.access?.existence === right.access?.existence
-    && left.access?.runtime === right.access?.runtime
-    && left.access?.freshness === right.access?.freshness
-    && left.access?.unavailable === right.access?.unavailable
-    && Object.is(left.transport, right.transport)
-    && left.transportEpoch === right.transportEpoch
-    && left.transportOpen === right.transportOpen);
-}
-
-function sameSubmissionAssessment(left, right) {
-  return Boolean(left && right
-    && left.current === right.current
-    && left.code === right.code);
-}
-
-function staleSendLeaseError() {
-  const error = new Error('发送租约已失效');
-  error.code = STALE_SEND_LEASE;
-  return error;
-}
-
 function emptyDraft() {
   return { text: '', doc: null, recipients: [], attachments: [], replyTarget: null, editorRevision: 0 };
 }
 
 function restoredSubmission(row) {
   if (!row?.messageId || !row?.channelId || !row?.frame || !ACTIVE_STATES.has(row.state)) return null;
+  // Rows journaled by the old lease protocol still carry its fields.
+  const { leaseOwner: _leaseOwner, leaseUntil: _leaseUntil, ...submission } = row;
   return {
-    ...row,
+    ...submission,
     state: row.state === 'transmitting' ? 'uncertain' : row.state,
-    leaseOwner: '',
-    leaseUntil: 0,
     error: serializedSubmissionError(row.error, row),
   };
 }
@@ -201,9 +170,11 @@ export function useComposerSubmissionRuntime({
 } = {}) {
   const outboxRef = useRef(null);
   if (!outboxRef.current) outboxRef.current = outboxFactory();
-  const fenceRef = useRef(null);
-  if (!fenceRef.current) fenceRef.current = createPersistenceEpochFence();
-  const leaseOwnerRef = useRef(`composer:${newId()}`);
+  // IndexedDB is a journal behind memory, never a gate in front of the wire.
+  // Writes are chained only so a later snapshot of the same row cannot land
+  // before an earlier one; nothing awaits the chain.
+  const journalTailRef = useRef(Promise.resolve());
+  const attemptSequenceRef = useRef(`composer:${newId()}`);
   const attemptEpochRef = useRef(0);
   const hydrationRef = useRef(0);
   const transmittingRef = useRef(new Set());
@@ -228,7 +199,6 @@ export function useComposerSubmissionRuntime({
     submissionCorrelationPortRef.current = createSubmissionCorrelationPort();
   }
   const correlationPrincipalRef = useRef(principalId);
-  const persistedDraftRevisionRef = useRef(new Map());
   const authorityRef = useRef(null);
   const pendingRef = useRef([]);
   const draftsRef = useRef(new Map());
@@ -294,37 +264,35 @@ export function useComposerSubmissionRuntime({
     return value;
   }, []);
 
-  const persistControlState = useCallback((controlKey, value, {
-    lifecycleGeneration = null,
-    attemptEpoch = null,
-  } = {}) => {
-    if (!principalId || !value || !ACTIVE_CONTROL_STATES.has(value.state)) return Promise.resolve(false);
-    const isCurrent = () => (lifecycleGeneration === null
-      || isLiveLifecycle(lifecycleRef.current, lifecycleGeneration))
-      && (attemptEpoch === null || attemptEpochRef.current === attemptEpoch);
-    if (!isCurrent()) return Promise.resolve(false);
-    return fenceRef.current.run(async () => {
-      if (!isCurrent()) return false;
-      const row = controlRecord(principalId, controlKey, value);
-      try {
-        await outboxRef.current.putMany(principalId, [row], {
-          authorize: isCurrent,
-        });
-      } catch (error) {
-        if (!isCurrent()) return false;
-        throw error;
-      }
-      return isCurrent();
+  const journal = useCallback((write) => {
+    const run = journalTailRef.current.then(write).catch((error) => {
+      if (error?.code === 'outbox_closed') return;
+      diagnostic('warn', 'outbox.journal_failed', { error });
     });
-  }, [principalId]);
+    journalTailRef.current = run;
+  }, []);
+  const journalSubmission = useCallback((principal, row) => {
+    if (!principal || !row?.messageId) return;
+    journal(() => outboxRef.current.putSubmission(principal, row));
+  }, [journal]);
+  const journalRemove = useCallback((principal, messageId) => {
+    if (!principal || !messageId) return;
+    journal(() => outboxRef.current.remove(principal, messageId));
+  }, [journal]);
+  const journalDraft = useCallback((principal, channelId, record) => {
+    if (!principal || !channelId) return;
+    journal(() => outboxRef.current.putDraft(principal, channelId, record));
+  }, [journal]);
 
-  const removePersistedControl = useCallback((controlKey, lifecycleGeneration = null) => {
-    if (!principalId || !controlKey) return Promise.resolve(false);
-    return fenceRef.current.run(async () => {
-      if (lifecycleGeneration !== null && !isLiveLifecycle(lifecycleRef.current, lifecycleGeneration)) return false;
-      return outboxRef.current.remove(principalId, controlRecordId(controlKey));
-    });
-  }, [principalId]);
+  const persistControlState = useCallback((controlKey, value) => {
+    if (!principalId || !value || !ACTIVE_CONTROL_STATES.has(value.state)) return;
+    journalSubmission(principalId, controlRecord(principalId, controlKey, value));
+  }, [journalSubmission, principalId]);
+
+  const removePersistedControl = useCallback((controlKey) => {
+    if (!principalId || !controlKey) return;
+    journalRemove(principalId, controlRecordId(controlKey));
+  }, [journalRemove, principalId]);
 
   const accessState = useCallback((channelId) => accessRef?.current?.state?.(channelId) || null, [accessRef]);
 
@@ -390,12 +358,6 @@ export function useComposerSubmissionRuntime({
     return assessment;
   }, [currentFacts]);
 
-  const authorizeSubmission = useCallback((owner) => {
-    const assessment = assessSubmissionOwner(owner);
-    if (!assessment.current) throw requestAccessError(assessment);
-    return true;
-  }, [assessSubmissionOwner]);
-
   const registerCorrelation = useCallback((owner, messageId, replace = false) => {
     const entryID = submissionEntryID(owner.principalId, messageId);
     const current = sendLeaseRef.current.get(entryID);
@@ -417,7 +379,7 @@ export function useComposerSubmissionRuntime({
     const lease = sendLeaseFor(
       owner,
       entryID,
-      `${leaseOwnerRef.current}:${++leaseAttemptSequenceRef.current}`,
+      `${attemptSequenceRef.current}:${++leaseAttemptSequenceRef.current}`,
       correlationID,
     );
     sendLeaseRef.current.set(entryID, lease);
@@ -460,50 +422,43 @@ export function useComposerSubmissionRuntime({
     return true;
   }, [currentSendLease, onNotice]);
 
+  // Memory is the owner of every submission and draft. The journal is read
+  // once per principal to resume what a previous page left unsent, and what it
+  // returns is merged under whatever this page already holds: a send made
+  // while the read was in flight is never replaced by an older snapshot.
   useEffect(() => {
     const generation = ++hydrationRef.current;
     const lifecycleGeneration = lifecycleRef.current.generation;
-    attemptEpochRef.current += 1;
-    transmittingRef.current.clear();
-    acceptingRef.current.clear();
-    persistedDraftRevisionRef.current.clear();
     if (correlationPrincipalRef.current !== principalId) {
+      // A different principal is a different owner, not a newer view of the
+      // same facts: its predecessor's rows are not this principal's to show.
       correlationPrincipalRef.current = principalId;
+      attemptEpochRef.current += 1;
+      transmittingRef.current.clear();
+      acceptingRef.current.clear();
       landedRef.current.clear();
       sendLeaseRef.current.clear();
       submissionCorrelationPortRef.current.reset();
+      setAcceptingChannels(new Set());
+      setApprovalStates({});
+      publishControlStates({});
+      publishPending([]);
+      publishAwaiting([]);
+      publishDrafts(new Map());
     }
     if (retryPrincipalRef.current !== principalId) {
       automaticReconnectRetryRef.current.clear();
       retryPrincipalRef.current = principalId;
     }
-    setAcceptingChannels(new Set());
-    setApprovalStates({});
-    controlStatesRef.current = {};
-    setControlStates({});
-    if (!principalId) {
-      sendLeaseRef.current.clear();
-      submissionCorrelationPortRef.current.reset();
-      publishPending([]);
-      publishAwaiting([]);
-      publishDrafts(new Map());
-      return undefined;
-    }
+    if (!principalId) return undefined;
     let alive = true;
-    void fenceRef.current.select(async () => {
-      let submissionRows;
-      let draftRows;
-      try {
-        [submissionRows, draftRows] = await Promise.all([
-          outboxRef.current.restore(principalId),
-          outboxRef.current.restoreDrafts(principalId),
-        ]);
-      } catch (error) {
-        if (alive && isLiveLifecycle(lifecycleRef.current, lifecycleGeneration)) onError(error);
-        return;
-      }
-      if (!alive || !isLiveLifecycle(lifecycleRef.current, lifecycleGeneration)
-        || generation !== hydrationRef.current || authorityRef.current?.principalId !== principalId) return;
+    const current = () => alive && isLiveLifecycle(lifecycleRef.current, lifecycleGeneration)
+      && generation === hydrationRef.current && authorityRef.current?.principalId === principalId;
+    void Promise.all([
+      outboxRef.current.restore(principalId),
+      outboxRef.current.restoreDrafts(principalId),
+    ]).then(([submissionRows, draftRows]) => {
+      if (!current()) return;
       const allRestored = submissionRows.map(restoredSubmission).filter(Boolean);
       // A frame that states its own deadline stops being worth sending once
       // that instant passes. Restoring one keeps a row the transport will
@@ -513,10 +468,9 @@ export function useComposerSubmissionRuntime({
         const expiresAt = Number(row.frame?.expires_at_ms || 0);
         return expiresAt > 0 && expiresAt <= Date.now();
       });
-      const restoredRows = allRestored.filter((row) => !expiredRows.includes(row));
-      for (const row of expiredRows) {
-        void outboxRef.current.remove(principalId, row.messageId).catch(() => {});
-      }
+      for (const row of expiredRows) journalRemove(principalId, row.messageId);
+      const held = new Set(pendingRef.current.map((row) => row.messageId));
+      const restoredRows = allRestored.filter((row) => !expiredRows.includes(row) && !held.has(row.messageId));
       const restoredControls = Object.fromEntries(submissionRows
         .map((row) => restoredControlState(row, principalId))
         .filter(Boolean)
@@ -526,38 +480,34 @@ export function useComposerSubmissionRuntime({
         registerCorrelation(captureOwner(row.channelId), row.messageId);
         if (landedRef.current.has(row.messageId)) {
           submissionCorrelationPortRef.current.markLanded(identity);
+          journalRemove(principalId, row.messageId);
         } else if (row.state !== 'rejected') {
           submissionCorrelationPortRef.current.record(identity);
         }
       }
-      const landed = restoredRows.filter((row) => landedRef.current.has(row.messageId));
-      if (landed.length) {
-        await Promise.all(landed.map((row) => outboxRef.current.remove(principalId, row.messageId)
-          .catch((error) => {
-            if (isLiveLifecycle(lifecycleRef.current, lifecycleGeneration)) onError(error);
-            return null;
-          })));
-        if (!alive || !isLiveLifecycle(lifecycleRef.current, lifecycleGeneration)
-          || generation !== hydrationRef.current) return;
-      }
       const restored = restoredRows.filter((row) => !landedRef.current.has(row.messageId));
-      persistedDraftRevisionRef.current = new Map(draftRows
-        .filter((row) => row?.channelId)
-        .map((row) => [row.channelId, Number(row.revision || 0)]));
-      controlStatesRef.current = restoredControls;
-      publishPending(restored);
-      publishDrafts(new Map(draftRows.filter((row) => row?.channelId).map((row) => [row.channelId, row])));
-      setControlStates(restoredControls);
+      if (restored.length) publishPending((rows) => [...rows, ...restored]);
+      if (draftRows.length) {
+        publishDrafts((rows) => {
+          const next = new Map(rows);
+          for (const row of draftRows) if (row?.channelId && !next.has(row.channelId)) next.set(row.channelId, row);
+          return next;
+        });
+      }
+      if (Object.keys(restoredControls).length) {
+        publishControlStates((rows) => ({ ...restoredControls, ...rows }));
+      }
       if (authorityRef.current?.wireState === 'open' && wireRef?.current) {
         for (const row of restored) {
           if (row.state === 'queued' || row.state === 'uncertain') void transmitRef.current?.(row);
         }
       }
     }).catch((error) => {
-      if (alive && isLiveLifecycle(lifecycleRef.current, lifecycleGeneration)) onError(error);
+      // An unreadable journal only means there is nothing to resume.
+      if (current() && error?.code !== 'outbox_closed') diagnostic('warn', 'outbox.restore_failed', { error });
     });
     return () => { alive = false; };
-  }, [captureOwner, onError, principalId, publishAwaiting, publishDrafts, publishPending, registerCorrelation, wireRef]);
+  }, [captureOwner, journalRemove, principalId, publishAwaiting, publishControlStates, publishDrafts, publishPending, registerCorrelation, wireRef]);
 
   useEffect(() => {
     // React.StrictMode probes effects with a setup -> cleanup -> setup cycle
@@ -574,7 +524,9 @@ export function useComposerSubmissionRuntime({
       attemptEpochRef.current += 1;
       sendLeaseRef.current.clear();
       automaticReconnectRetryRef.current.clear();
-      queueMicrotask(() => {
+      // Close only after the journal has taken every copy already handed to
+      // it; the page's last state is what a reload resumes.
+      void journalTailRef.current.then(() => {
         if (lifecycleEffectTokenRef.current !== effectToken) return;
         outboxRef.current?.close();
       });
@@ -588,6 +540,24 @@ export function useComposerSubmissionRuntime({
       : emptyDraft();
   }, []);
 
+  // A draft write is a memory write. The unsent body stays with the editor;
+  // the record keeps what a reload could use, and the journal copies it.
+  const writeDraftRecord = useCallback((owner, channelId, draft, editorRevision, extra = {}) => {
+    const previous = draftsRef.current.get(channelId);
+    const record = {
+      principalId: owner.principalId,
+      channelId,
+      revision: Number(previous?.revision || 0) + 1,
+      editorRevision,
+      draft: draft ? durableDraftBody(draft) : null,
+      updatedAt: Date.now(),
+      ...extra,
+    };
+    publishDrafts((rows) => new Map(rows).set(channelId, record));
+    journalDraft(owner.principalId, channelId, record);
+    return record;
+  }, [journalDraft, publishDrafts]);
+
   const updateDraft = useCallback((channelId, nextDraft, { preserveEditorRevision = false } = {}) => {
     const owner = captureOwner(channelId);
     authorize(owner, REQUEST_PHASE.persist, { requireTransport: false });
@@ -598,81 +568,54 @@ export function useComposerSubmissionRuntime({
       ? Math.max(previousEditorRevision, requestedRevision)
       : Number.isFinite(requestedRevision)
         ? Math.max(previousEditorRevision + 1, requestedRevision)
-      : Number(previous?.editorRevision || 0) + 1;
-    const optimistic = {
-      ...previous,
-      principalId: owner.principalId,
-      channelId,
-      editorRevision,
-      draft: { ...nextDraft, editorRevision },
-    };
-    publishDrafts((current) => new Map(current).set(channelId, optimistic));
-    return fenceRef.current.run(async () => {
-      authorize(owner, REQUEST_PHASE.persist, { requireTransport: false });
-      const expectedRevision = Number(persistedDraftRevisionRef.current.get(channelId) || 0);
-      let result = await outboxRef.current.writeDraft(
-        owner.principalId,
-        channelId,
-        optimistic.draft,
-        expectedRevision,
-      );
-      if (result.conflict) {
-        if (result.reason === 'draft_consumed') {
-          const consumed = result.current;
-          persistedDraftRevisionRef.current.set(channelId, Number(consumed?.revision || 0));
-          if (consumed) {
-            publishDrafts((rows) => new Map(rows).set(channelId, consumed));
-          }
-          const error = new Error('草稿已被发送，请重新编辑后再保存');
-          error.code = 'draft_consumed';
-          throw error;
-        }
-        const conflicts = result.current?.draft ? [result.current.draft] : [];
-        result = await outboxRef.current.writeDraft(owner.principalId, channelId, {
-          ...optimistic.draft,
-          conflicts: [...(optimistic.draft.conflicts || []), ...conflicts],
-        }, Number(result.current?.revision || 0));
-      }
-      authorize(owner, REQUEST_PHASE.settle, { requireTransport: false, requireAccess: false });
-      if (result.conflict || !result.record) throw new Error('草稿版本冲突，请重试');
-      persistedDraftRevisionRef.current.set(channelId, Number(result.record.revision || 0));
-      const current = draftsRef.current.get(channelId);
-      if (Number(current?.editorRevision || 0) <= editorRevision) {
-        publishDrafts((rows) => new Map(rows).set(channelId, result.record));
-      }
-      return result.record;
-    });
-  }, [authorize, captureOwner, publishDrafts]);
+        : previousEditorRevision + 1;
+    if (previous?.consumedAt && previous.draft == null && editorRevision <= previousEditorRevision) {
+      // A snapshot taken before the send that consumed this draft. With
+      // nothing durable in it the write is a no-op; with recipients,
+      // attachments or a reply target it would resurrect what was just sent.
+      if (!durableDraftBody(nextDraft)) return Promise.resolve(previous);
+      const error = new Error('草稿已被发送，请重新编辑后再保存');
+      error.code = 'draft_consumed';
+      return Promise.reject(error);
+    }
+    return Promise.resolve(writeDraftRecord(owner, channelId, { ...nextDraft, editorRevision }, editorRevision));
+  }, [authorize, captureOwner, writeDraftRecord]);
 
   const persistDraftAttachments = useCallback((channelId, attachments, { expectedRevision = 0, authorize: authorizeAttachment } = {}) => {
-    const current = draftsRef.current.get(channelId);
-    const owner = captureOwner(channelId, { editorRevision: Number(current?.editorRevision || 0) });
-    const authorizePersist = () => {
+    try {
+      const current = draftsRef.current.get(channelId);
+      const owner = captureOwner(channelId, { editorRevision: Number(current?.editorRevision || 0) });
       authorize(owner, REQUEST_PHASE.persist, { requireTransport: false, requireDraft: true });
       if (authorizeAttachment && authorizeAttachment() !== true) throw new Error('草稿附件授权已变化');
-      return true;
-    };
-    return fenceRef.current.run(async () => {
-      authorizePersist();
-      const result = await outboxRef.current.mergeDraftAttachments({
-        principalId: owner.principalId,
-        channelId,
-        attachments,
-        expectedRevision,
-        authorize: authorizePersist,
-      });
-      if (result.conflict || !result.record) {
-        const error = new Error(result.reason === 'draft_consumed' ? '草稿已被发送，附件未关联' : '草稿版本已变化，附件未关联');
+      // An upload captured before a send may not recreate the draft that send
+      // consumed.
+      if (current?.consumedAt && current.draft == null && Number(current.revision || 0) > Number(expectedRevision || 0)) {
+        const error = new Error('草稿已被发送，附件未关联');
         error.code = 'attachment_unassociated';
         error.attachments = attachments;
         throw error;
       }
-      authorize(owner, REQUEST_PHASE.settle, { requireTransport: false, requireAccess: false });
-      persistedDraftRevisionRef.current.set(channelId, Number(result.record.revision || 0));
-      publishDrafts((rows) => new Map(rows).set(channelId, result.record));
-      return result.record;
-    });
-  }, [authorize, captureOwner, publishDrafts]);
+      const base = current?.draft || {};
+      const merged = [...(base.attachments || [])];
+      for (const attachment of attachments || []) {
+        const index = merged.findIndex((row) => row.resource_id === attachment.resource_id);
+        if (index >= 0) merged[index] = attachment;
+        else merged.push(attachment);
+      }
+      return Promise.resolve(writeDraftRecord(owner, channelId, { ...base, attachments: merged },
+        Number(current?.editorRevision || 0) + 1));
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }, [authorize, captureOwner, writeDraftRecord]);
+
+  // Sending consumes the draft it was made from. A draft written after the
+  // send captured its revision is newer than the send and stays.
+  const consumeDraft = useCallback((owner, channelId, draftRevision, editorRevision) => {
+    const current = draftsRef.current.get(channelId);
+    if (current && Number(current.revision || 0) !== Number(draftRevision || 0)) return current;
+    return writeDraftRecord(owner, channelId, null, Math.max(0, Number(editorRevision) || 0), { consumedAt: Date.now() });
+  }, [writeDraftRecord]);
 
   const transmitRef = useRef(null);
   const transmit = useCallback(async (submission) => {
@@ -687,9 +630,7 @@ export function useComposerSubmissionRuntime({
     const expiresAt = Number(submission.frame?.expires_at_ms || 0);
     if (expiresAt > 0 && expiresAt <= Date.now()) {
       publishPending((rows) => rows.filter((row) => row.messageId !== submission.messageId));
-      void outboxRef.current
-        ?.remove(authorityRef.current?.principalId || principalId, submission.messageId)
-        .catch(onError);
+      journalRemove(authorityRef.current?.principalId || principalId, submission.messageId);
       return false;
     }
     const lifecycleGeneration = lifecycleRef.current.generation;
@@ -698,51 +639,26 @@ export function useComposerSubmissionRuntime({
     const owner = captureOwner(submission.channelId);
     const lease = beginSendLease(owner, submission.messageId);
     const isLeaseCurrent = () => isLive() && currentSendLease(lease);
-    const leaseGuard = () => {
-      if (!isLeaseCurrent()) throw staleSendLeaseError();
-      return true;
-    };
     transmittingRef.current.add(key);
-    let leased = null;
     let wireStarted = false;
-    const settleBeforeWire = async (assessment, expectedStates, hasLease = false, assessmentFacts = null) => {
+    // Every state change is decided in memory, published, then copied to the
+    // journal. The copy never gates the next step.
+    const commit = (expectedStates, change) => {
+      const current = pendingRef.current.find((row) => row.messageId === submission.messageId);
+      if (!current || (expectedStates && !expectedStates.includes(current.state))) return null;
+      const next = { ...current, ...change, updatedAt: Date.now() };
+      publishPending((rows) => rows.map((row) => row.messageId === submission.messageId ? next : row));
+      journalSubmission(owner.principalId, next);
+      return next;
+    };
+    const settleBeforeWire = (assessment, expectedStates) => {
       if (!isLeaseCurrent()) return false;
       const retryable = assessment.code === 'channel_unavailable' || assessment.code === 'transport_changed';
-      const settledFacts = assessmentFacts || currentFacts(owner);
-      const options = {
-        authorize: () => {
-          if (!isLeaseCurrent()) throw staleSendLeaseError();
-          const currentFactsValue = currentFacts(owner);
-          const currentAssessment = assessSubmissionOwner(owner, currentFactsValue);
-          if (!sameSubmissionFacts(settledFacts, currentFactsValue)
-            || !sameSubmissionAssessment(assessment, currentAssessment)) {
-            throw staleSendLeaseError();
-          }
-          return true;
-        },
-        leaseGuard,
-      };
-      if (hasLease) options.leaseOwner = leaseOwnerRef.current;
-      let changed;
-      try {
-        changed = await outboxRef.current.patch(
-          owner.principalId,
-          submission.messageId,
-          expectedStates,
-          {
-            state: retryable ? 'queued' : 'rejected',
-            error: serializedSubmissionError(requestAccessError(assessment), submission),
-            leaseOwner: '',
-            leaseUntil: 0,
-          },
-          options,
-        );
-      } catch (error) {
-        if (error?.code !== STALE_SEND_LEASE && isLive()) onError(error);
-        return false;
-      }
-      if (!changed || !isLeaseCurrent()) return false;
-      publishPending((rows) => rows.map((row) => row.messageId === submission.messageId ? changed : row));
+      const changed = commit(expectedStates, {
+        state: retryable ? 'queued' : 'rejected',
+        error: serializedSubmissionError(requestAccessError(assessment), submission),
+      });
+      if (!changed) return false;
       if (!retryable) {
         forgetLeaseCorrelation(lease, {
           channelId: submission.channelId,
@@ -753,8 +669,7 @@ export function useComposerSubmissionRuntime({
       return false;
     };
     try {
-      const transportFacts = currentFacts(owner);
-      const transportAssessment = assessSubmissionOwner(owner, transportFacts);
+      const transportAssessment = assessSubmissionOwner(owner, currentFacts(owner));
       if (!transportAssessment.current) {
         // A queued row that wakes on a replacement connection must settle
         // against the authority observed by this lease.  Returning early
@@ -762,92 +677,25 @@ export function useComposerSubmissionRuntime({
         // Restored uncertain rows retain their evidence until a current owner
         // reconciles them; revoke cannot turn that evidence into rejection.
         if (submission.state === 'uncertain' && transportAssessment.code !== 'channel_unavailable') return false;
-        await settleBeforeWire(transportAssessment, ['queued', 'uncertain'], false, transportFacts);
-        return false;
+        return settleBeforeWire(transportAssessment, ['queued', 'uncertain']);
       }
-      try {
-        leased = await outboxRef.current.acquireLease(
-          owner.principalId,
-          submission.messageId,
-          leaseOwnerRef.current,
-          15_000,
-          {
-            authorize: () => {
-              if (!isLeaseCurrent()) throw staleSendLeaseError();
-              const assessment = assessSubmissionOwner(owner);
-              if (!assessment.current) throw requestAccessError(assessment);
-              return true;
-            },
-            leaseGuard,
-          },
-        );
-      } catch (error) {
-        if (error?.code === STALE_SEND_LEASE) return false;
-        throw error;
-      }
+      const held = pendingRef.current.find((row) => row.messageId === submission.messageId) || submission;
+      // The wire may add connection-local provenance (the current session id).
+      // It is stamped once and kept on the row, so a retry after a dropped
+      // receipt submits the exact same business frame under the same id —
+      // the ledger answers that retry with the row it already holds.
+      const frame = typeof owner.transport?.prepareSubmit === 'function'
+        ? owner.transport.prepareSubmit(held.frame)
+        : held.frame;
       if (!isLeaseCurrent()) return false;
-      if (!leased) return false;
-      authorizeSubmission(owner);
-      const transmitting = await outboxRef.current.patch(owner.principalId, submission.messageId,
-        ['queued', 'uncertain', 'rejected', 'transmitting'],
-        { state: 'transmitting', error: null },
-        {
-          leaseOwner: leaseOwnerRef.current,
-          authorize: () => {
-            if (!isLeaseCurrent()) throw staleSendLeaseError();
-            const assessment = assessSubmissionOwner(owner);
-            if (!assessment.current) throw requestAccessError(assessment);
-            return true;
-          },
-          leaseGuard,
-        });
-      if (!isLeaseCurrent()) return false;
+      const transmitting = commit(['queued', 'uncertain', 'rejected', 'transmitting'], {
+        state: 'transmitting',
+        error: null,
+        frame,
+      });
       if (!transmitting) return false;
-      const beforeWireFacts = currentFacts(owner);
-      const beforeWire = assessSubmissionOwner(owner, beforeWireFacts);
-      if (!beforeWire.current) {
-        // A restored uncertain row may have crossed the network before this
-        // runtime existed. An access transition cannot turn that evidence into
-        // a definitive rejection; leave it for a current owner to reconcile.
-        if (submission.state === 'uncertain' && beforeWire.code !== 'channel_unavailable') return false;
-        await settleBeforeWire(beforeWire, ['transmitting'], true, beforeWireFacts);
-        return false;
-      }
-      if (!isLeaseCurrent()) return false;
-      // Materialize the first wire frame while this SendLease still owns the
-      // attempt.  The wire may add connection-local provenance (for example,
-      // the current session id); keeping that result in the durable row makes
-      // a receipt-drop retry submit the exact same business frame instead of
-      // stamping the replacement connection's session onto it.
-      let prepared = transmitting;
-      if (typeof owner.transport?.prepareSubmit === 'function') {
-        const preparedFrame = owner.transport.prepareSubmit(transmitting.frame);
-        if (!isLeaseCurrent()) return false;
-        if (preparedFrame !== transmitting.frame) {
-          prepared = await outboxRef.current.patch(
-            owner.principalId,
-            submission.messageId,
-            ['transmitting'],
-            { frame: preparedFrame },
-            {
-              leaseOwner: leaseOwnerRef.current,
-              authorize: () => {
-                if (!isLeaseCurrent()) throw staleSendLeaseError();
-                const assessment = assessSubmissionOwner(owner);
-                if (!assessment.current) throw requestAccessError(assessment);
-                return true;
-              },
-              leaseGuard,
-            },
-          );
-          if (!isLeaseCurrent()) return false;
-          if (!prepared) return false;
-        }
-      }
-      if (!isLeaseCurrent()) return false;
       wireStarted = true;
-      publishPending((rows) => rows.map((row) => row.messageId === submission.messageId ? prepared : row));
-      const receipt = await owner.transport.submit(prepared.frame);
+      const receipt = await owner.transport.submit(frame);
       if (!isLeaseCurrent()) return false;
       authorize(owner, REQUEST_PHASE.settle, { requireTransport: false, requireAccess: false });
       if (receipt?.message_id && receipt.message_id !== submission.messageId) {
@@ -855,36 +703,26 @@ export function useComposerSubmissionRuntime({
         error.code = 'message_id_mismatch';
         throw error;
       }
-      const accepted = await outboxRef.current.patch(owner.principalId, submission.messageId,
-        ['transmitting'], { state: 'accepted', error: null }, {
-          leaseOwner: leaseOwnerRef.current,
-          authorize: () => isLeaseCurrent(),
-          leaseGuard,
-        });
-      if (!isLeaseCurrent()) return false;
       if (landedRef.current.has(submission.messageId)) {
         clearSubmissionNotice(lease, submission);
         submissionCorrelationPortRef.current.markLanded({
           channelId: submission.channelId,
           messageId: submission.messageId,
         });
-        await outboxRef.current.remove(owner.principalId, submission.messageId);
         publishPending((rows) => rows.filter((row) => row.messageId !== submission.messageId));
-      } else if (accepted) {
+        journalRemove(owner.principalId, submission.messageId);
+      } else if (commit(['transmitting'], { state: 'accepted', error: null })) {
         clearSubmissionNotice(lease, submission);
-        publishPending((rows) => rows.map((row) => row.messageId === submission.messageId ? accepted : row));
       }
       onFeedChanged(submission.channelId);
       return true;
     } catch (error) {
-      if (error?.code === STALE_SEND_LEASE || !isLive() || !currentSendLease(lease)) return false;
+      if (!isLive() || !currentSendLease(lease)) return false;
       if (!wireStarted) {
-        const prewireFacts = currentFacts(owner);
-        const prewire = assessSubmissionOwner(owner, prewireFacts);
+        const prewire = assessSubmissionOwner(owner, currentFacts(owner));
         if (!prewire.current) {
           if (submission.state === 'uncertain' && prewire.code !== 'channel_unavailable') return false;
-          await settleBeforeWire(prewire, leased ? ['transmitting'] : ['queued', 'uncertain'], Boolean(leased), prewireFacts);
-          return false;
+          return settleBeforeWire(prewire, ['queued', 'uncertain', 'transmitting']);
         }
       }
       const settlement = assessRequestOwner(owner, currentFacts(owner), REQUEST_PHASE.settle, {
@@ -893,30 +731,17 @@ export function useComposerSubmissionRuntime({
       });
       if (!settlement.current) return false;
       const state = wireFailureState(error);
-      const patchOptions = {
-        authorize: () => isLeaseCurrent(),
-        leaseGuard,
-      };
-      if (leased) patchOptions.leaseOwner = leaseOwnerRef.current;
-      const failed = await outboxRef.current.patch(owner.principalId, submission.messageId,
-        ['queued', 'transmitting', 'uncertain', 'rejected'],
-        { state, error: serializedSubmissionError(error, submission) }, {
-          ...patchOptions,
-        }).catch((persistError) => {
-          if (persistError?.code !== STALE_SEND_LEASE && isLive()) onError(persistError);
-          return null;
-        });
-      if (!isLeaseCurrent()) return false;
-      if (failed) {
-        publishPending((rows) => rows.map((row) => row.messageId === submission.messageId ? failed : row));
-        forgetAwaiting(submission.messageId);
-      }
+      const failed = commit(['queued', 'transmitting', 'uncertain', 'rejected'], {
+        state,
+        error: serializedSubmissionError(error, submission),
+      });
+      if (failed) forgetAwaiting(submission.messageId);
       if (state === 'uncertain' && failed) publishUncertainNotice(lease, submission);
       if (state === 'rejected') {
         // A prior transport close may have published an uncertain notice for
-        // this same durable intent.  Once the backend gives its definitive
-        // rejection, that transient projection is no longer truthful; the
-        // Composer's rejected row is the single public failure surface.
+        // this same intent.  Once the backend gives its definitive rejection,
+        // that transient projection is no longer truthful; the Composer's
+        // rejected row is the single public failure surface.
         clearSubmissionNotice(lease, submission);
         forgetLeaseCorrelation(lease, {
           channelId: submission.channelId,
@@ -927,17 +752,8 @@ export function useComposerSubmissionRuntime({
       return false;
     } finally {
       transmittingRef.current.delete(key);
-      if (leased && isLive() && currentSendLease(lease)) {
-        try {
-          await outboxRef.current.releaseLease(owner.principalId, submission.messageId, leaseOwnerRef.current, {
-            leaseGuard,
-          });
-        } catch (error) {
-          if (error?.code !== STALE_SEND_LEASE && isLive()) onError(error);
-        }
-      }
     }
-  }, [assessSubmissionOwner, authorizeSubmission, beginSendLease, captureOwner, clearSubmissionNotice, currentFacts, currentSendLease, forgetAwaiting, forgetLeaseCorrelation, onAccessChanged, onError, onFeedChanged, principalId, publishPending, publishUncertainNotice]);
+  }, [assessSubmissionOwner, authorize, beginSendLease, captureOwner, clearSubmissionNotice, currentFacts, currentSendLease, forgetAwaiting, forgetLeaseCorrelation, journalRemove, journalSubmission, onAccessChanged, onFeedChanged, principalId, publishPending, publishUncertainNotice]);
   transmitRef.current = transmit;
 
   const sendOnce = useCallback(async (request = {}) => {
@@ -986,31 +802,11 @@ export function useComposerSubmissionRuntime({
         error: null,
       };
     });
-    const authorizePersist = () => {
-      for (const owner of owners) authorize(owner, REQUEST_PHASE.persist, { requireTransport: false });
-      return true;
-    };
+    // The frame is final here: a resource the wire cannot resolve is refused
+    // now, not after a journal write.
+    submissions = durableSubmissions(submissions);
     if (request.draftRevision != null) {
-      const result = await fenceRef.current.run(() => outboxRef.current.acceptDraft({
-        principalId: owners[0].principalId,
-        channelId,
-        expectedRevision: request.draftRevision,
-        editorRevision: request.editorRevision,
-        submissions,
-        authorize: authorizePersist,
-      }));
-      if (!result.accepted) throw new Error('草稿在发送前已被其他页面修改，请确认内容后重试');
-      submissions = result.submissions || submissions;
-      if (result.record) {
-        persistedDraftRevisionRef.current.set(channelId, Number(result.record.revision || 0));
-        publishDrafts((rows) => new Map(rows).set(channelId, result.record));
-      }
-    } else {
-      submissions = await fenceRef.current.run(() => outboxRef.current.putMany(
-        owners[0].principalId,
-        submissions,
-        { authorize: authorizePersist },
-      ));
+      consumeDraft(owners[0], channelId, request.draftRevision, request.editorRevision);
     }
     const ids = new Set(submissions.map((row) => row.messageId));
     ids.forEach((id) => automaticReconnectRetryRef.current.delete(id));
@@ -1025,7 +821,6 @@ export function useComposerSubmissionRuntime({
       }
     }
     const outstanding = submissions.filter((row) => !landedRef.current.has(row.messageId));
-    const alreadyLanded = submissions.filter((row) => landedRef.current.has(row.messageId));
     publishPending((rows) => [...rows.filter((row) => !ids.has(row.messageId)), ...outstanding]);
     const handedToAgent = submissions.filter((row) => row.state !== 'rejected'
       && AWAITING_TYPES.has(row.frame?.msg_type));
@@ -1041,15 +836,13 @@ export function useComposerSubmissionRuntime({
         })),
       ]);
     }
-    for (const row of alreadyLanded) {
-      void outboxRef.current.remove(owners[0].principalId, row.messageId).catch(onError);
-    }
+    for (const row of outstanding) journalSubmission(owners[0].principalId, row);
     if (authorityRef.current?.wireState === 'open' && wireRef?.current) {
       for (const row of outstanding) void transmitRef.current(row);
     }
     const values = submissions.map((row) => row.messageId);
     return request.batch?.length ? values : values[0];
-  }, [activeChannelId, authorize, captureOwner, currentFacts, onError, publishAwaiting, publishDrafts, publishPending, registerCorrelation, wireRef]);
+  }, [activeChannelId, authorize, captureOwner, consumeDraft, currentFacts, journalSubmission, publishAwaiting, publishPending, registerCorrelation, wireRef]);
 
   const send = useCallback((request = {}) => {
     if (request.draftRevision == null) return sendOnce(request);
@@ -1089,19 +882,19 @@ export function useComposerSubmissionRuntime({
     automaticReconnectRetryRef.current.delete(submission.messageId);
     const owner = captureOwner(submission.channelId);
     authorize(owner, REQUEST_PHASE.persist, { requireTransport: false });
-    const queued = await outboxRef.current.patch(owner.principalId, submission.messageId,
-      [...RETRY_STATES], { state: 'queued', error: null },
-      { authorize: () => assessRequestOwner(owner, currentFacts(owner), REQUEST_PHASE.persist, { requireTransport: false }).current });
-    if (!queued) return false;
+    const held = pendingRef.current.find((row) => row.messageId === submission.messageId);
+    if (!held || !RETRY_STATES.has(held.state)) return false;
+    const queued = { ...held, state: 'queued', error: null, updatedAt: Date.now() };
     registerCorrelation(owner, queued.messageId);
     submissionCorrelationPortRef.current.record({
       channelId: queued.channelId,
       messageId: queued.messageId,
     });
     publishPending((rows) => rows.map((row) => row.messageId === submission.messageId ? queued : row));
+    journalSubmission(owner.principalId, queued);
     if (authorityRef.current?.wireState === 'open') return transmitRef.current(queued);
     return true;
-  }, [authorize, captureOwner, currentFacts, publishPending, registerCorrelation]);
+  }, [authorize, captureOwner, journalSubmission, publishPending, registerCorrelation]);
 
   useEffect(() => {
     if (wireState !== 'open' || !wireRef?.current) return;
@@ -1135,7 +928,7 @@ export function useComposerSubmissionRuntime({
           channelId: row.channelId,
           messageId: row.messageId,
         });
-        void outboxRef.current.remove(authorityRef.current?.principalId || principalId, row.messageId).catch(onError);
+        journalRemove(authorityRef.current?.principalId || principalId, row.messageId);
       }
     }
     if (closed.size) {
@@ -1146,10 +939,10 @@ export function useComposerSubmissionRuntime({
       publishControlStates((current) => Object.fromEntries(
         Object.entries(current).filter(([, state]) => !closed.has(state?.requestId)),
       ));
-      for (const key of removedKeys) void removePersistedControl(key).catch(onError);
+      for (const key of removedKeys) removePersistedControl(key);
     }
     return true;
-  }, [clearSubmissionNotice, forgetAwaiting, onError, principalId, publishControlStates, publishPending, removePersistedControl]);
+  }, [clearSubmissionNotice, forgetAwaiting, journalRemove, principalId, publishControlStates, publishPending, removePersistedControl]);
 
   const ownedWireCommand = useCallback(async (kind, channelId, reqId, decision, payload) => {
     const owner = captureOwner(channelId);
@@ -1200,25 +993,15 @@ export function useComposerSubmissionRuntime({
     const identity = { channelId, requestId: reqId, action: 'cancel' };
     const sending = { ...identity, state: 'sending', error: null, updatedAt: Date.now() };
     publishControlStates((current) => ({ ...current, [key]: sending }));
-    // The in-flight marker is durable before the external cancel crosses the
-    // wire. A real remount can therefore downgrade it to `uncertain` instead
-    // of presenting a lost action as though it never existed.
-    const persistedSending = await persistControlState(key, sending, {
-      lifecycleGeneration,
-      attemptEpoch,
-    });
-    if (!persistedSending || !isCurrentAttempt()) return false;
-    // Hydration may have completed while the durable marker was queued and
-    // replaced the in-memory projection with its earlier snapshot. Re-publish
-    // the same fenced sending fact before crossing the wire so resetWorld can
-    // remove exactly this control record as part of the current world fence.
-    publishControlStates((current) => ({ ...current, [key]: sending }));
+    // The journal copy lets a remount downgrade a lost in-flight cancel to
+    // `uncertain`; the cancel itself does not wait for that copy.
+    persistControlState(key, sending);
     try {
       const value = await ownedWireCommand('cancel', channelId, reqId);
       if (isCurrentAttempt()) {
         const accepted = { ...identity, state: 'accepted', error: null, updatedAt: Date.now() };
         publishControlStates((current) => ({ ...current, [key]: accepted }));
-        await persistControlState(key, accepted, { lifecycleGeneration, attemptEpoch }).catch(onError);
+        persistControlState(key, accepted);
       }
       return value;
     } catch (error) {
@@ -1230,18 +1013,18 @@ export function useComposerSubmissionRuntime({
           updatedAt: Date.now(),
         };
         publishControlStates((current) => ({ ...current, [key]: failed }));
-        await persistControlState(key, failed, { lifecycleGeneration, attemptEpoch }).catch(onError);
+        persistControlState(key, failed);
       }
       throw error;
     }
-  }, [onError, ownedWireCommand, persistControlState, publishControlStates]);
+  }, [ownedWireCommand, persistControlState, publishControlStates]);
 
   const clear = useCallback(() => {
     setApprovalStates({});
     const controlKeys = Object.keys(controlStatesRef.current);
     publishControlStates({});
-    for (const key of controlKeys) void removePersistedControl(key).catch(onError);
-  }, [onError, publishControlStates, removePersistedControl]);
+    for (const key of controlKeys) removePersistedControl(key);
+  }, [publishControlStates, removePersistedControl]);
 
   const resetWorld = useCallback(() => {
     attemptEpochRef.current += 1;
@@ -1251,7 +1034,6 @@ export function useComposerSubmissionRuntime({
     landedRef.current.clear();
     sendLeaseRef.current.clear();
     submissionCorrelationPortRef.current.reset();
-    persistedDraftRevisionRef.current.clear();
     setAcceptingChannels(new Set());
     const worldError = Object.assign(new Error('服务端数据世界已更换，请确认后重新发送'), { code: 'world_changed' });
     const rejected = pendingRef.current.map((row) => ['rejected'].includes(row.state)
@@ -1260,15 +1042,13 @@ export function useComposerSubmissionRuntime({
         ...row,
         state: 'rejected',
         error: serializedSubmissionError(worldError, row),
-        leaseOwner: '',
-        leaseUntil: 0,
         updatedAt: Date.now(),
       });
     publishPending(rejected);
     const principal = authorityRef.current?.principalId || principalId;
     for (const row of rejected) {
       if (row.error?.code !== 'world_changed') continue;
-      void outboxRef.current.patch(principal, row.messageId, null, row).catch(onError);
+      journalSubmission(principal, row);
     }
     const cleanedDrafts = new Map([...draftsRef.current].map(([channelId, record]) => [channelId, record?.draft
       ? { ...record, draft: { ...record.draft, attachments: [], replyTarget: null } }
@@ -1276,15 +1056,13 @@ export function useComposerSubmissionRuntime({
     publishDrafts(cleanedDrafts);
     for (const [channelId, record] of cleanedDrafts) {
       if (!record?.draft) continue;
-      void outboxRef.current.writeDraft(principal, channelId, record.draft, Number(record.revision || 0)).then((result) => {
-        if (result?.record) persistedDraftRevisionRef.current.set(channelId, Number(result.record.revision || 0));
-      }).catch(onError);
+      journalDraft(principal, channelId, record);
     }
     setApprovalStates({});
     const controlKeys = Object.keys(controlStatesRef.current);
     publishControlStates({});
-    for (const key of controlKeys) void removePersistedControl(key).catch(onError);
-  }, [onError, principalId, publishControlStates, publishDrafts, publishPending, removePersistedControl]);
+    for (const key of controlKeys) removePersistedControl(key);
+  }, [journalDraft, journalSubmission, principalId, publishControlStates, publishDrafts, publishPending, removePersistedControl]);
 
   const submissionCorrelationPort = submissionCorrelationPortRef.current;
   return useMemo(() => Object.freeze({

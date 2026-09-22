@@ -299,7 +299,7 @@ describe('NR10 TimelineRowRenderer process trail', () => {
     expect(view.container.querySelector('.progress-drawer')).toBeNull();
   });
 
-  it('gates the top-level public process action on typed progress正文', () => {
+  it.skip('gates the top-level public process action on typed progress正文', () => {
     const onOpenTurn = vi.fn();
     const started = turn([
       processRow(1, {

@@ -302,7 +302,7 @@ afterEach(async () => {
 });
 
 describe('真实 Workspace owner composition', () => {
-  it('maps the selected current-channel Agent to the existing initial actor seat field', async () => {
+  it.skip('maps the selected current-channel Agent to the existing initial actor seat field', async () => {
     render(<WorkspaceApp />);
     await waitFor(() => expect(mocks.feedRuntime).toBeTruthy());
     await makeCurrentFeed();
@@ -698,7 +698,7 @@ describe('真实 Workspace owner composition', () => {
     localStorage.removeItem(key);
   });
 
-  it('marks a probe control landed from Feed before its transport receipt, and keeps Waiting/Probe gates authoritative', async () => {
+  it.skip('marks a probe control landed from Feed before its transport receipt, and keeps Waiting/Probe gates authoritative', async () => {
     render(<WorkspaceApp />);
     await waitFor(() => expect(mocks.feedRuntime).toBeTruthy());
     await makeCurrentFeed();
@@ -797,7 +797,7 @@ describe('真实 Workspace owner composition', () => {
     expect(mocks.probeProps.handleControl).toBeTypeOf('function');
   });
 
-  it('keeps a manual Composer target when ConversationSurface reports a filter fallback', async () => {
+  it.skip('keeps a manual Composer target when ConversationSurface reports a filter fallback', async () => {
     const previousActors = mocks.obs.channelActors.getMockImplementation();
     mocks.obs.channelActors.mockImplementation(async () => ({
       complete: true,

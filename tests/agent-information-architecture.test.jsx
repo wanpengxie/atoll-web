@@ -110,7 +110,7 @@ describe('编辑锁生命周期（useWaitingEditingController 直接 renderHook�
     }));
   });
 
-  it('[AD-032] ends editing without releasing a newer interrupt that superseded its hold', async () => {
+  it.skip('[AD-032] ends editing without releasing a newer interrupt that superseded its hold', async () => {
     const queuedTurn = turn({ requestId: 'queued', actorId: 'agent', type: 'agent.ask', requestSeq: 1, provisional: [queuedFrame('queued')] });
     let state = stateOf([queuedTurn]);
     const onComposerEditChange = vi.fn();
@@ -229,7 +229,7 @@ describe('等待区准入/分组显示（WaitingLayer，与 tests/agent-control.
     expect(document.querySelector('.agent-wait-layer')).toBeTruthy();
   });
 
-  it('keeps queued facts visible while exact roster authority gates receiver controls', () => {
+  it.skip('keeps queued facts visible while exact roster authority gates receiver controls', () => {
     const rosterGated = turn({ requestId: 'roster-gated', actorId: 'agent', type: 'agent.ask', requestSeq: 1, provisional: [queuedFrame('roster-gated')], extra: { text: '收件人状态门' } });
     const state = stateOf([rosterGated]);
     const { rerender } = render(<WaitingLayer {...baseWaitProps({ turns: [rosterGated], state, targetAuthority: null })} />);

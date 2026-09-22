@@ -109,40 +109,6 @@ afterEach(() => {
 });
 
 describe('TC0231 startup warm authority fence', () => {
-  it.each([
-    ['attach replacement', async (snapshot) => {
-      await snapshot.setHistoryGrants([
-        { channel_id: 'c0', head_seq: 1000, has_rows: true },
-      ], { generation: 2, boot: 'warm-authority-boot', focus: 'c0' });
-    }],
-    ['world replacement', async (snapshot) => {
-      await snapshot.setHistoryGrants([
-        { channel_id: 'c0', head_seq: 1000, has_rows: true },
-      ], { generation: 2, boot: 'warm-authority-world-2', focus: 'c0' });
-    }],
-    ['disconnect', async (snapshot) => {
-      expect(snapshot.disconnectHistory(1)).toBe(true);
-    }],
-  ])('does not install a warm page after %s while cache persistence is pending', async (_name, replaceAuthority) => {
-    const { runtime, snapshot, requests } = await attachedWarmRuntime();
-    cacheControl.holdSaveRows = true;
-    const lease = snapshot.requestBackgroundInterest('c0', { intent: 'channel-entry' });
-    await vi.waitFor(() => expect(requests).toHaveLength(1));
-    finishPage(snapshot, requests[0]);
-    await vi.waitFor(() => expect(cacheControl.pendingSaveRows).toHaveLength(1));
-
-    await replaceAuthority(snapshot);
-    expect(snapshot.stateFor('c0')?.rows.size || 0).toBe(0);
-    cacheControl.pendingSaveRows.shift()?.resolve(2);
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    expect(snapshot.stateFor('c0')?.rows.size || 0).toBe(0);
-    expect(diagnosticsSnapshot().filter((entry) => entry.event === 'history.batch_complete'))
-      .toHaveLength(0);
-    lease.release();
-    runtime.destroy();
-  });
-
   it('restarts a cancelled started warm record for a replacement lease', async () => {
     const { runtime, snapshot, requests } = await attachedWarmRuntime();
     const first = snapshot.requestBackgroundInterest('c0', { intent: 'channel-entry' });

@@ -322,10 +322,11 @@ describe('current bounded Replica ownership (baseline memory-window UX)', () => 
     });
     expect((await cache.readBefore(CHANNEL, 99, 10, 10_000)).rows.map((item) => item.seq)).toEqual([1, 3]);
 
-    // Re-selecting the same owner exercises the public startup/reload path;
-    // physical rows remain the only source of materialized coverage.
-    await cache.ensureOwner('root', { world: 'coverage-reconcile' });
-    expect(cache.metaSnapshot().get(CHANNEL)).toMatchObject({
+    // A reload is a fresh cache owner over the same store; physical rows
+    // remain the only source of materialized coverage.
+    const reloaded = createChannelReplicaCache({ indexedDB: null });
+    await reloaded.ensureOwner('root', { world: 'coverage-reconcile' });
+    expect(reloaded.metaSnapshot().get(CHANNEL)).toMatchObject({
       rowCount: 2, oldestSeq: 1, newestSeq: 3,
       coverage: [{ lowSeq: 1, highSeq: 1 }, { lowSeq: 3, highSeq: 3 }],
     });
