@@ -159,6 +159,14 @@ function activationKey(snapshot) {
   return `${snapshot.channelId}:${snapshot.reading.activationID}:${snapshot.viewKey}`;
 }
 
+// The same key, from the hook's own inputs. Diagnostics must never be the
+// reason a commit reads layout, so this answers "can anything be emitted at
+// all" before a snapshot — which measures every mounted row — is built.
+function activationKeyOf(channelId, viewKey, reading) {
+  const session = reading?.getSession?.() || reading?.session || {};
+  return `${String(channelId || '')}:${String(reading?.activationID || session.activationID || '')}:${String(viewKey || '')}`;
+}
+
 function workSummary(snapshot) {
   const status = snapshot.history;
   const running = status.loading || status.demand.phase === 'pending';
@@ -285,7 +293,10 @@ export function useColdEntryDiagnostics({
   useLayoutEffect(() => {
     buildRef.current = build;
     emitRef.current = emit;
-    latestRef.current = build('commit');
+    // Installing the readers is the whole job. Building a snapshot here as well
+    // measured every mounted row on every commit — `build` changes identity
+    // whenever history/presentation/reading do — and the result was only a
+    // cache: the provider below and `emit` both build fresh when actually asked.
   }, [build, emit]);
 
   useLayoutEffect(() => registerColdEntryDiagnosticProvider(() => {
@@ -296,6 +307,11 @@ export function useColdEntryDiagnostics({
 
   useLayoutEffect(() => {
     const lifecycle = lifecycleRef.current;
+    // Nothing new can be said: same activation, and its state-change budget is
+    // spent. Returning before the snapshot keeps a settled channel free of
+    // per-commit layout reads instead of measuring rows to discard the result.
+    if (activationKeyOf(channelId, viewKey, reading) === lifecycle.key
+      && lifecycle.stateEmits >= MAX_STATE_EMITS) return undefined;
     const snapshot = buildRef.current?.('state-change');
     if (!snapshot) return undefined;
     latestRef.current = snapshot;

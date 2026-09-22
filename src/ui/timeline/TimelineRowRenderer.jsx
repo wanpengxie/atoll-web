@@ -3,6 +3,7 @@ import { actorNameFromMap } from '../../model/actor-display.js';
 import { isStandardActorIdentity } from '../../model/actor-visibility.js';
 import { redactSensitive, terminalContentEnvelope, terminalResultState, turnProcessObservations } from '../../model/terminal-result.js';
 import { isMobileProfile } from '../../model/device-profile.js';
+import { hasReadableTerminalContent } from '../../model/conversation-visibility.js';
 import { argsOf, hasCanonicalBody } from '../../protocol/envelope.js';
 import { DECISIONS, isSystemWord, TYPES } from '../../protocol/vocab.js';
 import { messageTimeLabel } from '../../util/time.js';
@@ -1074,7 +1075,6 @@ function supersededTurn(turn) {
 }
 
 function AgentAnswer({ turn, names, fold, onDownload, onPreview, onReply, onOpen }) {
-  if (supersededTurn(turn)) return null;
   const request = turn.request; const terminal = terminalContentEnvelope(turn);
   const stopped = isInterruptedTerminal(turn);
   const liveEnvelope = terminal || turn.provisional?.at(-1)?.envelope || null;
@@ -1084,8 +1084,16 @@ function AgentAnswer({ turn, names, fold, onDownload, onPreview, onReply, onOpen
   const visible = echo ? observations.slice(0, -1) : observations;
   const foldText = [...visible.map((item) => item.process.text), terminalText].filter(Boolean).join('\n\n');
   const content = visible.map(({ seq, envelope, process }) => { const slot = envelope.id || `${turn.requestId}:${seq}`; return <div key={slot} className="agent-progress-text" data-seq={seq}><ConversationAnswerSlot text={process.text} requestType={request.type} contentKey={`answer:${turn.requestId}:${slot}:body`} /></div>; });
-  if (terminal && !stopped) content.push(echo ? <div key={echo.envelope.id || `${turn.requestId}:${echo.seq}`} className="agent-final-text" data-seq={echo.seq} data-answer-slot={turn.requestId}><ConversationAnswerSlot text={echo.process.text} requestType={request.type} terminalPayload={argsOf(terminal)} contentKey={`answer:${turn.requestId}:${echo.envelope.id || echo.seq}:body`} /></div> : <div key={terminal.id || `${turn.requestId}:terminal`} className="agent-final-text" data-answer-slot={turn.requestId}><StructuredResult requestType={request.type} payload={argsOf(terminal)} contentKey={`answer:${turn.requestId}:terminal:body`} /></div>);
+  // A merged/preempted/bare-ack terminal is bookkeeping: it names the row that
+  // carries the answer, it is not one. Rendering it as the answer is where
+  // ✓ 已完成 and 结构化结果 came from. What the turn actually produced on its
+  // way there — every progress text — stays, because suppressing the whole
+  // turn threw that away too.
+  if (terminal && !stopped && (echo || hasReadableTerminalContent(terminal))) content.push(echo ? <div key={echo.envelope.id || `${turn.requestId}:${echo.seq}`} className="agent-final-text" data-seq={echo.seq} data-answer-slot={turn.requestId}><ConversationAnswerSlot text={echo.process.text} requestType={request.type} terminalPayload={argsOf(terminal)} contentKey={`answer:${turn.requestId}:${echo.envelope.id || echo.seq}:body`} /></div> : <div key={terminal.id || `${turn.requestId}:terminal`} className="agent-final-text" data-answer-slot={turn.requestId}><StructuredResult requestType={request.type} payload={argsOf(terminal)} contentKey={`answer:${turn.requestId}:terminal:body`} /></div>);
   const answerEnvelope = terminal || liveEnvelope || { id: `${turn.requestId}:answer`, sender: { id: agentId, kind: 'agent' }, payload: { body: { text: '' } } };
+  // Only a superseded turn that produced nothing at all gets no frame: with
+  // nothing to show, the bubble would read as the bare word 已完成.
+  if (supersededTurn(turn) && content.length === 0 && !stopped && !turn.terminalClosureOnly) return null;
   return <ReplyableMessageFrame envelope={answerEnvelope} turn={turn} onReply={terminal ? onReply : null} onOpen={onOpen}
     className={`agent-turn-bubble ${turn.terminal ? 'settled' : 'processing'}`} contentClassName="response-body"
     identity={<span className="actor-icon kind-agent">{String(nameOf(agentId, names) || 'A').slice(0, 1).toUpperCase()}</span>}
@@ -1147,7 +1155,8 @@ function TurnCard({ turn, names, selfId, access, targetAuthority, fold, approval
     {/* A superseded turn produced nothing: no answer bubble, and no record of
         the calls it made on the way there either. Leaving the calls behind put
         a bare 「1 次关联调用」 tail under a message whose body was suppressed. */}
-    {!supersededTurn(turn) && <ThreadCalls root={turn} thread={turn.thread} names={names} />}
+    {!(supersededTurn(turn) && !(turn.provisional?.length > 0))
+      && <ThreadCalls root={turn} thread={turn.thread} names={names} />}
   </section>;
 }
 

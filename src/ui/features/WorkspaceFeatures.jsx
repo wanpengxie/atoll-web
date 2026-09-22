@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Clock3, FileText } from 'lucide-react';
 import { turnProcessAuditFacts } from '../../model/terminal-result.js';
 import { argsOf } from '../../protocol/envelope.js';
@@ -9,10 +9,15 @@ import { ActorDetailPanel, RosterFeature } from './roster/RosterFeature.jsx';
 import { SearchFeature } from './search/SearchFeature.jsx';
 import { TaskDetailPanel } from './tasks/TaskDetailPanel.jsx';
 import { TasksFeature } from './tasks/TasksFeature.jsx';
-import { TerminalFeature } from './terminal/TerminalFeature.jsx';
 import { PanelCard } from '../primitives/PanelCard.jsx';
 import { SidePanel } from '../primitives/SidePanel.jsx';
 import { useModalFocus } from '../primitives/useModalFocus.js';
+
+// xterm and its addons are ~130KB that only a mounted terminal ever needs, and
+// a static import put them on the first-paint graph of every cold start — in
+// dev that is a few hundred extra module requests before anything renders.
+const TerminalFeature = lazy(() => import('./terminal/TerminalFeature.jsx')
+  .then((module) => ({ default: module.TerminalFeature })));
 
 export const WORKSPACE_FEATURE_PANEL = Object.freeze({
   roster: 'roster',
@@ -368,7 +373,7 @@ export function WorkspaceFeatures({
   return <>
     {filesActive && (contentVisible ? <FilesFeature key="files" channel={channel} port={files} visible onClose={files.commands?.close} /> : <InaccessibleFeature key="files-inaccessible" label="文件" />)}
     {tasksActive && (contentVisible ? <TasksFeature key="tasks" port={tasks} /> : <InaccessibleFeature key="tasks-inaccessible" label="任务" />)}
-    {terminalMounted && <TerminalFeature key={`terminal:${terminalChannelId}`} channelId={terminalChannelId} port={terminal} visible={terminal.visible} onClose={terminal.commands?.close} />}
+    {terminalMounted && <Suspense fallback={null}><TerminalFeature key={`terminal:${terminalChannelId}`} channelId={terminalChannelId} port={terminal} visible={terminal.visible} onClose={terminal.commands?.close} /></Suspense>}
   </>;
 }
 

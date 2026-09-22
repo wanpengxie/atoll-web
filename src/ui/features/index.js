@@ -12,4 +12,3 @@ export { ChannelAdministrationPanel, SpaceAdministrationPanel } from './governan
 export { SearchFeature } from './search/SearchFeature.jsx';
 export { TaskDetailPanel } from './tasks/TaskDetailPanel.jsx';
 export { TasksFeature } from './tasks/TasksFeature.jsx';
-export { TerminalFeature } from './terminal/TerminalFeature.jsx';

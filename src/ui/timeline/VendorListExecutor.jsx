@@ -1720,6 +1720,34 @@ export function VendorListExecutor({
     />;
   }
 
+  // The list is the authority on "the reader is at the oldest loaded row".
+  // This branch reconstructed that from wheel/keydown/touch instead, which
+  // leaves every other way of arriving there — dragging the scrollbar, a
+  // momentum tail, a restored position, a channel that simply opens short, and
+  // above all *already being at the top*, where the browser emits no further
+  // scroll at all — with nothing to ask for more history with. The public owner
+  // wires both of the list's own top signals (`startReached`, `atTopStateChange`)
+  // straight into its history demand; neither was wired here.
+  //
+  // Input evidence stays exactly as it is. It is a second source, not the only
+  // one.
+  const demandOlderFromList = () => {
+    const root = rootRef.current;
+    if (!root) return;
+    reportDomEvidence(Object.freeze({
+      type: 'scroll-position',
+      activationID: readingRef.current.activationID,
+      inputEpoch: navigationPolicy.currentInput().inputEpoch,
+      direction: 'older',
+      atTop: true,
+      scrollTop: Number(root.scrollTop || 0),
+      scrollHeight: Number(root.scrollHeight || 0),
+      clientHeight: Number(root.clientHeight || 0),
+      demandUnits: completeViewportUnits(root),
+    }));
+    scheduleObserve('layout');
+  };
+
   return <Virtuoso
     ref={virtuosoRef}
     className="timeline-message-list"
@@ -1749,8 +1777,12 @@ export function VendorListExecutor({
     />}
     followOutput={false}
     defaultItemHeight={132}
+    // `increaseViewportBy` is the anchor-retention budget: history prepends
+    // need rows kept mounted above the reader. `overscan` was a second, flat
+    // 900px of rendered rows stacked on top of it — the public owner renders
+    // 480px beyond the viewport in total, this rendered several times that,
+    // and every extra row pays a full projection rebuild on channel entry.
     increaseViewportBy={anchorRetentionExtent || 900}
-    overscan={900}
     scrollerRef={bindScroller}
     components={VIRTUOSO_COMPONENTS}
     context={listContext}
@@ -1863,5 +1895,7 @@ export function VendorListExecutor({
       restoreContentAnchor('layout');
       scheduleObserve('layout');
     }}
+    startReached={demandOlderFromList}
+    atTopStateChange={(atTop) => { if (atTop) demandOlderFromList(); }}
   />;
 }

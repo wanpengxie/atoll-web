@@ -29,9 +29,16 @@ function normalizedBookmark(value) {
 }
 
 // Resolve a saved semantic position against the one committed Presentation.
-// Exact identity wins; a deleted identity resumes at its recorded successor,
-// predecessor, nearest sequence, and finally the first surviving row. Only an
-// exact identity may reuse the saved row-local offset.
+// Exact identity wins; a deleted identity resumes at its recorded successor or
+// predecessor. Only an exact identity may reuse the saved row-local offset.
+//
+// Identity is the whole of it. A bookmark whose row is not in the committed
+// rows — the ordinary case when a channel is re-entered and its window starts
+// at the tail — resolves to nothing, and the caller issues no position command,
+// which leaves the reader at the latest. The previous nearest-sequence and
+// first-surviving-row fallbacks answered that case by picking a row the reader
+// had never been on and scrolling there, which reads as being thrown into the
+// middle of a channel you just opened.
 export function resolveReadingBookmark(rows = [], bookmark = null) {
   if (!bookmark?.messageID || rows.length === 0) return null;
   let index = rows.findIndex((row) => row.id === bookmark.messageID);
@@ -42,17 +49,22 @@ export function resolveReadingBookmark(rows = [], bookmark = null) {
   if (index < 0 && bookmark.predecessorID) {
     index = rows.findIndex((row) => row.id === bookmark.predecessorID);
   }
-  if (index < 0 && bookmark.seq) {
-    let distance = Number.POSITIVE_INFINITY;
-    rows.forEach((row, candidate) => {
-      const nextDistance = Math.abs(Number(row.seqLow || 0) - Number(bookmark.seq));
-      if (nextDistance < distance) {
-        distance = nextDistance;
-        index = candidate;
-      }
-    });
+  if (index < 0) {
+    // A bookmark that names a sequence outside the committed window is not a
+    // row still on its way — it is a saved position from another session whose
+    // row this window does not contain. Answering it with the first loaded row
+    // drops the reader into the middle of a channel they just opened; answering
+    // with nothing leaves them at the latest, which is where a fresh entry
+    // belongs. A bookmark without a sequence, or one inside the window, may
+    // still materialize and keeps its temporary place.
+    const seq = Number(bookmark.seq || 0);
+    if (seq > 0) {
+      const low = Number(rows[0]?.seqLow || 0);
+      const high = Number(rows[rows.length - 1]?.seqLow || 0);
+      if (low > 0 && high > 0 && (seq < Math.min(low, high) || seq > Math.max(low, high))) return null;
+    }
+    index = 0;
   }
-  if (index < 0) index = 0;
   const rowViewportOffset = Number(bookmark.rowViewportOffset);
   return Object.freeze({
     index,

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { SurfaceShell, useSurfaceTopology } from './SurfaceShell.jsx';
 import { useModalFocus } from '../ui/primitives/useModalFocus.js';
+import { diagnostic } from '../model/diagnostics.js';
 
 const VIEW_LABELS = Object.freeze({ conversation: '动态', tasks: '任务' });
 const VIEW_ENTRIES = Object.freeze(Object.entries(VIEW_LABELS));
@@ -94,6 +95,27 @@ function activityDuration(startedAt, now) {
   const seconds = Math.max(0, Math.floor((now - Number(startedAt || now)) / 1_000));
   const minutes = Math.floor(seconds / 60);
   return `${String(minutes).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+}
+
+// A channel row is the registry profile spread as-is, so any field on it is
+// whatever the registry sent. `name` has been observed arriving as an object,
+// which React refuses to render and which took the whole workspace down with
+// error #31 — a malformed label must not be able to white-screen the app.
+function channelLabel(channel, fallback = '') {
+  for (const value of [channel?.qualified_name, channel?.name, channel?.profile?.name, channel?.id]) {
+    if (typeof value === 'string' && value.trim()) return value;
+    if (typeof value === 'number') return String(value);
+    // Report the row that carried it instead of crashing on it. Without this
+    // the only evidence was a minified React #31 naming the object's keys.
+    if (value && typeof value === 'object') {
+      diagnostic('warn', 'channel_label.not_a_string', {
+        channelId: String(channel?.id || ''),
+        keys: Object.keys(value).slice(0, 8),
+        access: String(channel?.access || ''),
+      });
+    }
+  }
+  return fallback;
 }
 
 function actorShortName(actorId) {
@@ -269,7 +291,7 @@ function WorkspaceRail({ session, navigation, onClose, closeButtonRef, railRef, 
       >
         <span className="channel-glyph">#</span>
         <span className="channel-main">
-          <span className="channel-name">{channel.qualified_name || channel.name || channel.id}</span>
+          <span className="channel-name">{channelLabel(channel)}</span>
           {active.length > 0 && <span className="channel-agent-activity" aria-label={`${active.length} 项 Agent 正在运行`}>
             {active.slice(0, 2).map((entry) => <span className="channel-agent-timer" key={entry.requestId}><i /><b>{actorShortName(entry.agentId)}</b><time>{activityDuration(entry.startedAt, now)}</time></span>)}
             {active.length > 2 && <span className="channel-agent-more" title={`另有 ${active.length - 2} 项正在运行`}>+{active.length - 2}</span>}
@@ -639,7 +661,7 @@ export function WorkspaceLayout({
       <header className="channel-header">
         <div className="channel-identity">
           <button ref={mobileChannelToggleRef} type="button" className="mobile-channel-toggle" onClick={openMobileChannels} aria-label="打开频道列表">‹</button>
-          <div><p className="eyebrow">频道</p><h1 ref={channelHeadingRef} tabIndex={-1}>{channel?.qualified_name || channel?.name || '选择频道'}</h1></div>
+          <div><p className="eyebrow">频道</p><h1 ref={channelHeadingRef} tabIndex={-1}>{channelLabel(channel, '选择频道')}</h1></div>
         </div>
         <div className="channel-header-actions">
           <span className="seq-label">SEQ {Number(conversation?.state?.lastSeq || 0)}</span>
