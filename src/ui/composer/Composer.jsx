@@ -214,6 +214,7 @@ export const Composer = memo(function Composer({ model, commands, className = ''
   const composingRef = useRef(false);
   const compositionFrameRef = useRef(0);
   const pendingTextRef = useRef(null);
+  const sendInFlightRef = useRef(false);
   const dragDepthRef = useRef(0);
   const uploadJobsRef = useRef(0);
   const [interactionError, setInteractionError] = useState('');
@@ -334,12 +335,18 @@ export const Composer = memo(function Composer({ model, commands, className = ''
           doc: view.state.doc.toJSON(),
           editorRevision: current.draft.editorRevision + 1,
         };
-        invoke(current.edit ? owner.edit : owner.send, current.edit ? { newText: text } : { readingIntent: intent, draft: snapshot }).then((result) => {
+        // One draft is sent once. Until this send settles (the draft is
+        // cleared only after the durable outbox accepts it), a repeated Enter
+        // — key repeat, an impatient second press on a busy page — must not
+        // mint another message with the same text.
+        if (sendInFlightRef.current) return true;
+        sendInFlightRef.current = true;
+        Promise.resolve(invoke(current.edit ? owner.edit : owner.send, current.edit ? { newText: text } : { readingIntent: intent, draft: snapshot })).then((result) => {
           if (!result) return;
           applyingRef.current = true; editorRef.current?.commands.clearContent(false); applyingRef.current = false;
           pendingTextRef.current = null;
           bodiesRef.current.delete(latestRef.current.presentationKey);
-        });
+        }).finally(() => { sendInFlightRef.current = false; });
         return true;
       },
     },
@@ -537,7 +544,11 @@ export const Composer = memo(function Composer({ model, commands, className = ''
     cancelCompositionWork();
     const snapshot = liveSnapshot();
     if (!snapshot.text.trim() && !snapshot.attachments.length) return;
-    invoke(editMode ? commands.edit : commands.send, editMode ? { newText: snapshot.text } : { readingIntent, draft: snapshot }).then(clearAccepted);
+    if (sendInFlightRef.current) return;
+    sendInFlightRef.current = true;
+    Promise.resolve(invoke(editMode ? commands.edit : commands.send, editMode ? { newText: snapshot.text } : { readingIntent, draft: snapshot }))
+      .then(clearAccepted)
+      .finally(() => { sendInFlightRef.current = false; });
   };
   const chooseRow = (row) => openMode?.command?.(row);
   const uploadFiles = async (files) => {
