@@ -92,6 +92,7 @@ export function ConversationSurface({
   agentActivity = null,
   onAcknowledgeAgentActivity,
   pending = [],
+  awaiting = [],
   approvalStates = {},
   capabilityIndex = EMPTY_CAPABILITY_INDEX,
   onRequestCapability,
@@ -155,6 +156,7 @@ export function ConversationSurface({
   } = useWaitingEditingController({
     state,
     pending,
+    awaiting,
     capabilityIndex,
     onRequestCapability,
     onTaskControl,

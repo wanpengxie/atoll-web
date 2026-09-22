@@ -27,7 +27,7 @@ describe('durable attachment association', () => {
 
   it('rechecks send authority after the awaited draft read and before bulkPut', async () => {
     const store = createOutboxStore({ databaseName: `send-fence-${crypto.randomUUID()}` });
-    await store.writeDraft('p', 'c', { text: 'do not leak', editorRevision: 1 }, 0);
+    await store.writeDraft('p', 'c', { recipients: ['agent:keep:1'], editorRevision: 1 }, 0);
     let checks = 0;
     await expect(store.acceptDraft({
       principalId: 'p', channelId: 'c', expectedRevision: 1, editorRevision: 1,
@@ -41,13 +41,13 @@ describe('durable attachment association', () => {
     })).rejects.toThrow('发送授权已变化');
     expect(checks).toBe(2);
     expect(await store.restore('p')).toEqual([]);
-    expect((await store.restoreDrafts('p'))[0]).toMatchObject({ draft: { text: 'do not leak' } });
+    expect((await store.restoreDrafts('p'))[0]).toMatchObject({ draft: { recipients: ['agent:keep:1'] } });
     store.close();
   });
 
-  it('merges into the latest durable text inside one authorized transaction', async () => {
+  it('merges into the latest durable draft inside one authorized transaction', async () => {
     const store = createOutboxStore({ databaseName: `attachment-${crypto.randomUUID()}` });
-    await store.writeDraft('p', 'c', { text: 'latest', attachments: [], editorRevision: 3 }, 0);
+    await store.writeDraft('p', 'c', { recipients: ['agent:latest:1'], attachments: [], editorRevision: 3 }, 0);
     const result = await store.mergeDraftAttachments({
       principalId: 'p',
       channelId: 'c',
@@ -57,14 +57,14 @@ describe('durable attachment association', () => {
     });
     expect(result.record).toMatchObject({
       revision: 2,
-      draft: { text: 'latest', attachments: [{ resource_id: 'device:/c/a.txt', name: 'a.txt' }] },
+      draft: { recipients: ['agent:latest:1'], attachments: [{ resource_id: 'device:/c/a.txt', name: 'a.txt' }] },
     });
     store.close();
   });
 
   it('does not recreate a draft consumed after upload capture', async () => {
     const store = createOutboxStore({ databaseName: `attachment-${crypto.randomUUID()}` });
-    await store.writeDraft('p', 'c', { text: 'send me', editorRevision: 1 }, 0);
+    await store.writeDraft('p', 'c', { recipients: ['agent:send:1'], editorRevision: 1 }, 0);
     await store.acceptDraft({
       principalId: 'p', channelId: 'c', expectedRevision: 1, editorRevision: 1,
       submissions: [{
@@ -84,7 +84,7 @@ describe('durable attachment association', () => {
 
   it('marks a stale draft write as consumed while allowing a fresh write at the sentinel revision', async () => {
     const store = createOutboxStore({ databaseName: `attachment-${crypto.randomUUID()}` });
-    const first = await store.writeDraft('p', 'c', { text: 'late picker', editorRevision: 1 }, 0);
+    const first = await store.writeDraft('p', 'c', { recipients: ['agent:late:1'], editorRevision: 1 }, 0);
     const accepted = await store.acceptDraft({
       principalId: 'p', channelId: 'c', expectedRevision: first.record.revision, editorRevision: 1,
       submissions: [{
@@ -94,15 +94,15 @@ describe('durable attachment association', () => {
       authorize: () => true,
     });
 
-    const stale = await store.writeDraft('p', 'c', { text: 'late picker', editorRevision: 1 }, first.record.revision);
+    const stale = await store.writeDraft('p', 'c', { recipients: ['agent:late:1'], editorRevision: 1 }, first.record.revision);
     expect(stale).toMatchObject({ conflict: true, reason: 'draft_consumed', current: { draft: null } });
     expect((await store.restoreDrafts('p'))[0]).toMatchObject({ revision: accepted.record.revision, draft: null });
 
-    const sameRevision = await store.writeDraft('p', 'c', { text: 'late picker', editorRevision: 1 }, accepted.record.revision);
+    const sameRevision = await store.writeDraft('p', 'c', { recipients: ['agent:late:1'], editorRevision: 1 }, accepted.record.revision);
     expect(sameRevision).toMatchObject({ conflict: true, reason: 'draft_consumed', current: { draft: null } });
 
-    const fresh = await store.writeDraft('p', 'c', { text: 'new draft', editorRevision: 2 }, accepted.record.revision);
-    expect(fresh).toMatchObject({ conflict: false, record: { revision: accepted.record.revision + 1, draft: { text: 'new draft' } } });
+    const fresh = await store.writeDraft('p', 'c', { recipients: ['agent:fresh:1'], editorRevision: 2 }, accepted.record.revision);
+    expect(fresh).toMatchObject({ conflict: false, record: { revision: accepted.record.revision + 1, draft: { recipients: ['agent:fresh:1'] } } });
     store.close();
   });
 });

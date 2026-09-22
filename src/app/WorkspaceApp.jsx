@@ -1372,6 +1372,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     waitingRosterAuthority,
     selfId,
     pending: submission.pending,
+    awaiting: submission.awaiting,
     approvalStates: submission.approvalStates || {},
     capabilityIndex: capabilities,
     agentActivity: feed.agentActivityFor(navigation.activeChannelId),

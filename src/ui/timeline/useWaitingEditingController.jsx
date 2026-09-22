@@ -377,6 +377,65 @@ function isWaitingSubmission(row, channelId) {
     && WAITING_MESSAGE_TYPES.has(row.frame?.msg_type));
 }
 
+// A request this session handed to an Agent, rendered from local facts alone.
+// It carries no ledger identity yet and does not need one: Waiting is asking
+// "is this outstanding", which the sender already knows.
+function waitingPresentationFor(submissionState) {
+  if (submissionState === 'transmitting') return 'transmitting';
+  return ['accepted', 'uncertain'].includes(submissionState) ? 'confirming' : 'stored-local';
+}
+
+function localAwaitingTurn(row, submissionState) {
+  const frame = row.frame || {};
+  const request = {
+    id: row.messageId,
+    kind: 'request',
+    type: frame.msg_type,
+    payload: frame.payload,
+    audience: frame.audience || [],
+    visibility: frame.visibility || 'public',
+    ts: row.createdAt,
+    ...(frame.parent_id ? { parent_id: frame.parent_id } : {}),
+  };
+  return {
+    requestId: row.messageId,
+    request,
+    requestSeq: 0,
+    lastSeq: 0,
+    provisional: [],
+    terminal: null,
+    terminalSeq: 0,
+    status: 'pending',
+    local: true,
+    waitingPresentation: waitingPresentationFor(submissionState),
+  };
+}
+
+// Only this session's own hand-offs reach here, so a row is outstanding until
+// the live projection says otherwise. The moment the ledger carries any
+// progress for it, that projection takes over: a position fact shows it
+// through queuedTurnsOf, `processing` moves it out, a terminal closes it.
+function awaitingTurns(state, awaiting, pending, editingTargetId) {
+  // The durable submission list still carries the freshest hand-over state
+  // while it exists; after it is dropped the entry keeps its last known one.
+  const latestState = new Map((pending || []).map((row) => [row.messageId, row.state]));
+  const turns = [];
+  for (const row of awaiting || []) {
+    if (!row?.messageId || row.messageId === editingTargetId) continue;
+    if (!WAITING_MESSAGE_TYPES.has(row.frame?.msg_type)) continue;
+    // A hand-over the transport refused never reached the Agent.
+    const submissionState = latestState.get(row.messageId) || row.state;
+    if (submissionState && !WAITING_SUBMISSION_STATES.has(submissionState)) continue;
+    if (row.channelId && state?.channelId && row.channelId !== state.channelId) continue;
+    const canonical = timelineTurn(state, row.messageId);
+    if (canonical && (canonical.terminal || canonical.provisional?.length)) continue;
+    turns.push(canonical
+      ? { ...canonical, local: true, waitingPresentation: waitingPresentationFor(submissionState) }
+      : localAwaitingTurn(row, submissionState));
+  }
+  return turns;
+}
+
 function pendingWaitingTurns(state, pending, editingTargetId) {
   const turns = [];
   for (const row of pending || []) {
@@ -715,6 +774,7 @@ export function WaitingLayer({
 export function useWaitingEditingController({
   state,
   pending,
+  awaiting,
   capabilityIndex,
   onRequestCapability,
   onTaskControl,
@@ -734,11 +794,16 @@ export function useWaitingEditingController({
   const editingReplacementId = editing?.replacementId || resumePin;
   const waitingEditingTargetId = editing?.holdId ? editing.targetId : '';
   const controlVersion = Number(state?._timelineControlVersion || state?._timelineRevision || 0);
-  const queuedTurns = useMemo(() => [
-    ...queuedTurnsOf(state, waitingEditingTargetId),
-    ...pendingWaitingTurns(state, pending, waitingEditingTargetId),
-  ].sort((left, right) => Number(left.requestSeq || left.request?.ts || 0)
-    - Number(right.requestSeq || right.request?.ts || 0)), [controlVersion, pending, state, waitingEditingTargetId]);
+  const queuedTurns = useMemo(() => {
+    const ledger = queuedTurnsOf(state, waitingEditingTargetId);
+    const known = new Set(ledger.map((turn) => String(turn.requestId || '')));
+    return [
+      ...ledger,
+      ...awaitingTurns(state, awaiting, pending, waitingEditingTargetId)
+        .filter((turn) => !known.has(String(turn.requestId || ''))),
+    ].sort((left, right) => Number(left.requestSeq || left.request?.ts || 0)
+      - Number(right.requestSeq || right.request?.ts || 0));
+  }, [awaiting, controlVersion, pending, state, waitingEditingTargetId]);
   const timelineLocalEchoes = useMemo(
     () => (pending || []).filter((row) => !isWaitingSubmission(row, state?.channelId)),
     [pending, state?.channelId],

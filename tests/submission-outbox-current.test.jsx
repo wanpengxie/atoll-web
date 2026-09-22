@@ -394,8 +394,8 @@ describe('current submission owner: outbox-store + composer runtime', () => {
 
   it('does not consume a newer draft when accepting immutable frames', async () => {
     const store = createOutboxStore({ databaseName: databaseName() });
-    const first = await store.writeDraft('root', 'c0', { text: 'first', editorRevision: 1 }, 0);
-    const newer = await store.writeDraft('root', 'c0', { text: 'newer', editorRevision: 2 }, first.record.revision);
+    const first = await store.writeDraft('root', 'c0', { recipients: ['agent:first:1'], editorRevision: 1 }, 0);
+    const newer = await store.writeDraft('root', 'c0', { recipients: ['agent:newer:1'], editorRevision: 2 }, first.record.revision);
     const result = await store.acceptDraft({
       principalId: 'root',
       channelId: 'c0',
@@ -405,19 +405,19 @@ describe('current submission owner: outbox-store + composer runtime', () => {
     });
     expect(result).toMatchObject({ accepted: true, consumed: false });
     expect((await store.restore('root'))[0]).toMatchObject({ messageId: 'm6' });
-    expect((await store.restoreDrafts('root'))[0]).toMatchObject({ revision: newer.record.revision, draft: { text: 'newer' } });
+    expect((await store.restoreDrafts('root'))[0]).toMatchObject({ revision: newer.record.revision, draft: { recipients: ['agent:newer:1'] } });
     store.close();
   });
 
   it('fails closed for a stale picker update after another owner consumed the draft', async () => {
     const harness = runtimeHarness({ principalId: 'late-picker-root' });
-    const first = await harness.store.writeDraft(harness.principalId, 'c0', { text: 'late picker', editorRevision: 1 }, 0);
+    const first = await harness.store.writeDraft(harness.principalId, 'c0', { recipients: ['agent:late:1'], editorRevision: 1 }, 0);
     const writeDraft = vi.fn((...args) => harness.store.writeDraft(...args));
     const outbox = { ...harness.store, writeDraft };
     harness.outboxFactory = () => outbox;
     const { result, unmount } = renderHook(() => useComposerSubmissionRuntime(harness));
     await waitFor(() => expect(result.current.draftFor('c0')).toMatchObject({
-      revision: first.record.revision, text: 'late picker',
+      revision: first.record.revision, recipients: ['agent:late:1'],
     }));
 
     const accepted = await harness.store.acceptDraft({
@@ -427,31 +427,31 @@ describe('current submission owner: outbox-store + composer runtime', () => {
     expect(accepted).toMatchObject({ accepted: true, consumed: true, record: { draft: null } });
 
     await expect(act(async () => result.current.updateDraft(
-      'c0', { text: 'late picker', editorRevision: 1 }, { preserveEditorRevision: true },
+      'c0', { recipients: ['agent:late:1'], editorRevision: 1 }, { preserveEditorRevision: true },
     ))).rejects.toMatchObject({ code: 'draft_consumed' });
     expect(writeDraft).toHaveBeenCalledTimes(1);
     expect((await harness.store.restoreDrafts(harness.principalId))[0]).toMatchObject({
       revision: accepted.record.revision, draft: null,
     });
-    await waitFor(() => expect(result.current.draftFor('c0')).toMatchObject({ text: '', editorRevision: 0 }));
+    await waitFor(() => expect(result.current.draftFor('c0')).toMatchObject({ recipients: [], editorRevision: 0 }));
 
     await act(async () => {
-      await result.current.updateDraft('c0', { text: 'fresh draft', editorRevision: 2 }, { preserveEditorRevision: true });
+      await result.current.updateDraft('c0', { recipients: ['agent:fresh:1'], editorRevision: 2 }, { preserveEditorRevision: true });
     });
-    expect((await harness.store.restoreDrafts(harness.principalId))[0]).toMatchObject({ draft: { text: 'fresh draft' } });
+    expect((await harness.store.restoreDrafts(harness.principalId))[0]).toMatchObject({ draft: { recipients: ['agent:fresh:1'] } });
     unmount();
     harness.store.close();
   });
 
   it('rejects a same-runtime pending picker snapshot after send consumes its draft', async () => {
     const harness = runtimeHarness({ principalId: 'same-runtime-picker-root' });
-    const first = await harness.store.writeDraft(harness.principalId, 'c0', { text: 'pending picker', editorRevision: 1 }, 0);
+    const first = await harness.store.writeDraft(harness.principalId, 'c0', { recipients: ['agent:pending:1'], editorRevision: 1 }, 0);
     const writeDraft = vi.fn((...args) => harness.store.writeDraft(...args));
     const outbox = { ...harness.store, writeDraft };
     harness.outboxFactory = () => outbox;
     const { result, unmount } = renderHook(() => useComposerSubmissionRuntime(harness));
     await waitFor(() => expect(result.current.draftFor('c0')).toMatchObject({
-      revision: first.record.revision, text: 'pending picker',
+      revision: first.record.revision, recipients: ['agent:pending:1'],
     }));
 
     await act(async () => {
@@ -464,7 +464,7 @@ describe('current submission owner: outbox-store + composer runtime', () => {
     expect(consumed).toMatchObject({ draft: null, editorRevision: 1 });
 
     await expect(act(async () => result.current.updateDraft(
-      'c0', { text: 'pending picker', editorRevision: 1 }, { preserveEditorRevision: true },
+      'c0', { recipients: ['agent:pending:1'], editorRevision: 1 }, { preserveEditorRevision: true },
     ))).rejects.toMatchObject({ code: 'draft_consumed' });
     expect(writeDraft).toHaveBeenCalledTimes(1);
     expect((await harness.store.restoreDrafts(harness.principalId))[0]).toMatchObject({ draft: null });

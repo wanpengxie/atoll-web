@@ -41,11 +41,15 @@ function localSubmission(id, { type = 'agent.ask', state = 'accepted' } = {}) {
   };
 }
 
-function setup({ state, pending = [] }) {
+// These rows are this session's own hand-offs, which is exactly what the
+// awaiting set holds. The durable pending list drops them as soon as the
+// server acknowledges the write, so feeding them only as `pending` measured a
+// window that does not exist at runtime.
+function setup({ state, pending = [], awaiting = pending }) {
   const onRequestCapability = vi.fn();
   const capabilityIndex = { get: () => undefined };
   const { result } = renderHook(() => useWaitingEditingController({
-    state, pending, capabilityIndex, onRequestCapability,
+    state, pending, awaiting, capabilityIndex, onRequestCapability,
     onTaskControl: vi.fn(), onComposerEditChange: vi.fn(),
   }));
   return result;

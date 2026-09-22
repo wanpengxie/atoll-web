@@ -152,8 +152,12 @@ describe('Composer 渲染隔离（F6-PERF-06，轻量版：不拉起 5000 行 Ti
     const commands = { changeDraft: vi.fn() };
     render(<><Sibling /><Composer model={model} commands={commands} /></>);
     const before = siblingRenders;
-    await user.type(screen.getByRole('textbox', { name: '消息' }), '这段输入不应驱动兄弟组件重渲染');
-    expect(commands.changeDraft).toHaveBeenCalled();
+    const editor = screen.getByRole('textbox', { name: '消息' });
+    await user.type(editor, '这段输入不应驱动兄弟组件重渲染');
+    expect(editor.textContent).toContain('这段输入不应驱动兄弟组件重渲染');
+    // Typing is not a durable write. The draft catches up once the typist
+    // pauses, so no character may reach the draft owner on its own.
+    expect(commands.changeDraft).not.toHaveBeenCalled();
     expect(siblingRenders).toBe(before);
   });
 });
@@ -184,7 +188,7 @@ describe('AD-361 composition draft persistence contract', () => {
     return { frames, runFrame, restore };
   }
 
-  it('lets confirmed IME text paint before serializing the draft', async () => {
+  it('lets confirmed IME text paint without any draft write on the typing path', async () => {
     const animation = manualAnimationFrames();
     const changeDraft = vi.fn();
     const send = vi.fn().mockResolvedValue(['message-1']);
@@ -205,16 +209,14 @@ describe('AD-361 composition draft persistence contract', () => {
       expect(input.textContent).toContain('中');
       expect(changeDraft).not.toHaveBeenCalled();
 
-      // First frame waits for ProseMirror's composing flag to settle; the
-      // second frame publishes the already-painted text, and only its idle
-      // callback is allowed to serialize the durable draft.
+      // The body is never written down, so neither the composition frames nor
+      // anything after them may reach the draft owner.
       act(animation.runFrame);
       expect(changeDraft).not.toHaveBeenCalled();
       act(animation.runFrame);
+      await new Promise((resolve) => setTimeout(resolve, 0));
       expect(changeDraft).not.toHaveBeenCalled();
-      await waitFor(() => expect(changeDraft).toHaveBeenCalledWith(expect.objectContaining({ text: '中' })));
 
-      changeDraft.mockClear();
       fireEvent.compositionStart(input, { data: '文' });
       await user.type(input, '文');
       fireEvent.compositionEnd(input, { data: '文' });
@@ -254,10 +256,14 @@ describe('AD-361 composition draft persistence contract', () => {
       act(animation.runFrame);
       expect(changeDraft).not.toHaveBeenCalled();
 
+      // Handing the editor to another channel must neither replay the old
+      // composition nor start writing the new one down.
       const newInput = screen.getByRole('textbox', { name: '消息' });
       await user.type(newInput, '新');
-      await waitFor(() => expect(changeDraft).toHaveBeenCalledWith(expect.objectContaining({ text: '新' })));
-      expect(changeDraft.mock.calls.map(([value]) => value.text)).not.toContain('旧');
+      expect(newInput.textContent).toContain('新');
+      expect(newInput.textContent).not.toContain('旧');
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(changeDraft).not.toHaveBeenCalled();
     } finally {
       animation.restore();
     }
@@ -316,9 +322,9 @@ describe('AD-347 describe-gated slash candidate contract', () => {
     await user.type(screen.getByRole('textbox', { name: '消息' }), '/');
     expect(await screen.findByRole('option', { name: /\/compact/ })).toBeTruthy();
     expect(screen.queryByRole('option', { name: /\/new/ })).toBeNull();
-    expect(latest.model.commandMenu.rows
-      .filter((row) => row.scope === 'agent')
-      .map((row) => row.command)).toEqual(['compact']);
+    const offered = screen.getAllByRole('option').map((row) => row.textContent || '');
+    expect(offered.filter((label) => label.includes('/compact'))).toHaveLength(1);
+    expect(offered.some((label) => label.includes('/new'))).toBe(false);
   });
 });
 

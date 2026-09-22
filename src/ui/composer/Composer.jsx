@@ -1,4 +1,6 @@
-import React, { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { commandRowsFor, mentionRowsFor } from './composer-model.js';
+import { createSuggestionExtension } from './composer-suggestions.js';
+import React, { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { EditorContent, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
@@ -10,6 +12,8 @@ const actorName = (actor) => actor?.name || actor?.label || actor?.id || '未知
 const textFromDocument = (doc) => (doc
   ? doc.textBetween(0, doc.content.size, '\n', '\n')
   : '') || '';
+const MENTION_MODE = 'composerMentionSuggestion';
+const COMMAND_MODE = 'composerCommandSuggestion';
 const editorText = (editor) => (editor && !editor.isDestroyed ? textFromDocument(editor.state.doc) : '') || '';
 const editorDocument = (text = '') => ({
   type: 'doc',
@@ -209,25 +213,34 @@ export const Composer = memo(function Composer({ model, commands, className = ''
   const applyingRef = useRef(false);
   const composingRef = useRef(false);
   const compositionFrameRef = useRef(0);
-  const draftIdleRef = useRef(null);
   const pendingTextRef = useRef(null);
   const dragDepthRef = useRef(0);
   const uploadJobsRef = useRef(0);
   const [interactionError, setInteractionError] = useState('');
-  const [activeMention, setActiveMention] = useState(0);
-  const [activeCommand, setActiveCommand] = useState(0);
-  const [dismissedMentionText, setDismissedMentionText] = useState('');
-  const [dismissedCommandText, setDismissedCommandText] = useState('');
+  const [activeIndex, setActiveIndex] = useState(0);
+  const activeIndexRef = useRef(0);
+  // Unsent text per channel, for as long as this Composer stays mounted.
+  // Switching channels restores from here; a reload deliberately does not,
+  // because a reload is exactly when we stop knowing whether it still applies.
+  const bodiesRef = useRef(new Map());
+
   const [fileDragActive, setFileDragActive] = useState(false);
   const [uploadBusy, setUploadBusy] = useState(false);
   const [channelFileBusy, setChannelFileBusy] = useState(false);
-  const [hasText, setHasText] = useState(Boolean(model.draft.text.trim()));
+  // `@` and `/` are input modes owned by ProseMirror. This is the only state
+  // typing can reach, and only while such a mode is open; plain characters
+  // never enter one, so they schedule no render at all.
+  const [openMode, setOpenMode] = useState(null);
+  // Esc closes the mode at this trigger position for good. A fact about one
+  // position, not a rendered value.
+  const dismissedRef = useRef({});
+  const suggestionPortRef = useRef(null);
   const editMode = Boolean(model.edit);
   const disabled = !model.permissions.canEditDraft;
-  const mentionQuery = !editMode && dismissedMentionText !== model.draft.text ? model.mentionQuery : null;
-  const mentionRows = mentionQuery?.rows || [];
-  const commandMenu = !editMode && dismissedCommandText !== model.draft.text ? model.commandMenu : null;
-  const commandRows = commandMenu?.rows || [];
+  const mentionRows = openMode?.name === MENTION_MODE ? openMode.rows : [];
+  const commandOpen = openMode?.name === COMMAND_MODE ? openMode : null;
+  const commandRows = commandOpen?.rows || [];
+  const activeRows = openMode?.rows || [];
 
   const invoke = useCallback((operation, ...args) => {
     setInteractionError('');
@@ -239,47 +252,18 @@ export const Composer = memo(function Composer({ model, commands, className = ''
     }
   }, []);
 
-  const cancelDraftIdle = useCallback(() => {
-    const pending = draftIdleRef.current;
-    if (!pending) return;
-    if (pending.kind === 'idle') globalThis.cancelIdleCallback?.(pending.id);
-    else globalThis.clearTimeout(pending.id);
-    draftIdleRef.current = null;
-  }, []);
-
   const cancelCompositionWork = useCallback(() => {
     if (compositionFrameRef.current) globalThis.cancelAnimationFrame?.(compositionFrameRef.current);
     compositionFrameRef.current = 0;
     composingRef.current = false;
-    cancelDraftIdle();
-  }, [cancelDraftIdle]);
+  }, []);
 
   const syncEditorPresentation = useCallback((current) => {
     if (!current || current !== editorRef.current || current.isDestroyed) return;
     const value = editorText(current);
     pendingTextRef.current = value;
-    setHasText(Boolean(value.trim()));
-    setDismissedMentionText('');
-    setDismissedCommandText('');
+    bodiesRef.current.set(latestRef.current.model.channelId, value);
   }, []);
-
-  const persistDraftWhenIdle = useCallback((current) => {
-    cancelDraftIdle();
-    const persist = () => {
-      draftIdleRef.current = null;
-      if (!current || current !== editorRef.current || current.isDestroyed || composingRef.current || current.view.composing) return;
-      const value = editorText(current);
-      invoke(latestRef.current.commands.changeDraft, { text: value, doc: current.getJSON() });
-    };
-    if (typeof globalThis.requestIdleCallback === 'function') {
-      draftIdleRef.current = {
-        kind: 'idle',
-        id: globalThis.requestIdleCallback(persist, { timeout: 300 }),
-      };
-    } else {
-      draftIdleRef.current = { kind: 'timeout', id: globalThis.setTimeout(persist, 0) };
-    }
-  }, [cancelDraftIdle, invoke]);
 
   const syncAfterComposition = useCallback((current) => {
     if (compositionFrameRef.current) globalThis.cancelAnimationFrame?.(compositionFrameRef.current);
@@ -293,71 +277,67 @@ export const Composer = memo(function Composer({ model, commands, className = ''
         compositionFrameRef.current = 0;
         composingRef.current = false;
         syncEditorPresentation(current);
-        persistDraftWhenIdle(current);
       });
     };
     compositionFrameRef.current = globalThis.requestAnimationFrame(waitForEditor);
-  }, [persistDraftWhenIdle, syncEditorPresentation]);
+  }, [syncEditorPresentation]);
 
   useEffect(() => () => {
     cancelCompositionWork();
   }, [cancelCompositionWork]);
 
   const editor = useEditor({
-    extensions: [StarterKit.configure({ blockquote: false, bulletList: false, codeBlock: false, heading: false, horizontalRule: false, listItem: false, orderedList: false }), Placeholder.configure({ placeholder: '输入消息；@ 选择成员，/ 使用命令' })],
-    content: model.draft.doc?.type === 'doc' ? model.draft.doc : editorDocument(model.draft.text),
+    extensions: [
+      StarterKit.configure({ blockquote: false, bulletList: false, codeBlock: false, heading: false, horizontalRule: false, listItem: false, orderedList: false }),
+      Placeholder.configure({ placeholder: '输入消息；@ 选择成员，/ 使用命令' }),
+      createSuggestionExtension({ name: MENTION_MODE, char: '@', port: suggestionPortRef }),
+      createSuggestionExtension({ name: COMMAND_MODE, char: '/', startOfLine: true, port: suggestionPortRef }),
+    ],
+    content: bodiesRef.current.has(model.channelId)
+      ? editorDocument(bodiesRef.current.get(model.channelId))
+      : (model.draft.doc?.type === 'doc' ? model.draft.doc : editorDocument(model.draft.text)),
     editable: !disabled,
     immediatelyRender: false,
     shouldRerenderOnTransaction: false,
     editorProps: {
       attributes: { 'aria-label': '消息', 'aria-multiline': 'true', 'data-testid': 'composer-input', class: 'composer-editor', role: 'textbox' },
       handleKeyDown: (view, event) => {
-        const { model: current, commands: owner, readingIntent: intent } = latestRef.current;
+        const { model: current, commands: owner, readingIntent: intent, mention, command } = latestRef.current;
         const currentEditor = editorRef.current;
         if (event.isComposing) return false;
         if (event.key === 'Backspace' && view.state.selection.empty && view.state.selection.from <= 1 && current.draft.recipients.length) {
           const last = current.draft.recipients.at(-1);
           event.preventDefault(); invoke(owner.removeMention, typeof last === 'string' ? last : last.id); return true;
         }
-        const mention = current.mentionQuery;
-        const command = current.commandMenu;
         if (event.key === 'Escape') {
-          if (mention?.rows?.length) { event.preventDefault(); setDismissedMentionText(current.draft.text); return true; }
-          if (command) { event.preventDefault(); setDismissedCommandText(current.draft.text); return true; }
+          if (mention?.rows?.length || command) {
+            return false;
+          }
           if (current.draft.replyTarget) { event.preventDefault(); invoke(owner.clearReply); return true; }
         }
-        if (mention?.rows?.length && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) { event.preventDefault(); setActiveMention((value) => (value + (event.key === 'ArrowDown' ? 1 : -1) + mention.rows.length) % mention.rows.length); return true; }
-        if (command?.rows?.length && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) { event.preventDefault(); setActiveCommand((value) => (value + (event.key === 'ArrowDown' ? 1 : -1) + command.rows.length) % command.rows.length); return true; }
+        // Stand down only while the open mode actually has something to pick.
+        // A trigger with no candidates (a literal address, an unmatched
+        // command) must not swallow the send.
+        if (latestRef.current.openMode?.rows?.length) return false;
         if (event.key !== 'Enter' || event.shiftKey) return false;
         event.preventDefault(); event.stopPropagation();
-        if (mention?.rows?.length) {
-          invoke(owner.pickMention, mention.rows[activeMention % mention.rows.length] || mention.rows[0]).then((next) => {
-            if (!next || !currentEditor || currentEditor.isDestroyed) return;
-            applyingRef.current = true; currentEditor.commands.setContent(next.doc?.type === 'doc' ? next.doc : editorDocument(next.text), { emitUpdate: false }); applyingRef.current = false;
-            pendingTextRef.current = null; setHasText(Boolean(next.text?.trim())); currentEditor.commands.focus('end');
-          });
-          return true;
-        }
-        if (command?.rows?.length) {
-          const text = `/${(command.rows[activeCommand % command.rows.length] || command.rows[0]).command} `;
-          invoke(owner.changeDraft, { text }).then(() => {
-            if (!currentEditor || currentEditor.isDestroyed) return;
-            applyingRef.current = true; currentEditor.commands.setContent(editorDocument(text), { emitUpdate: false }); applyingRef.current = false;
-            pendingTextRef.current = null; setHasText(true); currentEditor.commands.focus('end');
-          });
-          return true;
-        }
         // Enter may arrive before the deferred post-composition callback. Read
         // the live editor snapshot, but cancel that callback synchronously so
         // it cannot write the consumed composition back into the draft after
         // the send has accepted it.
         cancelCompositionWork();
         const text = textFromDocument(view.state.doc);
-        const snapshot = { ...current.draft, text, doc: view.state.doc.toJSON(), editorRevision: current.draft.editorRevision + (text === current.draft.text ? 0 : 1) };
+        const snapshot = {
+          ...current.draft,
+          text,
+          doc: view.state.doc.toJSON(),
+          editorRevision: current.draft.editorRevision + 1,
+        };
         invoke(current.edit ? owner.edit : owner.send, current.edit ? { newText: text } : { readingIntent: intent, draft: snapshot }).then((result) => {
           if (!result) return;
           applyingRef.current = true; editorRef.current?.commands.clearContent(false); applyingRef.current = false;
-          pendingTextRef.current = null; setHasText(false);
+          pendingTextRef.current = null;
+          bodiesRef.current.delete(current.channelId);
         });
         return true;
       },
@@ -366,13 +346,76 @@ export const Composer = memo(function Composer({ model, commands, className = ''
       if (applyingRef.current || composingRef.current || current.isDestroyed || current.view.composing) return;
       const value = editorText(current);
       pendingTextRef.current = value;
-      setHasText(Boolean(value.trim()));
-      setDismissedMentionText(''); setDismissedCommandText('');
-      invoke(latestRef.current.commands.changeDraft, { text: value, doc: current.getJSON() });
+      bodiesRef.current.set(latestRef.current.model.channelId, value);
     },
   }, [model.channelId]);
   editorRef.current = editor;
-  latestRef.current = { model, commands, readingIntent };
+  latestRef.current = { model, commands, readingIntent, openMode };
+  activeIndexRef.current = activeIndex;
+  // Everything the plugin needs that changes between renders. The plugin is
+  // built once per editor and reads through this, so a mode never depends on
+  // the draft and typing never has to keep it in step.
+  suggestionPortRef.current = {
+    allow: (name, range) => !editMode && dismissedRef.current[name] !== range.from,
+    items: (name, query) => (name === MENTION_MODE
+      ? mentionRowsFor(query, model.mentionCandidates)
+      : commandRowsFor(query, model.controls.commands, model.commandDefinitions).rows),
+    open: (name, props) => {
+      const view = name === MENTION_MODE
+        ? { rows: mentionRowsFor(props.query, model.mentionCandidates), reason: '' }
+        : commandRowsFor(props.query, model.controls.commands, model.commandDefinitions);
+      setOpenMode((previous) => (previous && previous.name === name && previous.query === props.query
+        ? previous
+        : { name, query: props.query, command: props.command, ...view }));
+    },
+    close: (name) => setOpenMode((previous) => (previous?.name === name ? null : previous)),
+    // `SuggestionKeyDownProps` carries only { view, event, range } — the rows
+    // and the select callback live in the open mode this component already
+    // holds, so read them from there.
+    keyDown: (name, props) => {
+      const { event } = props;
+      if (event.key === 'Escape' || event.key === 'Esc') {
+        dismissedRef.current[name] = props.range?.from;
+        return false;
+      }
+      if (!openMode || openMode.name !== name) return false;
+      const rows = openMode.rows || [];
+      if (!rows.length) return false;
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        const step = event.key === 'ArrowDown' ? 1 : -1;
+        setActiveIndex((value) => (value + step + rows.length) % rows.length);
+        return true;
+      }
+      if (event.key === 'Enter' && !event.shiftKey) {
+        openMode.command(rows[activeIndexRef.current % rows.length] || rows[0]);
+        return true;
+      }
+      return false;
+    },
+    // One transaction over the range the plugin owns. The body is never read
+    // back, rewritten, or routed through the draft.
+    select: (name, { editor, range, item }) => {
+      if (!item) return;
+      if (name === MENTION_MODE) {
+        // A trigger at the end of the body leaves the space that preceded it
+        // dangling; take it with the range so the message reads normally.
+        let from = range.from;
+        if (range.to >= editor.state.doc.content.size - 1) {
+          while (from > 1 && /[ \t]/u.test(editor.state.doc.textBetween(from - 1, from))) from -= 1;
+        }
+        editor.chain().focus().deleteRange({ from, to: range.to }).run();
+        pendingTextRef.current = editorText(editor);
+        bodiesRef.current.set(latestRef.current.model.channelId, pendingTextRef.current);
+        invoke(latestRef.current.commands.pickMention, item);
+        dismissedRef.current = {};
+        return;
+      }
+      editor.chain().focus().insertContentAt(range, `/${item.command} `).run();
+      pendingTextRef.current = editorText(editor);
+      bodiesRef.current.set(latestRef.current.model.channelId, pendingTextRef.current);
+      dismissedRef.current = {};
+    },
+  };
 
   const presentationKey = `${model.channelId}\u0000${model.editSession?.targetId || ''}`;
   const compositionOwnerRef = useRef({ editor, presentationKey });
@@ -410,17 +453,18 @@ export const Composer = memo(function Composer({ model, commands, className = ''
     // destroyed by useEditor before this passive effect runs. Once destroyed,
     // even state-only helpers such as getText/getJSON are no longer valid.
     if (!editor || editor.isDestroyed) return;
-    const localText = editorText(editor);
-    if (pendingTextRef.current === model.draft.text) pendingTextRef.current = null;
     const ownerChanged = lastPresentationKeyRef.current !== presentationKey;
-    if (ownerChanged) lastPresentationKeyRef.current = presentationKey;
-    if (!ownerChanged && pendingTextRef.current != null) return;
-    if (localText === model.draft.text) return;
+    if (!ownerChanged) return;
+    lastPresentationKeyRef.current = presentationKey;
+    const restored = bodiesRef.current.has(model.channelId)
+      ? bodiesRef.current.get(model.channelId)
+      : model.draft.text;
+    if (editorText(editor) === restored) return;
     applyingRef.current = true;
-    editor.commands.setContent(model.draft.doc?.type === 'doc' ? model.draft.doc : editorDocument(model.draft.text), { emitUpdate: false });
+    editor.commands.setContent(editorDocument(restored), { emitUpdate: false });
     applyingRef.current = false;
-    setHasText(Boolean(model.draft.text.trim()));
-  }, [editor, model.draft.doc, model.draft.editorRevision, model.draft.text, presentationKey]);
+    pendingTextRef.current = restored;
+  }, [editor, model.channelId, model.draft.text, presentationKey]);
   const previousEditTargetRef = useRef('');
   useEffect(() => {
     const targetId = model.editSession?.targetId || '';
@@ -438,8 +482,7 @@ export const Composer = memo(function Composer({ model, commands, className = ''
     });
     return () => cancelAnimationFrame(frame);
   }, [editor, model.editSession?.targetId]);
-  useEffect(() => { setActiveMention(0); }, [model.mentionQuery?.query]);
-  useEffect(() => { setActiveCommand(0); }, [model.commandMenu?.query]);
+  useEffect(() => { setActiveIndex(0); }, [openMode?.name, openMode?.query]);
   useLayoutEffect(() => {
     if (editMode || !targetRef.current || !inputAreaRef.current) return undefined;
     const place = () => placeTarget(targetRef.current, inputAreaRef.current);
@@ -476,12 +519,18 @@ export const Composer = memo(function Composer({ model, commands, className = ''
 
   const liveSnapshot = () => {
     const value = editorText(editor);
-    return { ...model.draft, text: value, doc: editor?.getJSON() || editorDocument(value), editorRevision: model.draft.editorRevision + (value === model.draft.text ? 0 : 1) };
+    return {
+      ...model.draft,
+      text: value,
+      doc: editor?.getJSON() || editorDocument(value),
+      editorRevision: model.draft.editorRevision + 1,
+    };
   };
   const clearAccepted = (result) => {
     if (!result || !editor || editor.isDestroyed) return;
     applyingRef.current = true; editor.commands.clearContent(false); applyingRef.current = false;
-    pendingTextRef.current = null; setHasText(false);
+    pendingTextRef.current = null;
+    bodiesRef.current.delete(model.channelId);
   };
   const submit = (event) => {
     event?.preventDefault?.();
@@ -490,19 +539,7 @@ export const Composer = memo(function Composer({ model, commands, className = ''
     if (!snapshot.text.trim() && !snapshot.attachments.length) return;
     invoke(editMode ? commands.edit : commands.send, editMode ? { newText: snapshot.text } : { readingIntent, draft: snapshot }).then(clearAccepted);
   };
-  const chooseMention = (row) => invoke(commands.pickMention, row).then((next) => {
-    if (!next || !editor || editor.isDestroyed) return;
-    applyingRef.current = true; editor.commands.setContent(next.doc?.type === 'doc' ? next.doc : editorDocument(next.text), { emitUpdate: false }); applyingRef.current = false;
-    pendingTextRef.current = null; setHasText(Boolean(next.text?.trim())); editor.commands.focus('end');
-  });
-  const chooseCommand = (row) => {
-    const text = `/${row.command} `;
-    invoke(commands.changeDraft, { text }).then(() => {
-      if (!editor || editor.isDestroyed) return;
-      applyingRef.current = true; editor.commands.setContent(editorDocument(text), { emitUpdate: false }); applyingRef.current = false;
-      pendingTextRef.current = null; setHasText(true); editor.commands.focus('end');
-    });
-  };
+  const chooseRow = (row) => openMode?.command?.(row);
   const uploadFiles = async (files) => {
     if (!files.length || editMode || !model.permissions.canTransmit) return;
     uploadJobsRef.current += 1; setUploadBusy(true);
@@ -537,14 +574,14 @@ export const Composer = memo(function Composer({ model, commands, className = ''
       {!editMode && model.draft.replyTarget && <div className="composer-reply" role="status"><span aria-hidden="true">↩</span><div><strong>回复 @{model.draft.replyTarget.senderName || model.draft.replyTarget.senderId}</strong><small>{model.draft.replyTarget.excerpt || ''}</small></div><button type="button" aria-label="取消回复" onClick={() => invoke(commands.clearReply)}>×</button></div>}
       {!editMode && model.draft.attachments.length > 0 && <div className="attachment-drafts" aria-label="待发送附件">{model.draft.attachments.map((row) => { const id = row.resource_id || row.id; return <article key={id}><button type="button" className="attachment-draft-preview" aria-label={`预览文件 ${row.name || id}`} title="预览已附加文件" onClick={() => invoke(commands.previewAttachment, row)}><span aria-hidden="true">◇</span><span><strong>{row.name || id}</strong><small>{formatSize(Number(row.size || 0))} · 点击预览</small></span></button><button type="button" className="attachment-draft-remove" aria-label={`移除附件 ${row.name || id}`} onClick={() => invoke(commands.removeAttachment, id)}>×</button></article>; })}</div>}
       <div ref={inputAreaRef} className="composer-input-area"><div className="composer-box"><EditorContent editor={editor} className="composer-richtext" onPasteCapture={(event) => { const files = [...(event.clipboardData?.files || [])]; if (files.length && !editMode && model.permissions.canTransmit) { event.preventDefault(); void uploadFiles(files); } }} onCompositionStart={() => { cancelCompositionWork(); composingRef.current = true; }} onCompositionEnd={() => { if (!editor || editor.isDestroyed) return; syncAfterComposition(editor); }} /></div>
-        {mentionQuery && mentionRows.length > 0 && <FloatingPortal anchorRef={inputAreaRef} matchWidth className="mention-menu composer-menu-portal"><div role="listbox" aria-label="@ 收件人">{mentionRows.map((actor, index) => <button type="button" role="option" aria-selected={index === activeMention % mentionRows.length} key={actor.id} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseMention(actor)}><span className={`actor-icon kind-${actor.kind}`}>{actor.kind.slice(0, 1).toUpperCase()}</span><strong title={actor.id}>{actorName(actor)}</strong><small>{actor.kind} · {actor.decl_id || actor.id}</small></button>)}</div></FloatingPortal>}
-        {commandMenu && <FloatingPortal anchorRef={inputAreaRef} matchWidth className="command-menu composer-menu-portal"><div role="listbox" aria-label="Agent 命令">{commandRows.length ? commandRows.map((row, index) => <button type="button" role="option" aria-selected={index === activeCommand % commandRows.length} key={row.command} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseCommand(row)}><span className="command-menu-name">/{row.command}</span><span><strong>{row.label}</strong><small>{row.description}</small></span></button>) : <p className="command-menu-empty" role="status">{commandMenu.reason}</p>}</div></FloatingPortal>}
+        {mentionRows.length > 0 && <FloatingPortal anchorRef={inputAreaRef} matchWidth className="mention-menu composer-menu-portal"><div role="listbox" aria-label="@ 收件人">{mentionRows.map((actor, index) => <button type="button" role="option" aria-selected={index === activeIndex % mentionRows.length} key={actor.id} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseRow(actor)}><span className={`actor-icon kind-${actor.kind}`}>{actor.kind.slice(0, 1).toUpperCase()}</span><strong title={actor.id}>{actorName(actor)}</strong><small>{actor.kind} · {actor.decl_id || actor.id}</small></button>)}</div></FloatingPortal>}
+        {commandOpen && <FloatingPortal anchorRef={inputAreaRef} matchWidth className="command-menu composer-menu-portal"><div role="listbox" aria-label="Agent 命令">{commandRows.length ? commandRows.map((row, index) => <button type="button" role="option" aria-selected={index === activeIndex % commandRows.length} key={row.command} onMouseDown={(event) => event.preventDefault()} onClick={() => chooseRow(row)}><span className="command-menu-name">/{row.command}</span><span><strong>{row.label}</strong><small>{row.description}</small></span></button>) : <p className="command-menu-empty" role="status">{commandOpen.reason}</p>}</div></FloatingPortal>}
       </div>
       <div className="composer-toolbar"><div className="composer-tools" aria-label="附件操作"><label className={`composer-file-control${editMode || !model.permissions.canTransmit || uploadBusy ? ' is-disabled' : ''}`} title={editMode ? '完成或取消编辑后才能上传附件' : '上传本机文件到频道'}><input type="file" multiple aria-label={uploadBusy ? '正在上传本机文件' : '上传本机文件到频道'} disabled={editMode || !model.permissions.canTransmit || uploadBusy} onChange={(event) => { const files = [...(event.currentTarget.files || [])]; event.currentTarget.value = ''; void uploadFiles(files); }} />{uploadBusy ? <span className="attachment-tool-busy" /> : <Upload size={17} />}</label><button type="button" aria-label="从频道文件选择" title={editMode ? '完成或取消编辑后才能附加频道文件' : !model.permissions.canTransmit ? (model.permissions.reason || '连接可用后才能附加频道文件') : channelFileBusy ? '正在选择频道文件' : '从频道文件选择'} disabled={editMode || !model.permissions.canTransmit || uploadBusy || channelFileBusy} onClick={pickChannelFile}>{channelFileBusy ? <span className="attachment-tool-busy" aria-hidden="true" /> : <FolderOpen size={17} aria-hidden="true" />}</button></div>
         <div className="composer-submit-actions">{!editMode && model.draft.replyTarget?.senderKind === 'human' ? <span className="composer-reply-route">@{model.draft.replyTarget.senderName}</span> : !editMode && <ModelSelector model={model} commands={commands} />}
-          {!editMode && <button type="button" className="composer-steer-button" disabled={!model.controls.steer.enabled || !hasText || model.busy} title={model.controls.steer.reason || '把文本插入目标 Agent 的当前任务'} onClick={() => { const snapshot = liveSnapshot(); invoke(commands.steer, { text: snapshot.text, draft: snapshot, actorId: model.controls.actorId }).then(clearAccepted); }}>插入</button>}
+          {!editMode && <button type="button" className="composer-steer-button" disabled={!model.controls.steer.enabled || model.busy} title={model.controls.steer.reason || '把文本插入目标 Agent 的当前任务'} onClick={() => { const snapshot = liveSnapshot(); invoke(commands.steer, { text: snapshot.text, draft: snapshot, actorId: model.controls.actorId }).then(clearAccepted); }}>插入</button>}
           {editMode && <button type="button" className="composer-cancel-edit" aria-label="取消编辑" disabled={model.busy} onClick={() => invoke(commands.cancelEdit)}><X size={14} /></button>}
-          <button type="submit" className="send-button" disabled={(!hasText && !model.draft.attachments.length) || !model.channelId || (editMode ? !model.permissions.canTransmit : !model.permissions.canDurablyAccept) || model.busy || uploadBusy} aria-label={model.busy ? '发送中' : editMode ? '提交编辑' : '发送'}>{model.busy ? '…' : '↑'}</button>
+          <button type="submit" className="send-button" disabled={!model.channelId || (editMode ? !model.permissions.canTransmit : !model.permissions.canDurablyAccept) || model.busy || uploadBusy} aria-label={model.busy ? '发送中' : editMode ? '提交编辑' : '发送'}>{model.busy ? '…' : '↑'}</button>
         </div>
       </div>
     </form>

@@ -6,6 +6,7 @@ import {
   REQUEST_PHASE,
   requestAccessError,
 } from '../../model/request-owner.js';
+import { TYPES } from '../../protocol/vocab.js';
 import { createPersistenceEpochFence } from '../../model/sync-session.js';
 import {
   assertControlAccess,
@@ -16,6 +17,10 @@ import { newId } from '../../util/id.js';
 import { createSubmissionCorrelationPort } from './submission-correlation-port.js';
 
 const ACTIVE_STATES = new Set(['queued', 'transmitting', 'accepted', 'delayed', 'uncertain', 'rejected']);
+// A request this session sent to an Agent is known to be awaiting an answer
+// the moment it is handed over. That is a local fact, so Waiting does not have
+// to wait for the ledger to grant the request an identity before showing it.
+const AWAITING_TYPES = new Set([TYPES.agentAsk, TYPES.agentQueue]);
 const RETRY_STATES = new Set(['uncertain', 'rejected']);
 const ACTIVE_CONTROL_STATES = new Set(['sending', 'accepted', 'uncertain', 'error']);
 const CONTROL_RECORD_PREFIX = 'control:';
@@ -248,6 +253,26 @@ export function useComposerSubmissionRuntime({
     };
   }, [generationFor, principalId, producerOwnerToken, serverWorld, wireState]);
 
+  // Only this session's own hand-offs enter here. History and cache replay
+  // never add to it: a replayed request carries no evidence about whether it
+  // is still outstanding, and treating it as awaiting would resurrect turns
+  // that finished long ago.
+  const awaitingRef = useRef([]);
+  const [awaiting, setAwaiting] = useState([]);
+  const publishAwaiting = useCallback((next) => {
+    const value = typeof next === 'function' ? next(awaitingRef.current) : next;
+    awaitingRef.current = value;
+    setAwaiting(value);
+    return value;
+  }, []);
+  const forgetAwaiting = useCallback((ids) => {
+    const gone = ids instanceof Set ? ids : new Set([ids].flat().filter(Boolean));
+    if (!gone.size) return;
+    publishAwaiting((rows) => (rows.some((row) => gone.has(row.messageId))
+      ? rows.filter((row) => !gone.has(row.messageId))
+      : rows));
+  }, [publishAwaiting]);
+
   const publishPending = useCallback((next) => {
     const value = typeof next === 'function' ? next(pendingRef.current) : next;
     pendingRef.current = value;
@@ -460,6 +485,7 @@ export function useComposerSubmissionRuntime({
       sendLeaseRef.current.clear();
       submissionCorrelationPortRef.current.reset();
       publishPending([]);
+      publishAwaiting([]);
       publishDrafts(new Map());
       return undefined;
     }
@@ -519,7 +545,7 @@ export function useComposerSubmissionRuntime({
       if (alive && isLiveLifecycle(lifecycleRef.current, lifecycleGeneration)) onError(error);
     });
     return () => { alive = false; };
-  }, [captureOwner, onError, principalId, publishDrafts, publishPending, registerCorrelation, wireRef]);
+  }, [captureOwner, onError, principalId, publishAwaiting, publishDrafts, publishPending, registerCorrelation, wireRef]);
 
   useEffect(() => {
     // React.StrictMode probes effects with a setup -> cleanup -> setup cycle
@@ -855,7 +881,10 @@ export function useComposerSubmissionRuntime({
           return null;
         });
       if (!isLeaseCurrent()) return false;
-      if (failed) publishPending((rows) => rows.map((row) => row.messageId === submission.messageId ? failed : row));
+      if (failed) {
+        publishPending((rows) => rows.map((row) => row.messageId === submission.messageId ? failed : row));
+        forgetAwaiting(submission.messageId);
+      }
       if (state === 'uncertain' && failed) publishUncertainNotice(lease, submission);
       if (state === 'rejected') {
         // A prior transport close may have published an uncertain notice for
@@ -882,7 +911,7 @@ export function useComposerSubmissionRuntime({
         }
       }
     }
-  }, [assessSubmissionOwner, authorizeSubmission, beginSendLease, captureOwner, clearSubmissionNotice, currentFacts, currentSendLease, forgetLeaseCorrelation, onAccessChanged, onError, onFeedChanged, publishPending, publishUncertainNotice]);
+  }, [assessSubmissionOwner, authorizeSubmission, beginSendLease, captureOwner, clearSubmissionNotice, currentFacts, currentSendLease, forgetAwaiting, forgetLeaseCorrelation, onAccessChanged, onError, onFeedChanged, publishPending, publishUncertainNotice]);
   transmitRef.current = transmit;
 
   const sendOnce = useCallback(async (request = {}) => {
@@ -972,6 +1001,20 @@ export function useComposerSubmissionRuntime({
     const outstanding = submissions.filter((row) => !landedRef.current.has(row.messageId));
     const alreadyLanded = submissions.filter((row) => landedRef.current.has(row.messageId));
     publishPending((rows) => [...rows.filter((row) => !ids.has(row.messageId)), ...outstanding]);
+    const handedToAgent = submissions.filter((row) => row.state !== 'rejected'
+      && AWAITING_TYPES.has(row.frame?.msg_type));
+    if (handedToAgent.length) {
+      publishAwaiting((rows) => [
+        ...rows.filter((row) => !ids.has(row.messageId)),
+        ...handedToAgent.map((row) => ({
+          messageId: row.messageId,
+          channelId: row.channelId,
+          frame: row.frame,
+          state: row.state,
+          createdAt: row.createdAt,
+        })),
+      ]);
+    }
     for (const row of alreadyLanded) {
       void outboxRef.current.remove(owners[0].principalId, row.messageId).catch(onError);
     }
@@ -980,7 +1023,7 @@ export function useComposerSubmissionRuntime({
     }
     const values = submissions.map((row) => row.messageId);
     return request.batch?.length ? values : values[0];
-  }, [activeChannelId, authorize, captureOwner, currentFacts, onError, publishDrafts, publishPending, registerCorrelation, wireRef]);
+  }, [activeChannelId, authorize, captureOwner, currentFacts, onError, publishAwaiting, publishDrafts, publishPending, registerCorrelation, wireRef]);
 
   const send = useCallback((request = {}) => {
     if (request.draftRevision == null) return sendOnce(request);
@@ -1070,6 +1113,7 @@ export function useComposerSubmissionRuntime({
       }
     }
     if (closed.size) {
+      forgetAwaiting(closed);
       const removedKeys = Object.entries(controlStatesRef.current)
         .filter(([, state]) => closed.has(state?.requestId))
         .map(([key]) => key);
@@ -1079,7 +1123,7 @@ export function useComposerSubmissionRuntime({
       for (const key of removedKeys) void removePersistedControl(key).catch(onError);
     }
     return true;
-  }, [clearSubmissionNotice, onError, principalId, publishControlStates, publishPending, removePersistedControl]);
+  }, [clearSubmissionNotice, forgetAwaiting, onError, principalId, publishControlStates, publishPending, removePersistedControl]);
 
   const ownedWireCommand = useCallback(async (kind, channelId, reqId, decision, payload) => {
     const owner = captureOwner(channelId);
@@ -1234,6 +1278,7 @@ export function useComposerSubmissionRuntime({
     reconcileFeed,
     resetWorld,
     clear,
+    awaiting,
     accepting: acceptingChannels.has(activeChannelId),
-  }), [activeChannelId, acceptingChannels, approvalStates, cancel, clear, control, controlStates, draftFor, drafts, pending, persistDraftAttachments, reconcileFeed, resetWorld, resolve, retry, send, submissionCorrelationPort, updateDraft]);
+  }), [activeChannelId, acceptingChannels, approvalStates, awaiting, cancel, clear, control, controlStates, draftFor, drafts, pending, persistDraftAttachments, reconcileFeed, resetWorld, resolve, retry, send, submissionCorrelationPort, updateDraft]);
 }

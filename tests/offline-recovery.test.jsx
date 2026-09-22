@@ -71,7 +71,7 @@ function OfflineComposer({ onSend }) {
     changeDraft(change) {
       setDraft((current) => ({ ...current, ...change, editorRevision: current.editorRevision + 1 }));
     },
-    send() { return onSend(draft); },
+    send(request) { return onSend(request?.draft ?? draft); },
   };
   return <Composer model={composerModel(draft, permissions)} commands={commands} />;
 }
@@ -163,19 +163,19 @@ describe('W6 offline draft and recovery', () => {
     let transactions;
     act(() => {
       transactions = [
-        result.current.updateDraft('c0', { text: 'stale', editorRevision: 1 }),
-        result.current.updateDraft('c0', { text: 'current', editorRevision: 2 }),
+        result.current.updateDraft('c0', { recipients: ['agent:stale:1'], editorRevision: 1 }),
+        result.current.updateDraft('c0', { recipients: ['agent:current:1'], editorRevision: 2 }),
       ];
     });
     const [first, second] = await Promise.all(transactions);
     await act(async () => {});
 
-    expect(first).toMatchObject({ revision: 1, editorRevision: 1, draft: { text: 'stale' } });
-    expect(second).toMatchObject({ revision: 2, editorRevision: 2, draft: { text: 'current' } });
-    expect(result.current.draftFor('c0')).toMatchObject({ text: 'current', editorRevision: 2 });
+    expect(first).toMatchObject({ revision: 1, editorRevision: 1, draft: { recipients: ['agent:stale:1'] } });
+    expect(second).toMatchObject({ revision: 2, editorRevision: 2, draft: { recipients: ['agent:current:1'] } });
+    expect(result.current.draftFor('c0')).toMatchObject({ recipients: ['agent:current:1'], editorRevision: 2 });
     const store = createOutboxStore({ databaseName });
     expect((await store.restoreDrafts(principalId))[0]).toMatchObject({
-      draft: { text: 'current' }, editorRevision: 2,
+      draft: { recipients: ['agent:current:1'] }, editorRevision: 2,
     });
     store.close();
   });
@@ -190,7 +190,7 @@ describe('W6 offline draft and recovery', () => {
       return durableIndexedDB.open(...args);
     };
     const draft = {
-      text: '数据库恢复后仍在',
+      recipients: ['agent:survives:1'],
       editorRevision: 1,
     };
     const store = createOutboxStore({
@@ -204,10 +204,10 @@ describe('W6 offline draft and recovery', () => {
     expect(opens).toBe(3);
     expect(saved).toMatchObject({
       conflict: false,
-      record: { draft: { text: '数据库恢复后仍在' }, editorRevision: 1 },
+      record: { draft: { recipients: ['agent:survives:1'] }, editorRevision: 1 },
     });
     expect((await store.restoreDrafts('offline-root'))[0]).toMatchObject({
-      draft: { text: '数据库恢复后仍在' }, editorRevision: 1,
+      draft: { recipients: ['agent:survives:1'] }, editorRevision: 1,
     });
     store.close();
 
@@ -232,13 +232,13 @@ describe('W6 offline draft and recovery', () => {
     await act(async () => {
       await expect(result.current.updateDraft('c0', draft)).rejects.toMatchObject({ message: 'retryable draft persistence failure' });
     });
-    expect(result.current.draftFor('c0')).toMatchObject({ text: '数据库恢复后仍在', editorRevision: 1 });
+    expect(result.current.draftFor('c0')).toMatchObject({ recipients: ['agent:survives:1'], editorRevision: 1 });
     let runtimeSaved;
     await act(async () => {
       runtimeSaved = await result.current.updateDraft('c0', draft, { preserveEditorRevision: true });
     });
-    expect(runtimeSaved).toMatchObject({ draft: { text: '数据库恢复后仍在' }, editorRevision: 1 });
-    expect(result.current.draftFor('c0')).toMatchObject({ text: '数据库恢复后仍在', editorRevision: 1 });
+    expect(runtimeSaved).toMatchObject({ draft: { recipients: ['agent:survives:1'] }, editorRevision: 1 });
+    expect(result.current.draftFor('c0')).toMatchObject({ recipients: ['agent:survives:1'], editorRevision: 1 });
   });
 
   it('rejects renderer-only attachment URLs before any durable submission is inserted', async () => {
@@ -275,7 +275,7 @@ describe('W6 offline draft and recovery', () => {
   it('never restores a local-only draft attachment as though its object URL were durable', async () => {
     const store = createOutboxStore({ databaseName: `draft-local-attachment-${crypto.randomUUID()}` });
     await store.writeDraft('offline-root', 'c0', {
-      text: '正文仍可恢复',
+      text: '正文不入库',
       editorRevision: 1,
       attachments: [
         { name: 'local.png', preview_url: 'blob:local-only' },
@@ -284,9 +284,10 @@ describe('W6 offline draft and recovery', () => {
     }, 0);
     const [restored] = await store.restoreDrafts('offline-root');
     expect(restored.draft).toMatchObject({
-      text: '正文仍可恢复',
       attachments: [{ resource_id: 'file:uploaded', name: 'uploaded.png' }],
     });
+    // The body belongs to the editor and is deliberately not recoverable here.
+    expect(restored.draft.text).toBeUndefined();
     expect(JSON.stringify(restored)).not.toContain('blob:');
     store.close();
   });

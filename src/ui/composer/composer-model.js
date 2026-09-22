@@ -550,16 +550,22 @@ function pendingForChannel(pending, channelId) {
   return (pending || []).filter((row) => !row?.channelId || row.channelId === channelId);
 }
 
-function mentionQuery(value, candidates) {
+export function mentionRowsFor(query, candidates) {
+  const needle = String(query || '').toLocaleLowerCase();
+  const rows = (candidates || []).filter((actor) => {
+    const haystack = `${actorName(actor)} ${actor.id}`.toLocaleLowerCase();
+    return !needle || haystack.includes(needle);
+  });
+  return Object.freeze(rows.slice(0, 8));
+}
+
+export function mentionQuery(value, candidates) {
   const match = /(?:^|\s)@([^\s@]*)$/u.exec(value);
   if (!match) return null;
   const at = match.index + match[0].lastIndexOf('@');
-  const query = match[1].toLocaleLowerCase();
-  const rows = candidates.filter((actor) => {
-    const haystack = `${actorName(actor)} ${actor.id}`.toLocaleLowerCase();
-    return !query || haystack.includes(query);
+  return Object.freeze({
+    query: match[1], start: at, end: value.length, rows: mentionRowsFor(match[1], candidates),
   });
-  return Object.freeze({ query: match[1], start: at, end: value.length, rows: Object.freeze(rows.slice(0, 8)) });
 }
 
 function controlAvailability(capability, type, targetAgent, permissions) {
@@ -590,12 +596,10 @@ function commandAvailability(definition, capability, targetAgent, permissions) {
   return controlAvailability(capability, definition.type, targetAgent, permissions);
 }
 
-function slashCommandMenu(value, controls, definitions) {
-  const match = /^\/([^\s/]*)$/u.exec(text(value));
-  if (!match) return null;
-  const query = match[1].toLocaleLowerCase();
-  const matching = definitions.filter((row) => row.menu !== false && (
-    `${row.command} ${row.label}`.toLocaleLowerCase().includes(query)
+export function commandRowsFor(query, controls, definitions) {
+  const needle = String(query || '').toLocaleLowerCase();
+  const matching = (definitions || []).filter((row) => row.menu !== false && (
+    `${row.command} ${row.label}`.toLocaleLowerCase().includes(needle)
   ));
   const rows = matching.filter((row) => controls[row.command]?.enabled).map((row) => Object.freeze({
     ...row,
@@ -603,10 +607,15 @@ function slashCommandMenu(value, controls, definitions) {
   }));
   const unavailable = matching.find((row) => controls[row.command]?.reason);
   return Object.freeze({
-    query: match[1],
     rows: Object.freeze(rows),
     reason: rows.length ? '' : controls[unavailable?.command]?.reason || controls.restart?.reason || '没有匹配的命令',
   });
+}
+
+export function slashCommandMenu(value, controls, definitions) {
+  const match = /^\/([^\s/]*)$/u.exec(text(value));
+  if (!match) return null;
+  return Object.freeze({ query: match[1], ...commandRowsFor(match[1], controls, definitions) });
 }
 
 export function buildComposerModel({

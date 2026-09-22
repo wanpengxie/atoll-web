@@ -4,11 +4,9 @@ const DATABASE_NAME = 'atoll-outbox-v2';
 
 function meaningfulDraft(draft) {
   return Boolean(
-    draft?.text
-    || draft?.recipients?.length
+    draft?.recipients?.length
     || draft?.attachments?.length
-    || draft?.replyTarget
-    || draft?.doc?.content?.some?.((node) => node?.content?.length || node?.text),
+    || draft?.replyTarget,
   );
 }
 
@@ -28,9 +26,15 @@ function withoutRendererHandles(value) {
     .filter(([, item]) => item !== undefined));
 }
 
+// The unsent body belongs to the editor, which is its only authority. A second
+// copy here is what made a draft something two writers could race over, and
+// every version number, tombstone and late-write check existed to referee that
+// race. What stays is what actually has to survive being closed and reopened:
+// uploaded resources, chosen recipients, and the reply target.
 function durableDraft(draft) {
   if (!draft || typeof draft !== 'object') return draft;
-  const cleaned = withoutRendererHandles(draft);
+  const { text, doc, ...body } = draft;
+  const cleaned = withoutRendererHandles(body);
   if (!Array.isArray(draft.attachments)) return cleaned;
   return {
     ...cleaned,
@@ -221,6 +225,14 @@ export function createOutboxStore({
         const revision = Number(current?.revision || 0);
         const hasExpectedRevision = Number.isFinite(expectedRevision);
         const expected = Number(expectedRevision);
+        // A write that stores nothing new is not a write. Sending asks for a
+        // revision before consuming the draft; with the body gone that ask has
+        // nothing to store and must not read as a late rewrite of a consumed
+        // draft.
+        const unchanged = current !== undefined
+          && JSON.stringify(current.draft ?? null)
+            === JSON.stringify(meaningfulDraft(durable) ? durable : null);
+        if (unchanged) return { conflict: false, record: current };
         const consumed = current?.draft == null && hasExpectedRevision
           && (revision > expected
             || (revision === expected

@@ -56,7 +56,7 @@ describe('TC-1201 membership revoke: queued Composer intent is terminal before w
 
     await waitFor(() => expect(result.current.pending).toEqual([]));
     await act(async () => {
-      await result.current.updateDraft('c0', { text: 'draft survives revoke', editorRevision: 1 });
+      await result.current.updateDraft('c0', { recipients: ['agent:survives-revoke:1'], editorRevision: 1 });
       await result.current.send({
         channelId: 'c0',
         messageId: 'queued-membership-revoke',
@@ -83,9 +83,9 @@ describe('TC-1201 membership revoke: queued Composer intent is terminal before w
     ]));
 
     expect(submit).not.toHaveBeenCalled();
-    expect(result.current.draftFor('c0')).toMatchObject({ text: 'draft survives revoke' });
+    expect(result.current.draftFor('c0')).toMatchObject({ recipients: ['agent:survives-revoke:1'] });
     expect(await config.store.restoreDrafts(config.principalId)).toEqual([
-      expect.objectContaining({ draft: expect.objectContaining({ text: 'draft survives revoke' }) }),
+      expect.objectContaining({ draft: expect.objectContaining({ recipients: ['agent:survives-revoke:1'] }) }),
     ]);
 
     access = memberAccess({ authorityEpoch: 3 });
@@ -95,9 +95,9 @@ describe('TC-1201 membership revoke: queued Composer intent is terminal before w
       expect.objectContaining({ messageId: 'queued-membership-revoke', state: 'rejected' }),
     ]);
     expect(submit).not.toHaveBeenCalled();
-    expect(result.current.draftFor('c0')).toMatchObject({ text: 'draft survives revoke' });
+    expect(result.current.draftFor('c0')).toMatchObject({ recipients: ['agent:survives-revoke:1'] });
     expect(await config.store.restoreDrafts(config.principalId)).toEqual([
-      expect.objectContaining({ draft: expect.objectContaining({ text: 'draft survives revoke' }) }),
+      expect.objectContaining({ draft: expect.objectContaining({ recipients: ['agent:survives-revoke:1'] }) }),
     ]);
 
     unmount();

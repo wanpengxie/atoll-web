@@ -59,9 +59,13 @@ function localSubmission(id) {
 }
 
 function renderWaiting(state, pending) {
+  // These are this session's own hand-offs, which is what the awaiting set
+  // holds; the durable pending list drops them the moment the write is
+  // acknowledged.
   return renderHook(({ currentState }) => useWaitingEditingController({
     state: currentState,
     pending,
+    awaiting: pending,
     capabilityIndex: { get: () => undefined },
     onRequestCapability: vi.fn(),
     onTaskControl: vi.fn(),

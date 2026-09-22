@@ -169,16 +169,15 @@ function commandOwner(config, model) {
       if (model.draft.recipients.some((row) => (typeof row === 'string' ? row : row?.id) === recipient.id)) return null;
       return changeDraft({ recipients: [...model.draft.recipients, recipient] });
     },
+    // Picking a recipient adds a recipient. The editor already removed the
+    // trigger from the body in its own transaction, and the body is not stored
+    // here, so this never touches text.
     pickMention(actor) {
       const recipient = normalizeMention(actor);
-      const query = model.mentionQuery;
       const recipients = model.draft.recipients.some((row) => (typeof row === 'string' ? row : row?.id) === recipient.id)
         ? model.draft.recipients
         : [...model.draft.recipients, recipient];
-      const nextText = query
-        ? `${model.draft.text.slice(0, query.start)}${model.draft.text.slice(query.end)}`.replace(/[ \t]+$/u, '')
-        : model.draft.text;
-      return changeDraft({ recipients, text: nextText });
+      return changeDraft({ recipients });
     },
     removeMention(actorId) {
       return changeDraft({

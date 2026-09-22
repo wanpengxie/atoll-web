@@ -123,6 +123,7 @@ describe('Replica canonical boundary for historical flat payloads', () => {
     const { result } = renderHook(() => useWaitingEditingController({
       state,
       pending: waitingPending,
+      awaiting: waitingPending,
       capabilityIndex: { get: () => undefined },
       onRequestCapability: vi.fn(),
       onTaskControl: vi.fn(),
