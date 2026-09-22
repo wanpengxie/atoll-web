@@ -10,6 +10,7 @@ import { messageTimeLabel } from '../../util/time.js';
 import { MarkdownContent } from '../MarkdownContent.jsx';
 import { useModalFocus } from '../primitives/useModalFocus.js';
 import { FoldableBody } from './FoldableBody.jsx';
+import { lostReason, memberRestarts } from '../../model/request-lifecycle.js';
 
 const RESULT_META = new Set(['status', 'reason', 'error_code', 'detail', 'cancelled', 'closed_by']);
 // One typed error vocabulary serves both terminal result titles and the
@@ -955,12 +956,13 @@ function PreviewRow({ row, active, now }) {
   return <li className={`progress-row${row.stateOnly ? ' is-state' : ''}`}><span className="progress-row-line">{row.line}</span><RowMeta row={row} active={active} now={now} /></li>;
 }
 
-function ProgressTrail({ turn, title }) {
+function ProgressTrail({ turn, title, ended = false }) {
   const [open, setOpen] = useState(false);
   const [detailRow, setDetailRow] = useState(null);
   const [now, setNow] = useState(() => Date.now());
   const rows = progressRows(turn);
-  const running = !turn.terminal;
+  // A lost turn has no terminal and never will; it is not running either.
+  const running = !turn.terminal && !ended;
 
   // A tool row keeps one stable public key while its started observation is
   // replaced by the ended observation. If the drawer is already open, keep
@@ -1074,7 +1076,9 @@ function supersededTurn(turn) {
   return Boolean(closure?.merged_into || closure?.preempted_by);
 }
 
-function AgentAnswer({ turn, names, fold, onDownload, onPreview, onReply, onOpen }) {
+const LOST_LABEL = Object.freeze({ restart: '未完成 · Agent 已重启', expired: '未完成 · 已过期' });
+
+function AgentAnswer({ turn, names, fold, lost = '', onDownload, onPreview, onReply, onOpen }) {
   const request = turn.request; const terminal = terminalContentEnvelope(turn);
   const stopped = isInterruptedTerminal(turn);
   const liveEnvelope = terminal || turn.provisional?.at(-1)?.envelope || null;
@@ -1095,13 +1099,13 @@ function AgentAnswer({ turn, names, fold, onDownload, onPreview, onReply, onOpen
   // nothing to show, the bubble would read as the bare word 已完成.
   if (supersededTurn(turn) && content.length === 0 && !stopped && !turn.terminalClosureOnly) return null;
   return <ReplyableMessageFrame envelope={answerEnvelope} turn={turn} onReply={terminal ? onReply : null} onOpen={onOpen}
-    className={`agent-turn-bubble ${turn.terminal ? 'settled' : 'processing'}`} contentClassName="response-body"
+    className={`agent-turn-bubble ${turn.terminal || lost ? 'settled' : 'processing'}`} contentClassName="response-body"
     identity={<span className="actor-icon kind-agent">{String(nameOf(agentId, names) || 'A').slice(0, 1).toUpperCase()}</span>}
   >
-    <header><strong>{nameOf(agentId, names)}</strong><small className="ai-label">AI</small>{liveEnvelope?.ts && <time>{messageTimeLabel(liveEnvelope.ts)}</time>}{turn.terminal && (stopped ? null : turn.status === 'failed' ? <span className="response-failed">处理失败</span> : <small>已完成</small>)}</header>
+    <header><strong>{nameOf(agentId, names)}</strong><small className="ai-label">AI</small>{liveEnvelope?.ts && <time>{messageTimeLabel(liveEnvelope.ts)}</time>}{turn.terminal && (stopped ? null : turn.status === 'failed' ? <span className="response-failed">处理失败</span> : <small>已完成</small>)}{!turn.terminal && lost && <span className="response-failed">{LOST_LABEL[lost] || LOST_LABEL.expired}</span>}</header>
     {content.length > 0 && <div className="response-content"><FoldableBody id={`${turn.requestId}:response`} text={foldText} exempt={fold?.latest === true} automaticExpanded={fold?.automaticExpanded === true} expanded={fold?.overrides?.get(`${turn.requestId}:response`)} onToggle={fold?.onToggle}>{content}</FoldableBody></div>}
     {stopped && <p className="agent-stopped">✗ 已停止 · 发消息即继续</p>}
-    <ProgressTrail turn={turn} title={textOf(request)} />{turn.terminalClosureOnly && <p className="terminal-result-unavailable">{terminalResultState(turn).error}</p>}<Attachments envelope={answerEnvelope} onDownload={onDownload} onPreview={onPreview} />
+    <ProgressTrail turn={turn} title={textOf(request)} ended={Boolean(lost)} />{turn.terminalClosureOnly && <p className="terminal-result-unavailable">{terminalResultState(turn).error}</p>}<Attachments envelope={answerEnvelope} onDownload={onDownload} onPreview={onPreview} />
   </ReplyableMessageFrame>;
 }
 
@@ -1122,10 +1126,10 @@ function ThreadCalls({ root, thread, names }) {
   return <ContentFrame contained><button type="button" className={`turn-thread-toggle${failed ? ' has-failure' : ''}`} aria-expanded={open} onClick={() => setOpen((value) => !value)}><span className={running ? 'pulse' : 'pulse done'} /><span>{items.length} 次关联调用</span><small>{running ? `${running} 处理中` : failed ? `${failed} 失败` : '已完成'}</small><span aria-hidden="true">{open ? '⌃' : '⌄'}</span></button>{open && <ol className="turn-thread-list">{items.map((item) => <ThreadCall key={item.turn.requestId} item={item} names={names} />)}</ol>}</ContentFrame>;
 }
 
-function TurnCard({ turn, names, selfId, access, targetAuthority, fold, approvalState, editing, onResolve, onCancel, onControl, onEdit, onDownload, onPreview, onReply, onCreateTask, onOpen }) {
+function TurnCard({ turn, names, selfId, access, targetAuthority, fold, lost = '', approvalState, editing, onResolve, onCancel, onControl, onEdit, onDownload, onPreview, onReply, onCreateTask, onOpen }) {
   const request = turn.request; const actorId = request.audience?.[0] || '';
   if ([TYPES.humanAsk, TYPES.humanApprove].includes(request.type) && request.audience?.includes(selfId)) return <ContentFrame><ApprovalCard turn={turn} names={names} state={approvalState} onResolve={onResolve} /></ContentFrame>;
-  const pending = !turn.terminal; const local = request.local_submission_state;
+  const pending = !turn.terminal && !lost; const local = request.local_submission_state;
   const recipients = (request.audience || []).map((id) => nameOf(id, names)).join('、');
   // WorkspaceApp rejects a reply whose sender is the current user. Keep the
   // renderer aligned with that owner contract so a self-authored request does
@@ -1151,7 +1155,7 @@ function TurnCard({ turn, names, selfId, access, targetAuthority, fold, approval
       <header><strong>{nameOf(request.sender?.id, names)}</strong>{request.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{messageTimeLabel(request.ts)}</time>{recipients && <span className="recipient-label">发送给 {recipients}</span>}{local && <small>{local}</small>}</header>
       <div className="request-text"><EnvelopeBody envelope={request} fold={fold} onDownload={onDownload} onPreview={onPreview} contentKeyPrefix="request" /></div>{editing?.targetId === turn.requestId && <small className="message-editing-state">正在输入框中编辑</small>}
     </ReplyableMessageFrame>
-    <AgentAnswer turn={turn} names={names} fold={fold} onDownload={onDownload} onPreview={onPreview} onReply={onReply} onOpen={onOpenProcess} />
+    <AgentAnswer turn={turn} names={names} fold={fold} lost={lost} onDownload={onDownload} onPreview={onPreview} onReply={onReply} onOpen={onOpenProcess} />
     {/* A superseded turn produced nothing: no answer bubble, and no record of
         the calls it made on the way there either. Leaving the calls behind put
         a bare 「1 次关联调用」 tail under a message whose body was suppressed. */}
@@ -1184,19 +1188,21 @@ export function useTimelineRowRenderer({ state, names, selfId, access = '', targ
   const messageActionRevision = (typeof onReply === 'function' ? 1 : 0)
     | (typeof onCreateTask === 'function' ? 2 : 0)
     | (typeof onOpenTurn === 'function' ? 4 : 0);
+  const restarts = useMemo(() => memberRestarts(state), [state]);
   const rowRenderRevision = useCallback((_index, row) => {
     const foldIDs = row.body?.kind === 'turn'
       ? [`${row.body.turn.requestId}:body`, `${row.body.turn.requestId}:response`]
       : [`${row.body?.envelope?.id || row.id}:body`];
-    return [row.contentRevision, row.layoutClass || '', row.id === latestRowID ? 1 : 0, browsingExpandedSlots.has(row.visualSlotID || row.id) ? 1 : 0, ...foldIDs.map((foldID) => effectiveFoldOverrides.get(foldID)), presentationEditing?.targetId === row.id ? presentationEditing.phase : '', approvalStates?.[row.id] || '', messageActionRevision].join('\u0001');
-  }, [approvalStates, browsingExpandedSlots, effectiveFoldOverrides, latestRowID, messageActionRevision, presentationEditing]);
+    const lost = row.body?.kind === 'turn' ? lostReason(row.body.turn, restarts) : '';
+    return [row.contentRevision, row.layoutClass || '', lost, row.id === latestRowID ? 1 : 0, browsingExpandedSlots.has(row.visualSlotID || row.id) ? 1 : 0, ...foldIDs.map((foldID) => effectiveFoldOverrides.get(foldID)), presentationEditing?.targetId === row.id ? presentationEditing.phase : '', approvalStates?.[row.id] || '', messageActionRevision].join('\u0001');
+  }, [approvalStates, browsingExpandedSlots, effectiveFoldOverrides, latestRowID, messageActionRevision, presentationEditing, restarts]);
   const fold = useMemo(() => ({ latest: false, automaticExpanded: false, overrides: effectiveFoldOverrides, onToggle: toggleFold }), [effectiveFoldOverrides, toggleFold]);
   const renderRow = useCallback((row) => {
     const entry = row.body; const port = actionsRef.current;
     const rowFold = { ...fold, latest: row.id === latestRowID, automaticExpanded: browsingExpandedSlots.has(row.visualSlotID || row.id) };
     let content = null;
     if (entry?.kind === 'narration') content = <ContentFrame><Narration rows={state.narration} names={names} /></ContentFrame>;
-    else if (entry?.kind === 'turn') content = <TurnCard turn={{ ...entry.turn, thread: entry.thread || [] }} names={names} selfId={selfId} access={access} targetAuthority={targetAuthority} fold={rowFold} approvalState={approvalStates?.[entry.turn.request.id]} editing={presentationEditing}
+    else if (entry?.kind === 'turn') content = <TurnCard turn={{ ...entry.turn, thread: entry.thread || [] }} names={names} selfId={selfId} access={access} targetAuthority={targetAuthority} fold={rowFold} lost={lostReason(entry.turn, restarts)} approvalState={approvalStates?.[entry.turn.request.id]} editing={presentationEditing}
       onResolve={port?.onResolve ? (requestID, decision, payload) => port.onResolve(state.channelId, requestID, decision, payload) : undefined}
       onCancel={port?.onCancel ? (requestID) => port.onCancel(state.channelId, requestID) : undefined}
       onControl={port?.onTaskControl ? (turn, actorId, type, payload) => port.onTaskControl({
@@ -1218,6 +1224,6 @@ export function useTimelineRowRenderer({ state, names, selfId, access = '', targ
       onReply={port?.onReply} onCreateTask={port?.onCreateTask}
     />;
     return <div data-message-id={row.id} data-seq-low={row.seqLow} data-seq-high={row.seqHigh}>{content || <ContentFrame><p>无法显示此条目</p></ContentFrame>}{row.boundaryAfterTimestamp > 0 && <div className="day-separator"><span>{new Date(row.boundaryAfterTimestamp).toLocaleDateString('zh-CN')}</span></div>}</div>;
-  }, [access, approvalStates, browsingExpandedSlots, fold, latestRowID, names, presentationEditing, selfId, state, targetAuthority]);
+  }, [access, approvalStates, browsingExpandedSlots, fold, latestRowID, names, presentationEditing, restarts, selfId, state, targetAuthority]);
   return { rowRenderRevision, renderRow };
 }

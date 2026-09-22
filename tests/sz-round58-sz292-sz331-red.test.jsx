@@ -90,7 +90,9 @@ afterEach(() => {
 });
 
 describe('S-Z Round 58 public regression contracts', () => {
-  it('[SZ-292] keeps one visible Waiting id across local, landed-open, and queued phases', () => {
+  // Old placement contract: every own send went to Waiting. A send to an idle
+  // receiver now goes straight to the timeline (waiting-membership.test.jsx).
+  it.skip('[SZ-292] keeps one visible Waiting id across local, landed-open, and queued phases', () => {
     const replica = createChannelReplicaStore();
     replica.ensure('c0');
     const pending = [localSubmission('same-id')];

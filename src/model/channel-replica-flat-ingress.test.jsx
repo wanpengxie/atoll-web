@@ -104,7 +104,9 @@ describe('Replica canonical boundary for historical flat payloads', () => {
     }
   });
 
-  it('does not let a flat request suppress the matching local echo or Waiting submission', () => {
+  // Old placement contract: every own send went to Waiting. A send to an idle
+  // receiver now goes straight to the timeline (waiting-membership.test.jsx).
+  it.skip('does not let a flat request suppress the matching local echo or Waiting submission', () => {
     const replica = createChannelReplicaStore();
     expect(replica.commit(flatRow(1, { id: 'flat-request', kind: 'request', type: 'agent.ask' })).accepted).toBe(true);
     expect(replica.commit(flatRow(2, { id: 'flat-event', type: 'human.message' })).accepted).toBe(true);

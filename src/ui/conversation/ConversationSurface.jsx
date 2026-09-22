@@ -12,7 +12,6 @@ import {
 import {
   WaitingLayer,
   useWaitingEditingController,
-  useWaitingHandoff,
 } from '../timeline/useWaitingEditingController.jsx';
 import { ReadingIntentProvider } from './ReadingIntentContext.jsx';
 
@@ -93,6 +92,7 @@ export function ConversationSurface({
     editingReplacementId,
     presentationEditing,
     timelineLocalEchoes,
+    timelinePlaced,
     queuedTurns,
     editNotice,
     startEditing,
@@ -112,9 +112,10 @@ export function ConversationSurface({
     actorFilter,
     editingTargetId,
     editingReplacementId,
+    timelinePlaced,
     showNarration: SHOW_CHANNEL_NARRATION,
     incremental: true,
-  }), [actorFilter, editingReplacementId, editingTargetId, projectionScope, selfId]);
+  }), [actorFilter, editingReplacementId, editingTargetId, projectionScope, selfId, timelinePlaced]);
   const messageListKey = `${state.channelId}:${scope}:${actorFilterApplies ? [...actorFilter].sort().join(',') : ''}`;
   const {
     projection,
@@ -152,15 +153,6 @@ export function ConversationSurface({
     focusAgentChangeRef.current?.(focusAgentId, focusAgentId ? 'filter' : '');
   }, [focusAgentId]);
 
-  const waitingHandoff = useWaitingHandoff(
-    state.channelId,
-    queuedTurns,
-    projection.presentation.rows,
-  );
-  const rowPresentationState = useCallback(
-    (row) => waitingHandoff.enteringRequestIDs.has(row.id) ? 'handoff-enter' : '',
-    [waitingHandoff.enteringRequestIDs],
-  );
   const historyStartBoundary = useMemo(() => {
     if (identityPending
       || viewport.availability !== 'readable'
@@ -319,7 +311,6 @@ export function ConversationSurface({
                       snapshot={projection.presentation}
                       reading={viewport}
                       rowRevision={rowRenderRevision}
-                      rowPresentationState={rowPresentationState}
                       historyStartBoundary={historyStartBoundary}
                       renderRow={renderRow}
                     />
@@ -344,7 +335,6 @@ export function ConversationSurface({
                 {editNotice && <p className="agent-edit-error" role="alert">{editNotice}</p>}
                 <WaitingLayer
                   turns={queuedTurns}
-                  handoffs={waitingHandoff.exiting}
                   state={state}
                   names={names}
                   selfId={selfId}

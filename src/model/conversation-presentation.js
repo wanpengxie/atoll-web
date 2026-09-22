@@ -1,6 +1,7 @@
 import { argsOf, correlationOf } from '../protocol/envelope.js';
 import { TYPES } from '../protocol/vocab.js';
 import { isControlOnlyTurn } from './conversation-visibility.js';
+import { LIFECYCLE, memberRestarts, requestLifecycle } from './request-lifecycle.js';
 
 function finiteSeq(value) {
   const seq = Number(value || 0);
@@ -564,17 +565,17 @@ const HIDDEN_CONVERSATION_TYPES = new Set([
 const WAITING_TURN_TYPES = new Set([TYPES.agentAsk, TYPES.agentQueue]);
 const SELF_OPERATION_TYPES = new Set(['terminal.command', 'terminal.session']);
 
-function latestTurnStatus(turn) {
-  return [...(turn?.provisional || [])]
-    .sort((left, right) => Number(left.seq || 0) - Number(right.seq || 0))
-    .map((item) => String(argsOf(item?.envelope)?.status || ''))
-    .filter(Boolean)
-    .at(-1) || '';
-}
-
-function waitingOnlyTurn(turn) {
-  return Boolean(turn && !turn.terminal && WAITING_TURN_TYPES.has(turn.request?.type)
-    && latestTurnStatus(turn) !== 'processing');
+// Waiting owns a request exactly while its lifecycle is waiting, and while it
+// is on the ledger without a status yet. A send this page placed in the
+// timeline (its receiver was idle) stays in the timeline for good: an idle
+// receiver still reports `queued` for a few milliseconds before `processing`,
+// and following that would move the row out and back. Running, closed and
+// lost requests belong to the timeline.
+function waitingOnlyTurn(turn, lifecycleOf, timelinePlaced) {
+  if (!turn || !WAITING_TURN_TYPES.has(turn.request?.type)) return false;
+  if (timelinePlaced?.has?.(String(turn.requestId || ''))) return false;
+  const stage = lifecycleOf(turn);
+  return stage === LIFECYCLE.waiting || stage === LIFECYCLE.pending;
 }
 
 function envelopeOf(entry) {
@@ -671,7 +672,7 @@ function uiType(type) {
   return String(type || '').startsWith('ui.');
 }
 
-function visibleEntry(entry, scope, editingTargetID, editingReplacementID) {
+function visibleEntry(entry, scope, editingTargetID, editingReplacementID, lifecycleOf, timelinePlaced) {
   const envelope = envelopeOf(entry);
   if (!envelope || (entry.kind === 'standalone' && envelope.type === 'terminal.session')) return false;
   if (entry.kind !== 'turn') return scope === CONVERSATION_SCOPE.all
@@ -679,7 +680,7 @@ function visibleEntry(entry, scope, editingTargetID, editingReplacementID) {
   if (editingReplacementID && entry.turn?.requestId === editingReplacementID) return false;
   // Waiting is the sole projection for accepted-but-not-processing Agent work.
   // Editing may remove a row from Waiting, but must not duplicate it here.
-  if (waitingOnlyTurn(entry.turn)) return false;
+  if (waitingOnlyTurn(entry.turn, lifecycleOf, timelinePlaced)) return false;
   if (entry.turn?.requestId === editingTargetID) return true;
   // Ported from the public owner's agentMessageStage:
   //   if (turn?.terminal && !terminalValue(turn, 'replaced_by')) return 'timeline';
@@ -715,12 +716,12 @@ function transient(entry) {
   return Boolean(envelope && (argsOf(envelope)?.transient === true || envelope.type === 'mock.channel.pulse'));
 }
 
-function localEchoEntries(localEchoes, selfID, landed) {
+function localEchoEntries(localEchoes, selfID, landed, timelinePlaced) {
   return (localEchoes || []).flatMap((submission, index) => {
     if (!submission?.messageId || landed.has(submission.messageId)) return [];
     const frame = submission.frame || {};
     if (!frame.msg_type || uiType(frame.msg_type) || HIDDEN_CONVERSATION_TYPES.has(frame.msg_type)
-      || WAITING_TURN_TYPES.has(frame.msg_type)
+      || (WAITING_TURN_TYPES.has(frame.msg_type) && !timelinePlaced?.has?.(submission.messageId))
       || frame.msg_type === TYPES.agentSelect || frame.msg_type === TYPES.agentNew) return [];
     const envelope = {
       id: submission.messageId,
@@ -756,7 +757,11 @@ export function selectTimelineItems(state, {
   editingReplacementId = '',
   showNarration = false,
   localEchoes = [],
+  timelinePlaced = null,
 } = {}) {
+  const restarts = memberRestarts(state);
+  const now = Date.now();
+  const lifecycleOf = (turn) => requestLifecycle(turn, restarts, now);
   const related = scope === CONVERSATION_SCOPE.mine && selfId
     ? relatedConversationEnvelopeIDs(state, selfId)
     : null;
@@ -764,7 +769,7 @@ export function selectTimelineItems(state, {
   const scoped = [];
   const filtered = [];
   for (const rawEntry of state?.timeline || []) {
-    if (!visibleEntry(rawEntry, scope, editingTargetId, editingReplacementId)) continue;
+    if (!visibleEntry(rawEntry, scope, editingTargetId, editingReplacementId, lifecycleOf, timelinePlaced)) continue;
     allEntries.push(rawEntry);
     const entry = withoutUiChildren(rawEntry, scope);
     if (related && !entryMatchesConversation(entry, related)) continue;
@@ -785,7 +790,7 @@ export function selectTimelineItems(state, {
     items = insertion < 0 ? [...items, narration] : [...items.slice(0, insertion), narration, ...items.slice(insertion)];
   }
   const landed = state?._envelopesById?.has ? state._envelopesById : new Map();
-  const echoes = localEchoEntries(localEchoes, selfId, landed);
+  const echoes = localEchoEntries(localEchoes, selfId, landed, timelinePlaced);
   if (echoes.length) items = [...items, ...echoes];
   return Object.freeze({
     items,

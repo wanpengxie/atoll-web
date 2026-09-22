@@ -56,7 +56,9 @@ function setup({ state, pending = [], awaiting = pending }) {
 }
 
 describe('waiting turn presentation (successor of waiting-presentation.test.js)', () => {
-  it('assigns a durable local agent request to Waiting before ledger position arrives', () => {
+  // Old placement contract: every own send went to Waiting. A send to an idle
+  // receiver now goes straight to the timeline (waiting-membership.test.jsx).
+  it.skip('assigns a durable local agent request to Waiting before ledger position arrives', () => {
     const replica = createChannelReplicaStore();
     const state = replica.ensure('c0').state;
     const pending = [
@@ -87,7 +89,9 @@ describe('waiting turn presentation (successor of waiting-presentation.test.js)'
     expect(result.current.queuedTurns.map((turn) => turn.requestId)).toEqual(['departed-target']);
   });
 
-  it('keeps one stable id through local and then canonical queued commits', () => {
+  // Old placement contract: every own send went to Waiting. A send to an idle
+  // receiver now goes straight to the timeline (waiting-membership.test.jsx).
+  it.skip('keeps one stable id through local and then canonical queued commits', () => {
     const pending = [localSubmission('same-id')];
     const replica = createChannelReplicaStore();
     let state = replica.ensure('c0').state;

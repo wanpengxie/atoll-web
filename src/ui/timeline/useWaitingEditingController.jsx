@@ -2,12 +2,11 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 're
 import { actorNameFromMap } from '../../model/actor-display.js';
 import { argsOf, PROVISIONAL } from '../../protocol/envelope.js';
 import { TYPES } from '../../protocol/vocab.js';
-import { isControlOnlyBody, requestExpired } from '../../model/conversation-visibility.js';
+import { isControlOnlyBody } from '../../model/conversation-visibility.js';
+import { LIFECYCLE, memberRestarts, requestLifecycle } from '../../model/request-lifecycle.js';
 import { textOf } from './TimelineRowRenderer.jsx';
 import { newId } from '../../util/id.js';
 
-const WAITING_HANDOFF_DURATION_MS = 180;
-const WAITING_HANDOFF_LEDGER_LIMIT = 512;
 const WAITING_MESSAGE_TYPES = new Set([TYPES.agentAsk, TYPES.agentQueue]);
 const AGENT_CONTENT_TYPES = new Set([
   TYPES.agentAsk,
@@ -347,6 +346,8 @@ function heldActors(state, now = Date.now()) {
   return frozen;
 }
 
+// The editing flow's own reading of where a turn sits (unchanged by the
+// Waiting membership rule, which reads request-lifecycle.js).
 function latestStage(turn) {
   if (turn?.terminal) return 'timeline';
   const status = [...(turn?.provisional || [])]
@@ -355,15 +356,6 @@ function latestStage(turn) {
     .filter(Boolean).at(-1);
   if (status === 'processing') return 'processing';
   if (['received', 'queued', 'deferred'].includes(status)) return 'queued';
-  // A request type names the protocol operation, not its lifecycle position.
-  // Waiting is admitted only by an explicit non-terminal position fact; a
-  // canonical request with no provisional status must stay out until Replica
-  // receives that fact. Local durable submissions use pendingWaitingTurns and
-  // therefore do not rely on this canonical-lifecycle guard.
-  //
-  // This guard is load-bearing against history: a backfilled page carries old
-  // request rows whose terminals lie outside the loaded window, and treating
-  // "no terminal" as "outstanding" would pour that whole page into Waiting.
   return '';
 }
 
@@ -377,45 +369,29 @@ function timelineTurn(state, requestId) {
   return null;
 }
 
-function queuedTurnsOf(state, editingTargetId) {
-  const turns = [];
-  const visit = (entry) => {
-    if (entry?.kind === 'turn') {
-      const turn = entry.turn;
-      if (turn.requestId !== editingTargetId && latestStage(turn) === 'queued'
-        && !requestExpired(turn.request)) turns.push(turn);
-    }
-    for (const child of entry?.thread || []) visit(child);
-  };
-  for (const entry of state?.timeline || []) visit(entry);
-  return turns;
-}
-
-function isWaitingSubmission(row, channelId) {
-  return Boolean(row?.messageId
-    && (!row.channelId || row.channelId === channelId)
-    && WAITING_SUBMISSION_STATES.has(row.state)
-    && WAITING_MESSAGE_TYPES.has(row.frame?.msg_type));
-}
-
-// A request this session handed to an Agent, rendered from local facts alone.
-// It carries no ledger identity yet and does not need one: Waiting is asking
-// "is this outstanding", which the sender already knows.
+// Only abnormal hand-over states are worth a word; a normal send passes
+// through queued -> transmitting -> accepted in a few milliseconds and must
+// not flash three labels on the way.
 function waitingPresentationFor(submissionState) {
-  if (submissionState === 'transmitting') return 'transmitting';
-  return ['accepted', 'uncertain'].includes(submissionState) ? 'confirming' : 'stored-local';
+  if (submissionState === 'queued') return 'offline';
+  if (submissionState === 'uncertain') return 'confirming';
+  return '';
 }
 
 function localAwaitingTurn(row, submissionState) {
   const frame = row.frame || {};
+  const payload = Object.prototype.hasOwnProperty.call(frame.payload || {}, 'body')
+    ? frame.payload
+    : { body: frame.payload || { text: row.text || '' } };
   const request = {
     id: row.messageId,
     kind: 'request',
     type: frame.msg_type,
-    payload: frame.payload,
+    payload,
     audience: frame.audience || [],
     visibility: frame.visibility || 'public',
     ts: row.createdAt,
+    sender: { id: '', kind: 'human' },
     ...(frame.parent_id ? { parent_id: frame.parent_id } : {}),
   };
   return {
@@ -426,192 +402,126 @@ function localAwaitingTurn(row, submissionState) {
     provisional: [],
     terminal: null,
     terminalSeq: 0,
-    status: 'pending',
+    status: 'local',
     local: true,
     waitingPresentation: waitingPresentationFor(submissionState),
   };
 }
 
-// Only this session's own hand-offs reach here, so a row is outstanding until
-// the live projection says otherwise. The moment the ledger carries any
-// progress for it, that projection takes over: a position fact shows it
-// through queuedTurnsOf, `processing` moves it out, a terminal closes it.
-function awaitingTurns(state, awaiting, pending, editingTargetId) {
-  // The durable submission list still carries the freshest hand-over state
-  // while it exists; after it is dropped the entry keeps its last known one.
-  const latestState = new Map((pending || []).map((row) => [row.messageId, row.state]));
-  const turns = [];
+// This page's own hand-offs to an agent: the durable submission while it
+// exists, then the session's awaiting record. One row per message id.
+function ownHandoffs(state, pending, awaiting) {
+  const rows = new Map();
   for (const row of awaiting || []) {
-    if (!row?.messageId || row.messageId === editingTargetId) continue;
-    if (!WAITING_MESSAGE_TYPES.has(row.frame?.msg_type)) continue;
-    // A hand-over the transport refused never reached the Agent.
-    const submissionState = latestState.get(row.messageId) || row.state;
-    if (submissionState && !WAITING_SUBMISSION_STATES.has(submissionState)) continue;
+    if (!row?.messageId || !WAITING_MESSAGE_TYPES.has(row.frame?.msg_type)) continue;
     if (row.channelId && state?.channelId && row.channelId !== state.channelId) continue;
-    const canonical = timelineTurn(state, row.messageId);
-    if (canonical && (canonical.terminal || canonical.provisional?.length)) continue;
-    if (canonical ? requestExpired(canonical.request) : Number(row.frame?.expires_at_ms || 0) > 0
-      && Number(row.frame.expires_at_ms) <= Date.now()) continue;
-    // A landed turn keeps its ledger identity and therefore its controls;
-    // `local` means "no canonical turn yet", and marking one here would close
-    // insert/cancel/edit on a request that can take them.
-    turns.push(canonical
-      ? { ...canonical, waitingPresentation: waitingPresentationFor(submissionState) }
-      : localAwaitingTurn(row, submissionState));
+    rows.set(row.messageId, { ...row, submissionState: row.state || '' });
   }
-  return turns;
-}
-
-function pendingWaitingTurns(state, pending, editingTargetId) {
-  const turns = [];
   for (const row of pending || []) {
-    if (!isWaitingSubmission(row, state?.channelId) || row.messageId === editingTargetId) continue;
-    const canonical = timelineTurn(state, row.messageId);
-    // A local submission may be visible in Replica before its first lifecycle
-    // provisional arrives. Keep that same canonical request visible through
-    // the landing edge; only an explicit queued/received/deferred or terminal
-    // fact may replace/release the local Waiting continuity. The pending
-    // identity is the authority for this bridge, so an unrelated remote open
-    // request still stays excluded by latestStage/queuedTurnsOf.
-    if (canonical
-      && !canonical.terminal
-      && (!canonical.provisional || canonical.provisional.length === 0)
-      && latestStage(canonical) === '') {
-      turns.push({
-        ...canonical,
-        waitingPresentation: row.state === 'transmitting'
-          ? 'transmitting'
-          : ['accepted', 'uncertain'].includes(row.state) ? 'confirming' : 'stored-local',
-      });
-      continue;
+    if (!row?.messageId || !WAITING_MESSAGE_TYPES.has(row.frame?.msg_type)) continue;
+    if (row.channelId && state?.channelId && row.channelId !== state.channelId) continue;
+    rows.set(row.messageId, { ...rows.get(row.messageId), ...row, submissionState: row.state || '' });
+  }
+  return [...rows.values()];
+}
+
+function receiverOf(turnOrRow) {
+  return String(turnOrRow?.request?.audience?.[0] || turnOrRow?.frame?.audience?.[0] || '');
+}
+
+// One membership rule for the dock.
+//
+// History: a request is in Waiting exactly while its ledger lifecycle is
+// `waiting` (see request-lifecycle.js) — a receiver restart or expiry after it
+// makes it lost, never a zombie row here.
+//
+// This page's own sends: from the moment they are handed over until the
+// ledger gives them a lifecycle of their own. Landing on the ledger without a
+// status yet does not remove them. Where a new send first appears is decided
+// once, when it is first seen: behind a busy receiver it goes to Waiting; to
+// an idle one it goes straight to the timeline, where it is about to run.
+function useWaitingMembership(state, pending, awaiting, editingTargetId) {
+  const placementRef = useRef(new Map());
+  const orderRef = useRef({ channelId: '', next: 0, byID: new Map() });
+  const placedRef = useRef(new Set());
+  // The replica keeps one state object per channel and advances its revision;
+  // every lifecycle frame must re-derive membership.
+  const revision = Number(state?._timelineRevision ?? state?.lastSeq ?? 0);
+  return useMemo(() => {
+    if (orderRef.current.channelId !== state?.channelId) {
+      orderRef.current = { channelId: state?.channelId, next: 0, byID: new Map() };
     }
-    if (state?._envelopesById?.has?.(row.messageId)) continue;
-    const frame = row.frame || {};
-    const body = Object.prototype.hasOwnProperty.call(frame.payload || {}, 'body')
-      ? frame.payload
-      : { body: frame.payload || { text: row.text || '' } };
-    const request = {
-      id: row.messageId,
-      type: frame.msg_type,
-      kind: frame.kind || 'request',
-      payload: body,
-      audience: frame.audience || [],
-      parent_id: frame.parent_id || '',
-      visibility: frame.visibility || 'public',
-      ts: row.createdAt || Date.now(),
-      sender: { id: '', kind: 'human' },
-      local_submission_state: row.state,
+    const restarts = memberRestarts(state);
+    const now = Date.now();
+    const lifecycleOf = (turn) => requestLifecycle(turn, restarts, now);
+    const ledger = [];
+    const busy = new Set();
+    for (const turn of allTimelineTurns(state)) {
+      // Any request the receiver has placed in its queue waits here, whatever
+      // its word (ask, queue, a queued replace).
+      const stage = lifecycleOf(turn);
+      if (stage === LIFECYCLE.waiting || stage === LIFECYCLE.processing) busy.add(receiverOf(turn));
+      if (stage === LIFECYCLE.waiting && turn.requestId !== editingTargetId) ledger.push(turn);
+    }
+    // Ids this page placed in the timeline never enter the dock.
+    const placedTimeline = (id) => placementRef.current.get(String(id || '')) === 'timeline';
+    for (let index = ledger.length - 1; index >= 0; index -= 1) {
+      if (placedTimeline(ledger[index].requestId)) ledger.splice(index, 1);
+    }
+    const listed = new Set(ledger.map((turn) => String(turn.requestId || '')));
+    const own = [];
+    const liveOwn = new Set();
+    for (const row of ownHandoffs(state, pending, awaiting)) {
+      const id = row.messageId;
+      if (row.submissionState && !WAITING_SUBMISSION_STATES.has(row.submissionState)) continue;
+      const expiresAt = Number(row.frame?.expires_at_ms || 0);
+      if (expiresAt > 0 && expiresAt <= now) continue;
+      const canonical = timelineTurn(state, id);
+      const stage = canonical ? lifecycleOf(canonical) : LIFECYCLE.pending;
+      if (stage !== LIFECYCLE.pending && stage !== LIFECYCLE.waiting) continue;
+      liveOwn.add(id);
+      if (!placementRef.current.has(id)) {
+        placementRef.current.set(id, busy.has(receiverOf(row)) ? 'waiting' : 'timeline');
+      }
+      if (placementRef.current.get(id) === 'waiting') busy.add(receiverOf(row));
+      if (stage === LIFECYCLE.waiting || listed.has(id) || id === editingTargetId) continue;
+      if (placementRef.current.get(id) !== 'waiting') continue;
+      own.push(canonical
+        ? { ...canonical, waitingPresentation: waitingPresentationFor(row.submissionState) }
+        : localAwaitingTurn(row, row.submissionState));
+    }
+    for (const id of [...placementRef.current.keys()]) {
+      if (!liveOwn.has(id)) placementRef.current.delete(id);
+    }
+    // Order is fixed the first time a row is seen: ledger rows in ledger
+    // order, a new send after everything already listed. Two clocks never
+    // reorder the dock.
+    const order = orderRef.current;
+    const turns = [...ledger, ...own];
+    const unseen = turns.filter((turn) => !order.byID.has(String(turn.requestId || '')))
+      .sort((left, right) => (Number(left.requestSeq || 0) || Number.MAX_SAFE_INTEGER)
+        - (Number(right.requestSeq || 0) || Number.MAX_SAFE_INTEGER));
+    for (const turn of unseen) order.byID.set(String(turn.requestId || ''), order.next++);
+    const present = new Set(turns.map((turn) => String(turn.requestId || '')));
+    for (const id of [...order.byID.keys()]) if (!present.has(id)) order.byID.delete(id);
+    const placed = [...placementRef.current]
+      .filter(([, placement]) => placement === 'timeline').map(([id]) => id);
+    // Same members, same set: the timeline projection keys on it.
+    if (placed.length !== placedRef.current.size || placed.some((id) => !placedRef.current.has(id))) {
+      placedRef.current = new Set(placed);
+    }
+    const timelinePlaced = placedRef.current;
+    return {
+      queuedTurns: turns.sort((left, right) => order.byID.get(String(left.requestId || ''))
+        - order.byID.get(String(right.requestId || ''))),
+      timelinePlaced,
     };
-    turns.push({
-      requestId: request.id,
-      request,
-      requestSeq: 0,
-      lastSeq: 0,
-      provisional: [],
-      terminal: null,
-      terminalSeq: 0,
-      status: 'local',
-      local: true,
-      waitingPresentation: row.state === 'transmitting'
-        ? 'transmitting'
-        : ['accepted', 'uncertain'].includes(row.state) ? 'confirming' : 'stored-local',
-    });
-  }
-  return turns;
-}
-
-export function useWaitingHandoff(channelId, queuedTurns, presentationRows) {
-  const reducedMotion = useReducedMotionPreference();
-  const previousRef = useRef({ channelId, turns: new Map() });
-  const completedRef = useRef(new Map());
-  const timersRef = useRef(new Map());
-  const [settling, setSettling] = useState(() => new Map());
-  const currentTurns = useMemo(
-    () => new Map(queuedTurns.map((turn, order) => [turn.requestId, { turn, order }])),
-    [queuedTurns],
-  );
-  const presentedIDs = useMemo(() => new Set(presentationRows.map((row) => row.id)), [presentationRows]);
-  const sameChannel = previousRef.current.channelId === channelId;
-  const fresh = sameChannel ? [...previousRef.current.turns].flatMap(([requestId, entry]) => (
-    !currentTurns.has(requestId)
-    && presentedIDs.has(requestId)
-    && !completedRef.current.has(requestId)
-      ? [[requestId, entry]]
-      : []
-  )) : [];
-  let visibleHandoffs = settling;
-  if (!sameChannel || reducedMotion) visibleHandoffs = new Map();
-  else if (fresh.length) {
-    visibleHandoffs = new Map(settling);
-    for (const [requestId, entry] of fresh) visibleHandoffs.set(requestId, entry);
-  }
-  useLayoutEffect(() => {
-    if (previousRef.current.channelId !== channelId) {
-      for (const timer of timersRef.current.values()) globalThis.clearTimeout(timer);
-      timersRef.current.clear();
-      completedRef.current.clear();
-      previousRef.current = { channelId, turns: currentTurns };
-      setSettling((current) => current.size ? new Map() : current);
-      return;
-    }
-    previousRef.current = { channelId, turns: currentTurns };
-    if (!fresh.length) return;
-    for (const [requestId] of fresh) completedRef.current.set(requestId, true);
-    while (completedRef.current.size > WAITING_HANDOFF_LEDGER_LIMIT) {
-      completedRef.current.delete(completedRef.current.keys().next().value);
-    }
-    if (reducedMotion) return;
-    setSettling((current) => {
-      const next = new Map(current);
-      for (const [id, entry] of fresh) next.set(id, entry);
-      return next;
-    });
-    for (const [id] of fresh) {
-      timersRef.current.set(id, globalThis.setTimeout(() => {
-        timersRef.current.delete(id);
-        setSettling((current) => {
-          if (!current.has(id)) return current;
-          const next = new Map(current);
-          next.delete(id);
-          return next;
-        });
-      }, WAITING_HANDOFF_DURATION_MS));
-    }
-  }, [channelId, currentTurns, fresh, reducedMotion]);
-  useLayoutEffect(() => {
-    if (!reducedMotion || !settling.size) return;
-    for (const timer of timersRef.current.values()) globalThis.clearTimeout(timer);
-    timersRef.current.clear();
-    setSettling(new Map());
-  }, [reducedMotion, settling.size]);
-  useEffect(() => () => {
-    for (const timer of timersRef.current.values()) globalThis.clearTimeout(timer);
-    timersRef.current.clear();
-  }, [channelId]);
-  return useMemo(() => ({
-    exiting: [...visibleHandoffs].map(([requestId, entry]) => ({ requestId, ...entry })),
-    enteringRequestIDs: new Set(visibleHandoffs.keys()),
-  }), [visibleHandoffs]);
-}
-
-function useReducedMotionPreference() {
-  const [reduced, setReduced] = useState(
-    () => globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true,
-  );
-  useEffect(() => {
-    const query = globalThis.matchMedia?.('(prefers-reduced-motion: reduce)');
-    if (!query) return undefined;
-    const update = () => setReduced(query.matches === true);
-    update();
-    query.addEventListener?.('change', update);
-    return () => query.removeEventListener?.('change', update);
-  }, []);
-  return reduced;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [awaiting, editingTargetId, pending, revision, state]);
 }
 
 export function WaitingLayer({
   turns,
-  handoffs = [],
   state,
   names,
   selfId,
@@ -632,17 +542,14 @@ export function WaitingLayer({
     setBulk({ actorId: '', error: '' });
     setCollapsed(false);
   }, [state.channelId]);
-  if (!turns.length && !handoffs.length) return null;
+  if (!turns.length) return null;
   // Visibility is the timeline's invariant, not the roster's: a queued turn
   // the message area hands to this dock is shown here no matter what the
   // roster or control-tail currency says at this instant. Currency only
   // governs the controls, through targetCurrentness below; it used to hide
   // the whole dock, which left a just-sent message in neither area whenever
   // one physical seq was missing from the coverage ranges.
-  const presented = [
-    ...turns.map((turn, order) => ({ turn, order, exiting: false })),
-    ...handoffs.map((entry) => ({ turn: entry.turn, order: entry.order, exiting: true })),
-  ].sort((left, right) => left.order - right.order);
+  const presented = turns.map((turn) => ({ turn, exiting: false }));
   const groups = [];
   const byActor = new Map();
   for (const item of presented) {
@@ -711,7 +618,7 @@ export function WaitingLayer({
 
   const soleGroup = groups.length === 1 ? groups[0] : null;
   const hasQueuedEditor = turns.some((turn) => turn.requestId === editing?.targetId);
-  const handoffOnly = turns.length === 0;
+  const handoffOnly = false;
   return <div className={`agent-wait-dock${collapsed ? ' is-collapsed' : ''}${handoffOnly ? ' is-handoff-only' : ''}`}>
     <section
       className={`agent-wait-layer${collapsed ? ' is-collapsed' : ''}${hasQueuedEditor ? ' is-editing' : ''}${handoffOnly ? ' is-handoff-only' : ''}`}
@@ -748,11 +655,9 @@ export function WaitingLayer({
           const capabilityState = editLeaseCapabilityState(capability);
           const context = waitingControlContext(turn, { selfId, access, targetAuthority });
           const session = editing?.targetId === turn.requestId ? editing : null;
-          const localStateLabel = turn.waitingPresentation === 'stored-local'
-            ? '已保存在本机'
-            : turn.waitingPresentation === 'transmitting'
-              ? '正在发送'
-              : turn.waitingPresentation === 'confirming' ? '等待账本确认' : '';
+          const localStateLabel = turn.waitingPresentation === 'offline'
+            ? '等待连接后发出'
+            : turn.waitingPresentation === 'confirming' ? '确认中' : '';
           return <li
             key={turn.requestId}
             className={`agent-wait-item${session ? ' is-editing' : ''}${exiting ? ' is-handoff-exiting' : ''}`}
@@ -824,33 +729,17 @@ export function useWaitingEditingController({
   // or a pinned replacement) is excluded.
   const waitingEditingTargetId = editing?.location === 'processing' ? editing.targetId : resumePin;
   const controlVersion = Number(state?._timelineControlVersion || state?._timelineRevision || 0);
-  // Waiting holds no session memory. Both of its sources survive a reload, a
-  // remount and a crash:
-  //   - the ledger, for a request the receiver has already placed in its queue
-  //     (measured at ~1ms after the request lands, so this covers the normal
-  //     case on its own);
-  //   - the durable outbox, for the short window before the request is on the
-  //     ledger at all.
-  // The in-memory hand-off set that used to sit here emptied on every hot
-  // update and every remount, which is the whole of why Waiting kept vanishing.
-  const queuedTurns = useMemo(() => {
-    const ledger = queuedTurnsOf(state, waitingEditingTargetId);
-    const known = new Set(ledger.map((turn) => String(turn.requestId || '')));
-    return [
-      ...ledger,
-      ...pendingWaitingTurns(state, pending, waitingEditingTargetId)
-        .filter((turn) => !known.has(String(turn.requestId || ''))),
-    // One key both sources share. `requestSeq || ts` mixed two scales: a row
-    // still in the outbox has no seq and fell back to a ~1.79e12 timestamp,
-    // while the same row on the ledger carries a ~1.3e5 seq — so landing moved
-    // it from the bottom of the dock to the top, and every send reshuffled the
-    // list. The request's own ts is comparable in both.
-    ].sort((left, right) => Number(left.request?.ts || 0) - Number(right.request?.ts || 0));
-  }, [controlVersion, pending, state, waitingEditingTargetId]);
+  const { queuedTurns, timelinePlaced } = useWaitingMembership(state, pending, awaiting, waitingEditingTargetId);
+  // Sends that are not Agent requests echo in the timeline until they land;
+  // so does an Agent request this page placed there because its receiver was
+  // idle when it was sent.
   const timelineLocalEchoes = useMemo(
-    () => (pending || []).filter((row) => !isWaitingSubmission(row, state?.channelId)
+    () => (pending || []).filter((row) => (!WAITING_MESSAGE_TYPES.has(row?.frame?.msg_type)
+      || (timelinePlaced.has(row.messageId)
+        && (!row.channelId || row.channelId === state?.channelId)
+        && WAITING_SUBMISSION_STATES.has(row.state)))
       && !isControlOnlyBody(row?.frame?.msg_type, row?.frame?.payload?.body ?? row?.frame?.payload)),
-    [pending, state?.channelId],
+    [pending, state?.channelId, timelinePlaced],
   );
 
   useLayoutEffect(() => { editingRef.current = editing; }, [editing]);
@@ -1149,6 +1038,7 @@ export function useWaitingEditingController({
     editingReplacementId,
     presentationEditing: editing,
     timelineLocalEchoes,
+    timelinePlaced,
     queuedTurns,
     editNotice,
     startEditing,
