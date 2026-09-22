@@ -1056,7 +1056,20 @@ function ConversationAnswerSlot({ text, requestType = '', terminalPayload = null
   return <StructuredResult requestType={requestType} payload={terminalPayload} contentKey={contentKey} />;
 }
 
+// Ported verbatim from the public owner (origin/master Timeline.jsx):
+//   const suppressAgentBubble = Boolean(mergedInto(turn) || preemptedBy(turn));
+//   {!suppressAgentBubble && <AgentBubble ... />}
+// A request whose own terminal says it was merged into a batch or preempted by
+// a later ask never produced an answer; the answer belongs to the row named in
+// that terminal. Unconditional, and only these two fields — qualifying it is
+// what previously let such a turn keep an empty bubble reading ✓ 已完成.
+function supersededTurn(turn) {
+  const closure = argsOf(turn?.terminal);
+  return Boolean(closure?.merged_into || closure?.preempted_by);
+}
+
 function AgentAnswer({ turn, names, fold, onDownload, onPreview, onReply, onOpen }) {
+  if (supersededTurn(turn)) return null;
   const request = turn.request; const terminal = terminalContentEnvelope(turn);
   const stopped = isInterruptedTerminal(turn);
   const liveEnvelope = terminal || turn.provisional?.at(-1)?.envelope || null;
@@ -1118,7 +1131,10 @@ function TurnCard({ turn, names, selfId, access, targetAuthority, fold, approval
     {pending && !local && <ContentFrame contained><div className="task-controls"><div className="task-control-buttons">{request.type === TYPES.agentAsk && onEdit && <button type="button" disabled={Boolean(editing)} onClick={() => onEdit(turn, actorId)}>编辑</button>}{canInterrupt(turn, { access, targetAuthority }) && onControl && <button type="button" onClick={() => onControl(turn, actorId, TYPES.agentInterrupt, {})}>停止</button>}</div></div></ContentFrame>}
     {local && onCancel && <ContentFrame contained><div className="task-controls"><div className="task-control-buttons"><button type="button" onClick={() => onCancel(turn.requestId)}>取消</button></div></div></ContentFrame>}
     <AgentAnswer turn={turn} names={names} fold={fold} onDownload={onDownload} onPreview={onPreview} onReply={onReply} onOpen={onOpenProcess} />
-    <ThreadCalls root={turn} thread={turn.thread} names={names} />
+    {/* A superseded turn produced nothing: no answer bubble, and no record of
+        the calls it made on the way there either. Leaving the calls behind put
+        a bare 「1 次关联调用」 tail under a message whose body was suppressed. */}
+    {!supersededTurn(turn) && <ThreadCalls root={turn} thread={turn.thread} names={names} />}
   </section>;
 }
 

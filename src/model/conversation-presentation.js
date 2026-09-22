@@ -1,5 +1,6 @@
 import { argsOf, correlationOf } from '../protocol/envelope.js';
 import { TYPES } from '../protocol/vocab.js';
+import { isControlOnlyTurn } from './conversation-visibility.js';
 
 function finiteSeq(value) {
   const seq = Number(value || 0);
@@ -680,8 +681,20 @@ function visibleEntry(entry, scope, editingTargetID, editingReplacementID) {
   // Editing may remove a row from Waiting, but must not duplicate it here.
   if (waitingOnlyTurn(entry.turn)) return false;
   if (entry.turn?.requestId === editingTargetID) return true;
+  // Ported from the public owner's agentMessageStage:
+  //   if (turn?.terminal && !terminalValue(turn, 'replaced_by')) return 'timeline';
+  // A request whose own terminal names its replacement has left the
+  // conversation — the successor carries the body from here on. Keeping the
+  // original visible is what makes one edit read as two messages.
+  if (argsOf(entry.turn?.terminal)?.replaced_by) return false;
+  // A control word is an operation, not a message. The hidden list covers the
+  // ones that are never prose; a steer is the one word that may be either, and
+  // is a message exactly when it carries the sender's own text. A steer naming
+  // only its target moves a request that is already on screen — narrating that
+  // move as its own row says nothing the reader cannot already see.
   if (scope === CONVERSATION_SCOPE.mine
-    && (uiType(envelope.type) || HIDDEN_CONVERSATION_TYPES.has(envelope.type))) return false;
+    && (uiType(envelope.type) || HIDDEN_CONVERSATION_TYPES.has(envelope.type)
+      || isControlOnlyTurn(entry.turn))) return false;
   if ([TYPES.agentSelect, TYPES.agentNew].includes(envelope.type)) {
     return argsOf(entry.turn?.terminal)?.status === 'completed';
   }
@@ -690,7 +703,10 @@ function visibleEntry(entry, scope, editingTargetID, editingReplacementID) {
 
 function withoutUiChildren(entry, scope) {
   if (scope !== CONVERSATION_SCOPE.mine || entry?.kind !== 'turn' || !entry.thread?.length) return entry;
-  const thread = entry.thread.filter((child) => !uiType(child?.turn?.request?.type));
+  // The same rule one level down: as a child, a control word becomes a
+  // "关联调用" row that states the same operation a second time.
+  const thread = entry.thread.filter((child) => !uiType(child?.turn?.request?.type)
+    && !isControlOnlyTurn(child?.turn));
   return thread.length === entry.thread.length ? entry : { ...entry, thread };
 }
 
