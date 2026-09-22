@@ -37,6 +37,7 @@
 }
 .mobile-shell .timeline-message-list .presentation-row-shell { padding-right: 7px; padding-left: 7px; }
 .timeline-virtualized > .timeline-jump-latest { position: absolute; right: 50%; bottom: 8px; margin: 0; transform: translateX(50%); }
+.timeline-jump-latest.timeline-jump-bottom { display: grid; width: 34px; height: 34px; min-height: 34px; place-content: center; padding: 0; font-size: 15px; line-height: 1; }
 .timeline-history-status, .timeline-history-error { position: absolute; z-index: 4; top: 8px; left: 50%; width: max-content; max-width: min(calc(100% - 32px), 420px); margin: 0; transform: translateX(-50%); border: 1px solid var(--line-control); border-radius: var(--pill); background: var(--raised); box-shadow: 0 3px 12px var(--shadow); color: var(--text-muted); font-size: 10px; line-height: 1.3; text-align: center; pointer-events: none; }
 /* Every row has a size, so the vendor never waits on a zero-height row. */
 .presentation-row-shell { display: flow-root; min-height: 1px; }
@@ -556,12 +557,14 @@
 .timeline-virtualized > .timeline-inner.timeline-empty-feedback-overlay { position: absolute; z-index: 3; top: 8px; right: 0; left: 0; width: 100%; height: 0; min-height: 0; padding: 0; pointer-events: none; }
 .timeline-empty-feedback-overlay .timeline-scope-bar { position: static; }
 
-/* 桌面端的范围开关是消息面上的悬浮控件，不是一行消息头。它的容器必须脱离
-   flex 布局，否则一个 32px 的「@我」按钮会让整条消息列表永久下移 64px。 */
-@media (min-width: 761px) {
-  .timeline-virtualized > .timeline-controls-overlay { position: absolute; z-index: 3; top: 8px; right: 0; left: 0; width: 100%; height: 0; min-height: 0; padding: 0; pointer-events: none; }
-  .timeline-controls-overlay .timeline-scope-bar { position: static; }
-}
+/* 范围开关和成员筛选是对话栏顶部的一行普通内容：横排、靠右、占位置。它不悬浮在
+   消息上，所以右侧打开文件、终端或预览时，它不会盖住任何东西。 */
+.timeline-virtualized > .timeline-controls-overlay:not(.timeline-empty-feedback-overlay) { padding: 0; }
+.timeline-controls-overlay .timeline-scope-bar { position: static; min-height: 0; flex: 0 0 auto; margin: 0 auto; padding: 6px 26px 2px; pointer-events: auto; }
+.timeline-controls-overlay .timeline-scope { flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px; transform: none; }
+.timeline-controls-overlay .timeline-actor-filter { flex-direction: row; flex-wrap: wrap; align-items: center; gap: 4px; }
+.timeline-controls-overlay .timeline-scope > button { min-height: 26px; padding: 3px 10px; opacity: 1; box-shadow: none; }
+.timeline-controls-overlay .timeline-actor-filter button { box-shadow: none; }
 
 /* 终端视图。字节流是易逝的体验面，账本才是持久真相——这里只负责好看和好用。 */
 .terminal-view[hidden] { display: none; }

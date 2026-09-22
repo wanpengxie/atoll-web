@@ -31,6 +31,9 @@ const FORMAL_PENDING_LIMIT_MS = 5_000;
 // Upward movement is the reader's only when an input preceded it; a scroll
 // correction by the vendor is not a reason to leave following.
 const INPUT_WINDOW_MS = 1_000;
+// Far enough from the newest row that scrolling back by hand is a chore: the
+// "back to bottom" affordance appears beyond this many screens.
+const FAR_FROM_BOTTOM_SCREENS = 4;
 const DEFINITIVE_HISTORY_ERRORS = new Set([
   'forbidden', 'not_member', 'channel_not_found', 'channel_retired', 'access_denied',
 ]);
@@ -90,6 +93,8 @@ export function useTimelineReading({
   const [atBottom, setAtBottomState] = useState(true);
   const [demand, setDemandState] = useState(IDLE_DEMAND);
   const [documentVisible, setDocumentVisible] = useState(pageVisible);
+  const [farFromBottom, setFarFromBottomState] = useState(false);
+  const farRef = useRef(false);
   const modeRef = useRef(READING_MODE.following);
   const atBottomRef = useRef(true);
   const portRef = useRef(null);
@@ -250,6 +255,11 @@ export function useTimelineReading({
             movedUpRef.current = true;
           }
           lastTopRef.current = top;
+          const far = node.scrollHeight - node.clientHeight - top > FAR_FROM_BOTTOM_SCREENS * node.clientHeight;
+          if (far !== farRef.current) {
+            farRef.current = far;
+            setFarFromBottomState(far);
+          }
         };
         node.addEventListener('scroll', onScroll, { passive: true });
         node.addEventListener('wheel', onInput, { passive: true });
@@ -330,6 +340,8 @@ export function useTimelineReading({
     atBottomRef.current = true;
     setAtBottomState(true);
     movedUpRef.current = false;
+    farRef.current = false;
+    setFarFromBottomState(false);
     seenTailRef.current = '';
     rangeRef.current = { known: false, start: 0, end: 0 };
     scheduler.token = null;
@@ -527,6 +539,9 @@ export function useTimelineReading({
     atBottom,
     unseen,
     unseenNotice: unseen,
+    // New arrivals take the slot first; otherwise a reader far up the
+    // history gets a one-tap way back to the newest row.
+    showJumpToBottom: mode === READING_MODE.browsing && farFromBottom && unseen === 0,
     list,
     toLatest,
     jumpToLatest,
@@ -540,7 +555,7 @@ export function useTimelineReading({
     retryHistoryDemand,
     historyBoundary,
   }), [
-    activationID, atBottom, availability, demand, historyBoundary, historyStatus.error,
+    activationID, atBottom, availability, demand, farFromBottom, historyBoundary, historyStatus.error,
     jumpToLatest, list, mode, retryHistoryDemand, toLatest, unseen,
   ]);
 }

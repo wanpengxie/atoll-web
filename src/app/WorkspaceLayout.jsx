@@ -727,17 +727,21 @@ export function WorkspaceLayout({
         mobileFilesComposerVisible && 'mobile-files-composer-open',
         navigation.activeView === 'tasks' && !navigation.terminalVisible && 'tasks-view-open',
       ].filter(Boolean).join(' ')}>
-        <div className="dynamic-message-pane" data-surface-visible={String(messageSurfaceVisible)}>{conversationElement}</div>
+        <div className="dynamic-message-pane" data-surface-visible={String(messageSurfaceVisible)}>
+          {conversationElement}
+          {/* Anchored to the conversation column, not the window: a files or
+              terminal split beside it is never covered by this tab. */}
+          {readingHistoryAvailable && <button
+            type="button"
+            className="reading-history-edge-tab"
+            aria-label="打开最近阅读"
+            title="最近阅读"
+            onClick={navigation.openReadingHistory}
+          >最近</button>}
+        </div>
         {features}
       </div>
     </main>
-    {readingHistoryAvailable && <button
-      type="button"
-      className="reading-history-edge-tab"
-      aria-label="打开最近阅读"
-      title="最近阅读"
-      onClick={navigation.openReadingHistory}
-    >最近</button>}
     {rightPanelElement}
     {overlays}
   </SurfaceShell>;

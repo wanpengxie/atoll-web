@@ -330,6 +330,13 @@ export function ConversationSurface({
                   className="timeline-jump-latest"
                   onClick={viewport.jumpToLatest}
                 >↓ {viewport.unseenNotice} 条新动态</button>}
+                {viewport.showJumpToBottom && <button
+                  type="button"
+                  className="timeline-jump-latest timeline-jump-bottom"
+                  aria-label="回到最底部"
+                  title="回到最底部"
+                  onClick={viewport.jumpToLatest}
+                >↓</button>}
               </section>
             </div>
             <div className="conversation-bottom-stack">
