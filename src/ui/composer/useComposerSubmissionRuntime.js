@@ -666,6 +666,20 @@ export function useComposerSubmissionRuntime({
   const transmit = useCallback(async (submission) => {
     const key = submission.key || submission.messageId;
     if (!key || transmittingRef.current.has(key)) return false;
+    // A frame carrying an absolute deadline (an Agent capability probe) states
+    // when it stops being worth asking. The outbox is built to keep retrying
+    // under the original id, so once that instant passes the two contracts
+    // fight: every retry is refused for `expires_at <= ts` and re-queued, and
+    // the row can never leave. The deadline wins — it is the whole reason the
+    // caller set one.
+    const expiresAt = Number(submission.frame?.expires_at_ms || 0);
+    if (expiresAt > 0 && expiresAt <= Date.now()) {
+      publishPending((rows) => rows.filter((row) => row.messageId !== submission.messageId));
+      void outboxRef.current
+        ?.remove(authorityRef.current?.principalId || principalId, submission.messageId)
+        .catch(onError);
+      return false;
+    }
     const lifecycleGeneration = lifecycleRef.current.generation;
     const isLive = () => isLiveLifecycle(lifecycleRef.current, lifecycleGeneration);
     if (!isLive()) return false;
@@ -911,7 +925,7 @@ export function useComposerSubmissionRuntime({
         }
       }
     }
-  }, [assessSubmissionOwner, authorizeSubmission, beginSendLease, captureOwner, clearSubmissionNotice, currentFacts, currentSendLease, forgetAwaiting, forgetLeaseCorrelation, onAccessChanged, onError, onFeedChanged, publishPending, publishUncertainNotice]);
+  }, [assessSubmissionOwner, authorizeSubmission, beginSendLease, captureOwner, clearSubmissionNotice, currentFacts, currentSendLease, forgetAwaiting, forgetLeaseCorrelation, onAccessChanged, onError, onFeedChanged, principalId, publishPending, publishUncertainNotice]);
   transmitRef.current = transmit;
 
   const sendOnce = useCallback(async (request = {}) => {
