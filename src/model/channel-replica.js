@@ -340,10 +340,17 @@ function retainTrimmedTerminalClosures(state, cut) {
 }
 
 // Replica is the only mutable materialized ledger. Every source commits here;
-// the fold is recomputed from that canonical row set so out-of-order cache,
+// the fold is derived from that canonical row set so out-of-order cache,
 // history and live delivery cannot create competing folds. Reconciliation
 // keeps surviving turn identities stable for Presentation's content path.
-function rebuildState(state) {
+//
+// This function is the DEFINITION of that fold: it reads nothing but `rows`
+// (plus retained closures) and is order-independent by construction. It stays
+// the authority forever. `foldRow` below is an incremental implementation of
+// the same function for the arrival shapes that admit one; anything it cannot
+// express in closed form falls back here, and the fold audit asserts the two
+// agree row by row.
+function rebuildStateFull(state) {
   const orderedRows = [...state.rows.entries()].sort((left, right) => left[0] - right[0]);
   const requests = new Map();
   const requestSeqs = new Map();
@@ -467,6 +474,308 @@ function rebuildState(state) {
     ));
   state.timeline.splice(0, state.timeline.length, ...nextTimeline);
   state.lastSeq = orderedRows.at(-1)?.[0] || 0;
+  // The incremental index is a pure projection of the values this fold just
+  // computed, never a second source. Rebuilding it here is what makes the
+  // fallback total: whatever `foldRow` declines to express, the next row
+  // resumes from an index the authority itself wrote.
+  publishFoldIndex(state, requests, requestSeqs, responses);
+}
+
+// ---------------------------------------------------------------------------
+// Incremental fold
+//
+// `rebuildStateFull` above is O(rows) per admitted row, so a channel that is
+// never trimmed pays more for its newest message the longer it has been open.
+// The cost is not inherent to the invariant it protects: the fold is a
+// function of `rows`, and a single arrival touches a closed, small part of it.
+// What follows maintains that part directly. It is deliberately partial —
+// every shape it cannot prove locally returns false and defers to the
+// authority, so correctness never depends on this file being exhaustive.
+// ---------------------------------------------------------------------------
+
+// Ledger order is the only ordering fact, and seqs are unique per channel, so
+// an insert position is exact rather than a stable-sort tie-break.
+function insertBySeq(list, item) {
+  if (!list.length || list[list.length - 1].seq <= item.seq) { list.push(item); return list; }
+  let low = 0;
+  let high = list.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (list[mid].seq <= item.seq) low = mid + 1; else high = mid;
+  }
+  list.splice(low, 0, item);
+  return list;
+}
+
+// The ids a request's root walk can traverse. `rootRequestId` prefers a known
+// correlation and otherwise climbs parents, so admitting either id can move
+// this request; both are indexed as incoming edges.
+function requestPointers(request) {
+  const id = String(request?.id || '');
+  const correlation = String(request?.correlation_id || '');
+  const parent = String(request?.parent_id || '');
+  const pointers = [];
+  if (correlation && correlation !== id) pointers.push(correlation);
+  if (parent && parent !== id && parent !== correlation) pointers.push(parent);
+  return pointers;
+}
+
+function publishFoldIndex(state, requests, requestSeqs, responses) {
+  const rootOf = new Map();
+  const pointedBy = new Map();
+  for (const [id, request] of requests) {
+    rootOf.set(id, rootRequestId(request, requests) || id);
+    for (const target of requestPointers(request)) {
+      let pointers = pointedBy.get(target);
+      if (!pointers) { pointers = new Set(); pointedBy.set(target, pointers); }
+      pointers.add(id);
+    }
+  }
+  const roots = new Map();
+  const entryOf = new Map();
+  for (const entry of state.timeline) {
+    if (entry?.kind !== 'turn') continue;
+    const id = String(entry.turn?.requestId || '');
+    roots.set(id, entry);
+    entryOf.set(id, entry);
+    for (const child of entry.thread || []) entryOf.set(String(child.turn?.requestId || ''), child);
+  }
+  // `commit` needs a request view of `_envelopesById`, including system
+  // narration requests and closure placeholders, to attribute a change-log
+  // entry. Deriving it here removes the per-commit rescan of that map.
+  const allRequests = new Map();
+  for (const envelope of state._envelopesById.values()) {
+    if (envelope?.kind === 'request') allRequests.set(envelope.id, envelope);
+  }
+  state._fold = { requests, requestSeqs, responses, rootOf, pointedBy, roots, entryOf, allRequests };
+}
+
+// Narration is read by identity in a few projections, so a change replaces the
+// array exactly as the authoritative fold does; an unrelated row now leaves it
+// alone instead of handing every consumer a fresh array per commit.
+function insertNarration(state, seq, envelope) {
+  const next = [...(state.narration || [])];
+  let index = next.length;
+  while (index > 0 && next[index - 1].seq > seq) index -= 1;
+  next.splice(index, 0, { seq, envelope });
+  state.narration = next;
+}
+
+function detachTurnEntry(state, requestID) {
+  const fold = state._fold;
+  const entry = fold.entryOf.get(requestID);
+  if (!entry) return;
+  if (fold.roots.get(requestID) === entry) {
+    fold.roots.delete(requestID);
+    const index = state.timeline.indexOf(entry);
+    if (index >= 0) state.timeline.splice(index, 1);
+    return;
+  }
+  const thread = fold.roots.get(String(fold.rootOf.get(requestID) || ''))?.thread;
+  if (!Array.isArray(thread)) return;
+  const index = thread.indexOf(entry);
+  if (index >= 0) thread.splice(index, 1);
+}
+
+// Placement mirrors the authoritative fold exactly, including its refusal to
+// project a request whose resolved root is not itself a root entry.
+function attachTurnEntry(state, requestID) {
+  const fold = state._fold;
+  const request = fold.requests.get(requestID);
+  if (!request) return;
+  const requestSeq = fold.requestSeqs.get(requestID);
+  const turn = buildTurn(request, requestSeq, fold.responses.get(requestID));
+  let entry = fold.entryOf.get(requestID);
+  if (!entry) {
+    entry = { kind: 'turn', seq: requestSeq, thread: [], turn };
+    fold.entryOf.set(requestID, entry);
+  } else {
+    entry.seq = requestSeq;
+    entry.turn = reconcileTurn(entry.turn, turn);
+    // Threads are one level deep in this fold; every child of a moved root is
+    // itself in the affected set and is re-attached in the same pass.
+    entry.thread.length = 0;
+  }
+  const rootID = String(fold.rootOf.get(requestID) || requestID);
+  if (rootID === requestID) {
+    fold.roots.set(requestID, entry);
+    insertBySeq(state.timeline, entry);
+    return;
+  }
+  const rootEntry = fold.roots.get(rootID);
+  if (rootEntry) insertBySeq(rootEntry.thread, entry);
+}
+
+function applyStandaloneRow(state, seq, envelope) {
+  insertBySeq(state.timeline, { kind: 'standalone', seq, envelope });
+  return true;
+}
+
+// A response only ever changes the turn of its exact parent: it cannot move a
+// root, reorder the timeline, or reach any other entry. This is the shape the
+// streaming path spends almost all of its rows on.
+function applyResponseRow(state, seq, envelope) {
+  const fold = state._fold;
+  const parentID = String(envelope.parent_id);
+  const responses = insertBySeq(fold.responses.get(parentID) || [], { seq, envelope });
+  fold.responses.set(parentID, responses);
+  const entry = fold.entryOf.get(parentID);
+  const request = fold.requests.get(parentID);
+  if (!entry || !request) return true;
+  entry.turn = reconcileTurn(entry.turn, buildTurn(request, fold.requestSeqs.get(parentID), responses));
+  return true;
+}
+
+// Admitting a request can adopt earlier rootless requests. The set that can
+// move is exactly the closure of the reverse pointer graph below the new id:
+// a request's root is decided by walking its own pointers upward, so it can
+// only be affected by an id it can reach that way. Everything outside that
+// closure is provably untouched, which is what keeps this bounded by the turn
+// rather than by the channel.
+function applyRequestRow(state, seq, envelope) {
+  const fold = state._fold;
+  const id = String(envelope.id);
+  fold.requests.set(id, envelope);
+  fold.requestSeqs.set(id, seq);
+  for (const target of requestPointers(envelope)) {
+    let pointers = fold.pointedBy.get(target);
+    if (!pointers) { pointers = new Set(); fold.pointedBy.set(target, pointers); }
+    pointers.add(id);
+  }
+
+  const affected = [];
+  const visited = new Set();
+  const queue = [id];
+  while (queue.length) {
+    const current = queue.shift();
+    if (visited.has(current)) continue;
+    visited.add(current);
+    if (fold.requests.has(current)) affected.push(current);
+    for (const pointer of fold.pointedBy.get(current) || []) {
+      if (!visited.has(pointer)) queue.push(pointer);
+    }
+  }
+
+  // Detach against the previous roots — a request can keep its root and still
+  // change placement because that root stopped being a root entry.
+  for (const affectedID of affected) detachTurnEntry(state, affectedID);
+  const nextRoots = new Map(affected.map((affectedID) => [
+    affectedID,
+    rootRequestId(fold.requests.get(affectedID), fold.requests) || affectedID,
+  ]));
+  for (const [affectedID, rootID] of nextRoots) fold.rootOf.set(affectedID, rootID);
+  for (const [affectedID, rootID] of nextRoots) if (rootID === affectedID) attachTurnEntry(state, affectedID);
+  for (const [affectedID, rootID] of nextRoots) if (rootID !== affectedID) attachTurnEntry(state, affectedID);
+  return true;
+}
+
+function applyRowIncremental(state, seq, envelope) {
+  const fold = state._fold;
+  if (!fold) return false;
+  // Retained closures are lifecycle proof that has to be re-merged against the
+  // whole surviving row set; that merge has no local form. A trimmed replica
+  // therefore stays on the authority until its closures drain, which is also
+  // the only profile where the row window is bounded anyway.
+  if (state._unmatchedTerminalClosures?.size) return false;
+  const projected = hasProjectionBody(envelope);
+  // An id-less projection row collides with every other id-less entry in the
+  // authority's reconciliation key. Rather than reproduce that, defer.
+  if (projected && !envelope.id) return false;
+
+  // Rows only leave through trim, which runs the authority, so the head is a
+  // running maximum rather than a second ordered index over `rows`.
+  state.lastSeq = Math.max(numeric(state.lastSeq), seq);
+  // Rows without a canonical body stay durable transport evidence and are
+  // deliberately invisible to every projection.
+  if (!projected) return true;
+
+  state._envelopesById.set(envelope.id, envelope);
+  if (envelope.kind === 'request') fold.allRequests.set(envelope.id, envelope);
+  if (envelope.visibility === 'system') { insertNarration(state, seq, envelope); return true; }
+  if (envelope.kind === 'request') return applyRequestRow(state, seq, envelope);
+  if (envelope.kind === 'response' && envelope.parent_id) return applyResponseRow(state, seq, envelope);
+  return applyStandaloneRow(state, seq, envelope);
+}
+
+// A value-level signature of the fold. Object identity legitimately differs
+// between the two implementations — the incremental path keeps more entries
+// alive across an adoption — so equivalence is asserted on what consumers read.
+function foldSignature(state) {
+  const entrySignature = (entry) => (entry?.kind !== 'turn'
+    ? { kind: entry?.kind, seq: entry?.seq, envelope: entry?.envelope?.id || '' }
+    : {
+      kind: 'turn',
+      seq: entry.seq,
+      turn: {
+        requestId: entry.turn?.requestId || '',
+        request: entry.turn?.request?.id || '',
+        requestSeq: entry.turn?.requestSeq,
+        lastSeq: entry.turn?.lastSeq,
+        status: entry.turn?.status,
+        terminal: entry.turn?.terminal?.id || '',
+        terminalSeq: entry.turn?.terminalSeq,
+        terminalClosureOnly: entry.turn?.terminalClosureOnly === true,
+        provisional: (entry.turn?.provisional || []).map((item) => `${item.seq}:${item.envelope?.id || ''}`),
+      },
+      thread: (entry.thread || []).map(entrySignature),
+    });
+  return JSON.stringify({
+    timeline: (state.timeline || []).map(entrySignature),
+    narration: (state.narration || []).map((item) => `${item.seq}:${item.envelope?.id || ''}`),
+    envelopes: [...state._envelopesById.keys()].sort(),
+    lastSeq: state.lastSeq,
+  });
+}
+
+// The audit re-runs the authoritative fold, so it costs exactly what this
+// change exists to remove. Bounding it by row count keeps every branch of the
+// incremental fold covered — each one is reachable within a handful of rows —
+// while a test that deliberately floods a single channel does not pay a
+// quadratic price to re-prove a shape the first rows already proved.
+const FOLD_AUDIT_MAX_ROWS = 512;
+
+let foldAudit = false;
+try {
+  foldAudit = globalThis.process?.env?.NODE_ENV === 'test'
+    || globalThis.__ATOLL_REPLICA_FOLD_AUDIT__ === true;
+} catch { foldAudit = false; }
+
+// Opt-in outside tests. Within the bound above, every existing Replica,
+// timeline and projection test becomes an equivalence test for free, which is
+// the point: the guard is carried by the suite that already describes the
+// fold, not by new assertions that only restate this file.
+export function setReplicaFoldAudit(enabled) {
+  const previous = foldAudit;
+  foldAudit = enabled === true;
+  return previous;
+}
+
+export function replicaFoldSignature(state) {
+  return foldSignature(state);
+}
+
+// Re-derives the fold from `rows` alone. Exposed so a test can compare a state
+// that reached its shape incrementally against the authority, including the
+// trimmed-closure shapes the audit deliberately does not reach.
+export function replicaRefold(state) {
+  rebuildStateFull(state);
+  return foldSignature(state);
+}
+
+function foldRow(state, seq, envelope) {
+  if (!applyRowIncremental(state, seq, envelope)) { rebuildStateFull(state); return; }
+  if (!foldAudit || state.rows.size > FOLD_AUDIT_MAX_ROWS) return;
+  const incremental = foldSignature(state);
+  rebuildStateFull(state);
+  const authoritative = foldSignature(state);
+  if (incremental === authoritative) return;
+  throw Object.assign(new Error('replica incremental fold diverged from the authoritative fold'), {
+    code: 'replica_fold_divergence',
+    seq,
+    envelopeId: envelope?.id || '',
+    incremental,
+    authoritative,
+  });
 }
 
 function humanPrincipal(id) {
@@ -807,20 +1116,18 @@ export function createChannelReplicaStore() {
       return { accepted: false, record, reason: 'duplicate-envelope' };
     }
     record.state.rows.set(seq, envelope);
-    rebuildState(record.state);
+    foldRow(record.state, seq, envelope);
     record.revision += 1;
     record.headSeq = Math.max(record.headSeq, seq);
     record.materializedCoverage = mergeReplicaCoverage(record.materializedCoverage, { lowSeq: seq, highSeq: seq });
     // Durable ingress and canonical projection have different clocks. A
     // historical flat payload is retained in rows for transport/cache
-    // evidence, but rebuildState deliberately exposes no business entry for
+    // evidence, but the fold deliberately exposes no business entry for
     // it. Do not invalidate projection consumers for a row they cannot see.
     if (hasProjectionBody(envelope)) {
       record.state._timelineRevision += 1;
       record.state._timelineProjectionVersion += 1;
-      const requests = new Map([...record.state._envelopesById.values()]
-        .filter((value) => value.kind === 'request').map((value) => [value.id, value]));
-      const rootID = rootRequestId(envelope, requests) || envelope.id || '';
+      const rootID = rootRequestId(envelope, record.state._fold.allRequests) || envelope.id || '';
       record.state._timelineChangeLog.push({
         revision: record.state._timelineRevision,
         kind: envelope.kind === 'response' ? 'content' : 'structure',
@@ -871,12 +1178,12 @@ export function createChannelReplicaStore() {
     for (const seq of remove) record.state.rows.delete(seq);
     // Keep a response whose parent is outside this materialized window in the
     // canonical rows map. A later request may legally arrive first/after a
-    // separate history batch; rebuildState will merge that raw response once
+    // separate history batch; the fold will merge that raw response once
     // its exact parent_id is present. Rows remain the only full-envelope
     // buffer; terminal closures carry lifecycle proof only.
     const removed = remove.length;
     if (!removed) return 0;
-    rebuildState(record.state);
+    rebuildStateFull(record.state);
     record.materializedCoverage = [...record.state.rows.keys()].sort((a, b) => a - b)
       .reduce((all, seq) => mergeReplicaCoverage(all, { lowSeq: seq, highSeq: seq }), []);
     record.revision += 1;
