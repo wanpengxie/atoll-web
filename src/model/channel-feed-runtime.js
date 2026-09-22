@@ -719,6 +719,12 @@ export function createChannelFeedRuntime(options = {}) {
   const deferredHistoryRequests = new Map();
   const subscribers = new Set();
   const ownerCommands = new Map();
+  // An owner snapshot is a pure merge of the published snapshot with that
+  // owner's fixed commands, but it is read once per render while the snapshot
+  // only changes on publish. Returning a fresh object each render would make
+  // every consumer memo keyed on `feed` recompute unconditionally, which is
+  // how a keystroke ends up rebuilding cross-channel projections.
+  const ownerSnapshots = new Map();
   // Background interests are owned by Feed, not by a consumer's component
   // lifecycle. A consumer receives only a typed lease and can release it;
   // Feed owns the AbortController and the history operation itself.
@@ -3197,7 +3203,7 @@ export function createChannelFeedRuntime(options = {}) {
     histories.clear(); grants.clear();
     activityEntries.clear(); followingObservations.clear(); timerEvents.splice(0);
     replica.destroy(); cursors.destroy(); void cache.destroy();
-    subscribers.clear(); ownerCommands.clear();
+    subscribers.clear(); ownerCommands.clear(); ownerSnapshots.clear();
   }
 
   return Object.freeze({
@@ -3219,7 +3225,11 @@ export function createChannelFeedRuntime(options = {}) {
         });
         ownerCommands.set(producerToken, commands);
       }
-      return Object.freeze({ ...base, ...commands });
+      const cached = ownerSnapshots.get(producerToken);
+      if (cached?.base === base) return cached.owned;
+      const owned = Object.freeze({ ...base, ...commands });
+      ownerSnapshots.set(producerToken, { base, owned });
+      return owned;
     },
     bind(nextBindings) {
       if (destroyed) return () => {};

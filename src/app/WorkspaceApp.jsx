@@ -336,10 +336,17 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const [automationRecords, setAutomationRecords] = useState(EMPTY_ARRAY);
   const showError = useCallback((error) => setTopError(errorText(error)), []);
   const wire = useWireSessionPort({ principalId });
+  // Only state setters are captured, so this is stable by construction. An
+  // inline arrow here reaches `navigation.select`, then `openWorkspaceSource`,
+  // then the activity and search projections, and rebuilds all of them on
+  // every render of this component.
+  const clearChannelScopedPanels = useCallback(() => {
+    setPanel(''); setTaskCreateSource(undefined); setChannelNotice('');
+  }, []);
   const navigation = useChannelNavigation({
     accessRef: wire.accessRef,
     rosterRef: wire.rosterRef,
-    onSelect: () => { setPanel(''); setTaskCreateSource(undefined); setChannelNotice(''); },
+    onSelect: clearChannelScopedPanels,
     onNotice: setChannelNotice,
   });
   const ownerToken = useMemo(() => Object.freeze({ principalId }), [principalId]);

@@ -915,6 +915,10 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
     return true;
   }, []);
   const bump = useCallback(() => setRevision((value) => value + 1), []);
+  // Reads a ref, so it has no inputs to track. Returning a fresh function
+  // would make it a per-render identity change in a value several consumer
+  // memos depend on, and those memos project every channel's timeline.
+  const selfFor = useCallback((channelId) => rosterRef.current?.self?.(channelId) || '', [rosterRef]);
   const setChannels = useCallback((next) => {
     if (next instanceof Map && next.size === 0) {
       filesReturnIntentRef.current = null;
@@ -954,7 +958,7 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
     revision,
     select,
     setTerminalVisible,
-    selfFor: (channelId) => rosterRef.current?.self?.(channelId) || '',
+    selfFor,
     setActiveChannelId: commitActiveChannel,
     setActiveView,
     setFocus,
