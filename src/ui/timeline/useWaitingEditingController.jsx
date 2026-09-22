@@ -2,6 +2,7 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 're
 import { actorNameFromMap } from '../../model/actor-display.js';
 import { argsOf, PROVISIONAL } from '../../protocol/envelope.js';
 import { TYPES } from '../../protocol/vocab.js';
+import { isControlOnlyBody, requestExpired } from '../../model/conversation-visibility.js';
 import { textOf } from './TimelineRowRenderer.jsx';
 import { newId } from '../../util/id.js';
 
@@ -98,58 +99,59 @@ function waitingControlContext(turn, { selfId, access, targetAuthority }) {
   const location = String(frame?.status || '');
   const controls = open ? controlEntries(frame) : [];
   const words = new Set(controls.map((entry) => entry.word));
-  const dismissPayload = controlPayload({ controls }, TYPES.agentDismiss);
-  const steerPayload = waitingSteerPayload({ controls }, turn);
+  // The row itself is the stable target of every control it offers, so an
+  // entry that declares only its word stays usable.
+  const targetPayload = { target: String(turn?.requestId || turn?.request?.id || '') };
+  const steerPayload = controlPayload({ controls }, TYPES.agentSteer, targetPayload);
   const currentness = targetCurrentness(turn, targetAuthority);
   const callerCancelEligible = open && writable && owned && location === 'queued';
-  const targetControlsEligible = open && writable && currentness === 'current';
+  // Only a receiver the roster positively reports as gone closes these. While
+  // the roster is merely unread, a control stays offered: flipping the whole
+  // button row on every roster refresh reads as the dock shaking.
+  const targetControlsEligible = open && writable && currentness !== 'departed';
   return {
     controls,
     targetCurrentness: currentness,
     targetControlsEligible,
     steering: Boolean(frame?.steering),
     steerPayload,
+    targetPayload,
     canCancel: callerCancelEligible
-      || (targetControlsEligible && location === 'queued' && words.has(TYPES.agentDismiss)
-        && Boolean(dismissPayload)),
+      || (targetControlsEligible && location === 'queued' && words.has(TYPES.agentDismiss)),
     cancelsAsDismiss: !callerCancelEligible && targetControlsEligible && !owned
-      && Boolean(dismissPayload),
-    canInsert: targetControlsEligible && words.has(TYPES.agentSteer) && Boolean(steerPayload),
+      && words.has(TYPES.agentDismiss),
+    canInsert: targetControlsEligible && words.has(TYPES.agentSteer),
     canEdit: targetControlsEligible && words.has(TYPES.agentReplace),
   };
 }
 
 function extraControls(context) {
   if (!context?.targetControlsEligible) return [];
-  return context.controls.filter((entry) => !CORE_CONTROL_WORDS.has(entry.word)
-    && Boolean(controlPayload(context, entry)));
+  return context.controls.filter((entry) => !CORE_CONTROL_WORDS.has(entry.word));
 }
 
 function controlLabel(entry) {
   return entry.label || entry.word.split('.').pop();
 }
 
-function controlPayload(context, entryOrWord) {
+// A control entry declares a word; `payload` is optional and the ledger form
+// is usually the bare `{ word }`. Refusing that form refuses the declaration
+// itself, so the caller supplies the row's own target as the fallback and any
+// actor-authored field wins over it. Only an undeclared word stays refused.
+function controlPayload(context, entryOrWord, fallback = {}) {
   const entry = typeof entryOrWord === 'string'
     ? context?.controls?.find((candidate) => candidate.word === entryOrWord)
     : entryOrWord;
-  return entry?.payload && typeof entry.payload === 'object' && !Array.isArray(entry.payload)
-    ? { ...entry.payload }
+  if (!entry) return null;
+  const declared = entry.payload && typeof entry.payload === 'object' && !Array.isArray(entry.payload)
+    ? entry.payload
     : null;
-}
-
-function waitingSteerPayload(context, turn) {
-  const payload = controlPayload(context, TYPES.agentSteer);
-  if (!payload) return null;
-  // The waiting action is a target-form steer, not a new text submission. A
-  // declared empty object means the actor supports that form but leaves the
-  // queued request identity to this row; fill only that stable target field.
-  // Missing payload remains fail-closed, and any actor-authored fields win.
-  if (Object.keys(payload).length === 0) {
-    const target = String(turn?.requestId || turn?.request?.id || '');
-    return target ? { target } : null;
-  }
-  return payload;
+  // An actor that authored its own payload owns it whole; send it as authored
+  // and never mix a caller-invented field into it. A bare `{ word }` or an
+  // explicitly empty payload declares the word without naming the subject, and
+  // the row it is offered on is that subject.
+  if (declared && Object.keys(declared).length) return { ...declared };
+  return { ...fallback };
 }
 
 function allTimelineTurns(state) {
@@ -358,6 +360,10 @@ function latestStage(turn) {
   // canonical request with no provisional status must stay out until Replica
   // receives that fact. Local durable submissions use pendingWaitingTurns and
   // therefore do not rely on this canonical-lifecycle guard.
+  //
+  // This guard is load-bearing against history: a backfilled page carries old
+  // request rows whose terminals lie outside the loaded window, and treating
+  // "no terminal" as "outstanding" would pour that whole page into Waiting.
   return '';
 }
 
@@ -376,7 +382,8 @@ function queuedTurnsOf(state, editingTargetId) {
   const visit = (entry) => {
     if (entry?.kind === 'turn') {
       const turn = entry.turn;
-      if (turn.requestId !== editingTargetId && latestStage(turn) === 'queued') turns.push(turn);
+      if (turn.requestId !== editingTargetId && latestStage(turn) === 'queued'
+        && !requestExpired(turn.request)) turns.push(turn);
     }
     for (const child of entry?.thread || []) visit(child);
   };
@@ -443,6 +450,8 @@ function awaitingTurns(state, awaiting, pending, editingTargetId) {
     if (row.channelId && state?.channelId && row.channelId !== state.channelId) continue;
     const canonical = timelineTurn(state, row.messageId);
     if (canonical && (canonical.terminal || canonical.provisional?.length)) continue;
+    if (canonical ? requestExpired(canonical.request) : Number(row.frame?.expires_at_ms || 0) > 0
+      && Number(row.frame.expires_at_ms) <= Date.now()) continue;
     // A landed turn keeps its ledger identity and therefore its controls;
     // `local` means "no canonical turn yet", and marking one here would close
     // insert/cancel/edit on a request that can take them.
@@ -650,7 +659,7 @@ export function WaitingLayer({
 
   async function cancelTurn(turn, group, context) {
     if (context.cancelsAsDismiss) {
-      const payload = controlPayload(context, TYPES.agentDismiss);
+      const payload = controlPayload(context, TYPES.agentDismiss, context.targetPayload);
       if (!payload) return undefined;
       return onControl(turn, group.actorId, TYPES.agentDismiss, payload);
     }
@@ -761,18 +770,16 @@ export function WaitingLayer({
                     {localStateLabel && <span className="agent-wait-local-state">{localStateLabel}</span>}
                     {paused && <span className="agent-wait-paused">已暂停</span>}
                     {context.steering && <span className="agent-wait-paused">正在并入…</span>}
-                    {!turn.local && context.targetCurrentness === 'unknown' && <span className="agent-wait-paused">正在核验收件人</span>}
                     {!turn.local && context.targetCurrentness === 'departed' && <span className="agent-wait-paused">收件人已离席，等待账本关闭</span>}
                     {context.canInsert && <button type="button" onClick={() => {
                       const payload = context.steerPayload;
                       if (payload) onControl(turn, group.actorId, TYPES.agentSteer, payload);
                     }}>插入</button>}
-                    {context.canEdit && capabilityState === 'supported' && <button type="button" disabled={Boolean(editing)} onClick={() => onEdit(turn, group.actorId)}>编辑</button>}
-                    {context.canEdit && capabilityState === 'unknown' && <span className="agent-wait-paused">正在确认编辑能力</span>}
-                    {context.canEdit && ['unsupported', 'unavailable'].includes(capabilityState) && <span className="agent-wait-paused">Agent 不支持安全编辑</span>}
+                    {context.canEdit && capabilityState !== 'unsupported' && <button type="button" disabled={Boolean(editing)} onClick={() => onEdit(turn, group.actorId)}>编辑</button>}
+                    {context.canEdit && capabilityState === 'unsupported' && <span className="agent-wait-paused">Agent 不支持安全编辑</span>}
                     {context.canCancel && <button type="button" title={context.cancelsAsDismiss ? '这条不是你发的，将请对方放弃它' : '撤回你自己发出的这条请求'} onClick={() => cancelTurn(turn, group, context)}>取消</button>}
                     {extraControls(context).map((entry) => {
-                      const payload = controlPayload(context, entry);
+                      const payload = controlPayload(context, entry, context.targetPayload);
                       return <button key={entry.word} type="button" onClick={() => {
                         if (payload) onControl(turn, group.actorId, entry.word, payload);
                       }}>{controlLabel(entry)}</button>;
@@ -809,20 +816,39 @@ export function useWaitingEditingController({
   const [resumePin, setResumePin] = useState('');
   const editingTargetId = editing?.targetId || '';
   const editingReplacementId = editing?.replacementId || resumePin;
-  const waitingEditingTargetId = editing?.holdId ? editing.targetId : '';
+  // A queued row being edited stays exactly where it is and states 「正在编辑」.
+  // Removing it mid-session made the dock change shape twice per edit — once
+  // when the session opened, again when the hold landed — which reads as a
+  // flash. Only a target that never belonged to Waiting (the processing turn,
+  // or a pinned replacement) is excluded.
+  const waitingEditingTargetId = editing?.location === 'processing' ? editing.targetId : resumePin;
   const controlVersion = Number(state?._timelineControlVersion || state?._timelineRevision || 0);
+  // Waiting holds no session memory. Both of its sources survive a reload, a
+  // remount and a crash:
+  //   - the ledger, for a request the receiver has already placed in its queue
+  //     (measured at ~1ms after the request lands, so this covers the normal
+  //     case on its own);
+  //   - the durable outbox, for the short window before the request is on the
+  //     ledger at all.
+  // The in-memory hand-off set that used to sit here emptied on every hot
+  // update and every remount, which is the whole of why Waiting kept vanishing.
   const queuedTurns = useMemo(() => {
     const ledger = queuedTurnsOf(state, waitingEditingTargetId);
     const known = new Set(ledger.map((turn) => String(turn.requestId || '')));
     return [
       ...ledger,
-      ...awaitingTurns(state, awaiting, pending, waitingEditingTargetId)
+      ...pendingWaitingTurns(state, pending, waitingEditingTargetId)
         .filter((turn) => !known.has(String(turn.requestId || ''))),
-    ].sort((left, right) => Number(left.requestSeq || left.request?.ts || 0)
-      - Number(right.requestSeq || right.request?.ts || 0));
-  }, [awaiting, controlVersion, pending, state, waitingEditingTargetId]);
+    // One key both sources share. `requestSeq || ts` mixed two scales: a row
+    // still in the outbox has no seq and fell back to a ~1.79e12 timestamp,
+    // while the same row on the ledger carries a ~1.3e5 seq — so landing moved
+    // it from the bottom of the dock to the top, and every send reshuffled the
+    // list. The request's own ts is comparable in both.
+    ].sort((left, right) => Number(left.request?.ts || 0) - Number(right.request?.ts || 0));
+  }, [controlVersion, pending, state, waitingEditingTargetId]);
   const timelineLocalEchoes = useMemo(
-    () => (pending || []).filter((row) => !isWaitingSubmission(row, state?.channelId)),
+    () => (pending || []).filter((row) => !isWaitingSubmission(row, state?.channelId)
+      && !isControlOnlyBody(row?.frame?.msg_type, row?.frame?.payload?.body ?? row?.frame?.payload)),
     [pending, state?.channelId],
   );
 
@@ -915,16 +941,6 @@ export function useWaitingEditingController({
     setEditNotice('另一项控制已接管编辑');
   }, [controlVersion, editing?.holdId, editing?.sessionId, state]);
   useEffect(() => { setEditNotice(''); }, [state.channelId]);
-  useEffect(() => {
-    if (typeof onRequestCapability !== 'function') throw new TypeError('Waiting 能力 owner 未连接');
-    for (const turn of queuedTurns) {
-      const id = actorID(turn);
-      if (id && editLeaseCapabilityState(capabilityIndex.get(id)) === 'unknown') {
-        onRequestCapability(id, state.channelId);
-      }
-    }
-  }, [capabilityIndex, onRequestCapability, queuedTurns, state.channelId]);
-
   function release(session, targetTurn = null) {
     if (!session) return Promise.resolve(false);
     if (releaseAcceptedRef.current.has(session.sessionId)) return Promise.resolve(true);
@@ -966,9 +982,10 @@ export function useWaitingEditingController({
 
   async function startEditing(turn, id) {
     if (editing) return;
-    const capabilityState = editLeaseCapabilityState(capabilityIndex.get(id));
-    if (capabilityState !== 'supported') {
-      setEditNotice(capabilityState === 'unknown' ? '正在确认 Agent 编辑能力，请稍候' : '当前 Agent 不支持安全编辑');
+    // A manifest this session happens to hold may rule the Agent out; an
+    // absent one rules nothing out and is never fetched to find out.
+    if (editLeaseCapabilityState(capabilityIndex.get(id)) === 'unsupported') {
+      setEditNotice('当前 Agent 不支持安全编辑');
       return;
     }
     if (!exactMessageText(turn)) {

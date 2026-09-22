@@ -571,12 +571,14 @@ export function mentionQuery(value, candidates) {
 function controlAvailability(capability, type, targetAgent, permissions) {
   if (!targetAgent) return Object.freeze({ state: 'no-target', enabled: false, reason: '请先选择目标 Agent' });
   if (!permissions.canTransmit) return Object.freeze({ state: 'offline', enabled: false, reason: '连接可用后才能发送控制命令' });
+  if (capability?.error) {
+    return Object.freeze({ state: 'unavailable', enabled: false, reason: 'Agent 能力读取失败' });
+  }
   if (!capability?.describe) {
-    return Object.freeze({
-      state: capability?.error ? 'unavailable' : 'unknown',
-      enabled: false,
-      reason: capability?.error ? 'Agent 能力读取失败' : '正在确认 Agent 能力',
-    });
+    // Reading a manifest is itself a request on the ledger, so nothing here
+    // asks for one. An unread manifest is not a refusal: offer the control and
+    // let the receiver answer for its own words.
+    return Object.freeze({ state: 'unknown', enabled: true, reason: '' });
   }
   if (!capability.describe.types?.has?.(type)) {
     return Object.freeze({ state: 'unsupported', enabled: false, reason: `Agent 不支持 ${type}` });

@@ -136,14 +136,30 @@ describe('等待区控制按钮可用性（新结构 WaitingLayer）', () => {
     expect([...view.container.querySelectorAll('.agent-wait-paused')].some((el) => el.textContent === '正在并入…')).toBe(true);
   });
 
-  it('fails closed when an actor control has no canonical payload：缺 actor payload 时不提供控制按钮', () => {
+  // `payload` is optional in a control declaration and the ledger form is the
+  // bare `{ word }`. Reading that as "not declared" closed every button in
+  // Waiting against a receiver that had declared all of them.
+  it('honours a bare control declaration：只报 word 不带 payload 也给按钮，目标取这一行', () => {
+    const onControl = vi.fn();
     const turn = queuedTurn('q1', { controls: [
       { word: 'agent.dismiss' },
       { word: 'agent.steer' },
       { word: 'agent.escalate', label: '升级' },
     ] });
-    const view = render(<Harness turns={[turn]} selfId="other" access="member_active" targetAuthority={CURRENT_AUTHORITY} />);
-    expect([...view.container.querySelectorAll('.agent-wait-item button')]).toHaveLength(0);
+    const view = render(<Harness
+      turns={[turn]}
+      selfId="other"
+      access="member_active"
+      targetAuthority={CURRENT_AUTHORITY}
+      onControl={onControl}
+    />);
+    const labels = [...view.container.querySelectorAll('.agent-wait-item button')]
+      .map((button) => button.textContent);
+    expect(labels).toEqual(expect.arrayContaining(['插入', '取消', '升级']));
+
+    fireEvent.click([...view.container.querySelectorAll('.agent-wait-item button')]
+      .find((button) => button.textContent === '插入'));
+    expect(onControl).toHaveBeenCalledWith(turn, 'agent', 'agent.steer', { target: 'q1' });
   });
 
   it('uses the queued row as target when the declared steer payload is explicitly empty：不伪造正文', () => {

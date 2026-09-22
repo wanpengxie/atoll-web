@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { TYPES } from '../../protocol/vocab.js';
 import { createComposerCommandPort } from './command-port.js';
 import { projectAgentParameters } from './agent-parameters.js';
@@ -390,14 +390,6 @@ export function useComposerCommands(config = {}) {
     editText,
     accepting: submission.accepting,
   }), [activeChannelId, access, activeEdit, attachments, capabilityIndex, draft, editText, effectiveAgentSelection, pending, roster, selfId, submission.accepting]);
-
-  useEffect(() => {
-    if (model.controls.steer.state !== 'unknown' || !model.controls.actorId) return;
-    if (typeof config.onRequestCapability !== 'function') {
-      throw new TypeError('Composer 能力 owner 未连接');
-    }
-    config.onRequestCapability(model.controls.actorId, model.channelId);
-  }, [config.onRequestCapability, model.channelId, model.controls.actorId, model.controls.steer.state]);
 
   // A different channel is a different command authority. The old painted
   // editor keeps its port while a replacement render suspends, and that port

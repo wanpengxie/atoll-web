@@ -21,15 +21,54 @@ function agentMessageStage(turn) {
   return status === 'processing' ? 'timeline' : 'queued';
 }
 
+// Control words that are never a conversation row, whatever they carry.
 export const HIDDEN_TURN_TYPES = new Set([
   TYPES.agentHold,
   TYPES.agentUnhold,
+  TYPES.agentHoldExpired,
   TYPES.agentInterrupt,
+  TYPES.agentDismiss,
   TYPES.agentContext,
   TYPES.agentOptions,
   TYPES.agentFork,
   TYPES.describe,
 ]);
+
+// A steer is the one control word that may or may not be a message: with a
+// person's prose it IS that message, and with only a target (or `all`) it is
+// an operation whose whole visible effect is that the request it names moves
+// into the current turn. Decide it per row, not by type.
+const PROSE_OR_CONTROL_TYPES = new Set([TYPES.agentSteer]);
+
+export function isControlOnlyTurn(turn) {
+  return isControlOnlyBody(turn?.request?.type, argsOf(turn?.request));
+}
+
+// The same question asked of a frame that has not landed yet. A local echo and
+// the canonical row it becomes must answer it identically, or the row appears
+// on send and vanishes on landing — one height change each way, which the
+// reader sees as the tail jumping.
+export function isControlOnlyBody(type, body) {
+  const word = String(type || '');
+  if (HIDDEN_TURN_TYPES.has(word)) return true;
+  if (!PROSE_OR_CONTROL_TYPES.has(word)) return false;
+  const payload = body && typeof body === 'object' ? body : {};
+  const attachments = payload.attachments || payload.files;
+  return !(String(payload.text || payload.body || payload.message || '').trim()
+    || (Array.isArray(attachments) && attachments.length > 0));
+}
+
+// A request carries its own deadline: every agent.ask on this ledger states
+// expires_at, and an unanswered one is closed at that instant as
+// unanswered_timeout — "请求在截止时间前没有得到最终响应". Past it nothing is
+// outstanding any more, with or without a terminal row. This is the only thing
+// that stops a queued request whose receiver never spoke again from living in
+// Waiting forever, so Waiting and the conversation both read it here rather
+// than each deciding on its own.
+export function requestExpired(request, now = Date.now()) {
+  const expiresAt = Number(request?.expires_at || argsOf(request)?.expires_at || 0);
+  return expiresAt > 0 && expiresAt <= now;
+}
 
 const SELECT_OR_NEW = new Set([TYPES.agentSelect, TYPES.agentNew]);
 
@@ -50,7 +89,11 @@ export function hasReadableMessageContent(envelope) {
   );
 }
 
-const TERMINAL_TRANSPORT_FIELDS = new Set([
+// The one list of keys that are protocol bookkeeping rather than something a
+// person wrote or an actor produced. Both "does this terminal carry content"
+// and "what does the answer card show" read it, so a bookkeeping key can never
+// be content to one of them and not the other.
+export const TERMINAL_TRANSPORT_FIELDS = new Set([
   'status', 'reason', 'error_code', 'detail', 'cancelled', 'closed_by', 'controls', 'process', 'usage',
   'merged_into', 'replaced_by', 'preempted_by',
 ]);
@@ -87,7 +130,7 @@ export function personConversationEventVisible(envelope) {
 // it (queued work and incomplete select/new operations are the common cases).
 export function timelineTurnVisible(turn, editingTargetId = '') {
   if (!turn?.request) return false;
-  if (HIDDEN_TURN_TYPES.has(turn.request.type)) return false;
+  if (isControlOnlyTurn(turn)) return false;
   if (SELECT_OR_NEW.has(turn.request.type)) return argsOf(turn.terminal)?.status === 'completed';
   if (turn.requestId === editingTargetId) return true;
   if (isAgentMessageTurn(turn)) return agentMessageStage(turn) === 'timeline';

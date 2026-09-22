@@ -346,8 +346,19 @@
 .markdown-table-scroll th { background: var(--surface-muted); font-weight: 650; }
 .markdown-content .task-list-item { list-style: none; }
 .markdown-content .task-list-item > input { margin: 0 6px 0 -20px; }
-.message-actions { display: flex; grid-row: 2; grid-column: 2; align-items: center; gap: 3px; padding-top: 3px; }
-.message-actions button { min-height: 26px; padding: 4px 7px; border: 0; border-radius: 4px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 10px; }
+.message-actions { display: flex; grid-row: 2; grid-column: 2; align-items: center; gap: 2px; padding-top: 0; }
+/* Always visible, always exactly one line: the bar sits under its message and
+   never wraps its buttons onto a second row. Edit/stop/cancel live in it too,
+   so a message's actions are one row rather than a copy row plus a control
+   row. */
+.message-actions { flex-wrap: nowrap; white-space: nowrap; }
+.message-actions .task-controls { display: flex; gap: 3px; margin: 0; padding: 0; }
+.message-actions .task-control-buttons { flex-wrap: nowrap; gap: 3px; }
+/* Inside the action bar these are the same kind of small text action as copy,
+   so they carry its metrics: a 30px control block here made one line of
+   buttons taller than the message it belongs to. */
+.message-actions .task-control-buttons button { min-height: 20px; padding: 2px 6px; border-radius: 4px; font-size: 10px; }
+.message-actions button { min-height: 20px; padding: 2px 6px; border: 0; border-radius: 4px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 10px; }
 .message-actions button:hover, .message-actions button:focus-visible { background: var(--surface-muted); color: var(--text); }
 .message-copy-feedback { color: var(--text-muted); font-size: 10px; }
 .replyable-message { touch-action: pan-y; }
