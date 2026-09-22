@@ -53,7 +53,7 @@ test('TC-0316 C-BR-04a interrupt exits waiting edit and leaves Composer usable',
   await expect(page.getByRole('button', { name: '取消编辑', exact: true })).toHaveCount(0);
   // The current public Waiting owner uses the canonical supersession copy;
   // this is the same user-visible takeover fact as the retired wording.
-  await expect(page.getByRole('alert')).toHaveText('另一项控制已接管编辑');
+  await expect(page.getByRole('alert')).toHaveText('已停止这个 Agent，编辑一并退出；改动没有发出，可以重新编辑');
 
   await sendAgentMessage(page, '停止后仍能正常发送');
   await expect(page.getByText('停止后仍能正常发送', { exact: true })).toBeVisible();

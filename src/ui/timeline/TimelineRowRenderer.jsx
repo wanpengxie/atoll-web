@@ -467,23 +467,24 @@ function useMessageActionController(envelope, onReply) {
   };
 }
 
-function MessageActions({ envelope, turn = null, onReply, onCreateTask, onOpen, copy, copyState, onCopyClick, onReplyClick, actionGestureProps }) {
-  if (!copy && !onReply && !onCreateTask && !onOpen) return null;
+function MessageActions({ envelope, turn = null, onReply, onCreateTask, onOpen, extraActions = null, copy, copyState, onCopyClick, onReplyClick, actionGestureProps }) {
+  if (!copy && !onReply && !onCreateTask && !onOpen && !extraActions) return null;
   const feedback = copyState === 'copied' ? '已复制正文' : copyState === 'error' ? '复制失败' : '';
   return <div className={`message-actions${feedback ? ' has-feedback' : ''}`} aria-label="条目操作">
     {copy && <button type="button" onClick={onCopyClick} {...actionGestureProps('copy')}>{copyState === 'copied' ? '✓ 已复制' : '复制'}</button>}
     {onReply && <button type="button" onClick={onReplyClick} {...actionGestureProps('reply')}>↩ 回复</button>}
     {onCreateTask && <button type="button" onClick={() => turn ? onCreateTask(envelope, turn) : onCreateTask(envelope)}>创建任务</button>}
     {onOpen && turn && <button type="button" onClick={() => onOpen(turn)}>查看过程</button>}
+    {extraActions}
     <span className="message-copy-feedback" role="status">{feedback}</span>
   </div>;
 }
 
-function ReplyableMessageFrame({ envelope, turn = null, onReply, onCreateTask, onOpen, children, className = '', ...props }) {
+function ReplyableMessageFrame({ envelope, turn = null, onReply, onCreateTask, onOpen, extraActions = null, children, className = '', ...props }) {
   const actions = useMessageActionController(envelope, onReply);
   return <MessageFrame {...props} className={`replyable-message ${className}`.trim()}
     contentProps={actions.surfaceProps}
-    actions={<MessageActions envelope={envelope} turn={turn} onReply={onReply} onCreateTask={onCreateTask} onOpen={onOpen}
+    actions={<MessageActions envelope={envelope} turn={turn} onReply={onReply} onCreateTask={onCreateTask} onOpen={onOpen} extraActions={extraActions}
       copy={actions.copy} copyState={actions.copyState} onCopyClick={actions.onCopyClick}
       onReplyClick={actions.onReplyClick} actionGestureProps={actions.actionGestureProps} />}
   >{children}</MessageFrame>;
@@ -555,9 +556,13 @@ function targetIsCurrent(turn, authority) {
     && authority.actorIDs instanceof Set && authority.actorIDs.has(actorId));
 }
 
-function canInterrupt(turn, { access, targetAuthority }) {
+// The public owner offers a control when the receiver declared the word and
+// the caller may write here: `canStop = actionable && words.has(agentInterrupt)`.
+// Requiring the roster to have positively confirmed the receiver as well meant
+// an unread roster removed 停止 entirely, with nothing said about why.
+function canInterrupt(turn, { access }) {
   if (!turn?.request || turn.terminal || turn.local || !controlsAllowed(access)) return false;
-  if (turn.request.type !== TYPES.agentAsk || !targetIsCurrent(turn, targetAuthority)) return false;
+  if (turn.request.type !== TYPES.agentAsk) return false;
   return latestControlFrame(turn)?.controls?.some((entry) => entry?.word === TYPES.agentInterrupt) === true;
 }
 
@@ -1123,13 +1128,21 @@ function TurnCard({ turn, names, selfId, access, targetAuthority, fold, approval
   // cannot materialize; keep this gate at the row owner rather than hiding a
   // stale button with CSS or making the application invent an empty detail.
   const onOpenProcess = hasProcessSummary(turn) ? onOpen : undefined;
+  // Edit / stop / cancel act on this very message, so they belong on the same
+  // line as copy. Rendering them as their own block below gave one message two
+  // rows of actions.
+  const turnControls = pending && !local
+    ? <div className="task-controls"><div className="task-control-buttons">{request.type === TYPES.agentAsk && onEdit && <button type="button" disabled={Boolean(editing)} onClick={() => onEdit(turn, actorId)}>编辑</button>}{canInterrupt(turn, { access }) && onControl && <button type="button" onClick={() => onControl(turn, actorId, TYPES.agentInterrupt, {})}>停止</button>}</div></div>
+    : local && onCancel
+      ? <div className="task-controls"><div className="task-control-buttons"><button type="button" onClick={() => onCancel(turn.requestId)}>取消</button></div></div>
+      : null;
   return <section className={`turn-card agent-conversation-turn${request.sender?.id === selfId ? ' self' : ''} status-${turn.status || (pending ? 'pending' : 'completed')}`} data-request-id={turn.requestId} data-request-type={request.type}>
-    <ReplyableMessageFrame envelope={request} turn={turn} onReply={requestReply} onCreateTask={onCreateTask} onOpen={onOpenProcess} className="request-message" identity={actorIcon(request, names)}>
+    {/* The process is the work's record, not the ask's: it hangs off the answer
+        alone. Offering 查看过程 on the request put it on the asker's own message. */}
+    <ReplyableMessageFrame envelope={request} turn={turn} onReply={requestReply} onCreateTask={onCreateTask} extraActions={turnControls} className="request-message" identity={actorIcon(request, names)}>
       <header><strong>{nameOf(request.sender?.id, names)}</strong>{request.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{messageTimeLabel(request.ts)}</time>{recipients && <span className="recipient-label">发送给 {recipients}</span>}{local && <small>{local}</small>}</header>
       <div className="request-text"><EnvelopeBody envelope={request} fold={fold} onDownload={onDownload} onPreview={onPreview} contentKeyPrefix="request" /></div>{editing?.targetId === turn.requestId && <small className="message-editing-state">正在输入框中编辑</small>}
     </ReplyableMessageFrame>
-    {pending && !local && <ContentFrame contained><div className="task-controls"><div className="task-control-buttons">{request.type === TYPES.agentAsk && onEdit && <button type="button" disabled={Boolean(editing)} onClick={() => onEdit(turn, actorId)}>编辑</button>}{canInterrupt(turn, { access, targetAuthority }) && onControl && <button type="button" onClick={() => onControl(turn, actorId, TYPES.agentInterrupt, {})}>停止</button>}</div></div></ContentFrame>}
-    {local && onCancel && <ContentFrame contained><div className="task-controls"><div className="task-control-buttons"><button type="button" onClick={() => onCancel(turn.requestId)}>取消</button></div></div></ContentFrame>}
     <AgentAnswer turn={turn} names={names} fold={fold} onDownload={onDownload} onPreview={onPreview} onReply={onReply} onOpen={onOpenProcess} />
     {/* A superseded turn produced nothing: no answer bubble, and no record of
         the calls it made on the way there either. Leaving the calls behind put

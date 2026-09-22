@@ -102,7 +102,12 @@ function assertInterruptContext(context, actorId) {
   if (!turn.controls.includes(TYPES.agentInterrupt)) {
     throw failure('control_capability_missing', '目标回合未宣告 agent.interrupt 能力');
   }
-  assertTargetAuthority(context, actorId);
+  // Roster freshness is this client's own guess, not a protocol fact, and the
+  // public owner sends the interrupt without it. Refusing here meant an unread
+  // roster made 停止 do nothing at all: the button was offered, the click threw
+  // control_authority_stale, and nothing was sent or said. The checks above are
+  // the real ones — the target must be an open agent.ask turn that declared the
+  // word — and the receiver remains free to refuse.
 }
 
 function assertTargetAuthority(context, actorId) {

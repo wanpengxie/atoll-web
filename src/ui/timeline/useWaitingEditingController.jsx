@@ -938,7 +938,10 @@ export function useWaitingEditingController({
     sessionLatestOwnersRef.current.delete(session.sessionId);
     sessionStartSeqRef.current.delete(session.sessionId);
     setEditing((current) => current?.sessionId === session.sessionId ? null : current);
-    setEditNotice('另一项控制已接管编辑');
+    // A notice states what happened to the reader's own work and what they can
+    // do next. "另一项控制已接管编辑" named a protocol fact and left both of
+    // those unanswered, while the usual cause is the reader's own 停止.
+    setEditNotice('已停止这个 Agent，编辑一并退出；改动没有发出，可以重新编辑');
   }, [controlVersion, editing?.holdId, editing?.sessionId, state]);
   useEffect(() => { setEditNotice(''); }, [state.channelId]);
   function release(session, targetTurn = null) {
