@@ -2,6 +2,7 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 're
 import { actorNameFromMap } from '../../model/actor-display.js';
 import { argsOf, PROVISIONAL } from '../../protocol/envelope.js';
 import { TYPES } from '../../protocol/vocab.js';
+import { textOf } from './TimelineRowRenderer.jsx';
 import { newId } from '../../util/id.js';
 
 const WAITING_HANDOFF_DURATION_MS = 180;
@@ -43,19 +44,22 @@ function editLeaseCapabilityState(capability) {
   return supportsEditLeaseCAS(capability) ? 'supported' : 'unsupported';
 }
 
-// The body a request actually carries. A replace states its body as
-// `new_text`, which is what the reader sees and what a later edit must compare
-// against. Returns '' when the request states no body at all.
-function exactMessageText(turn) {
-  const body = argsOf(turn?.request);
-  return String(body.text ?? body.new_text ?? body.body ?? body.title ?? body.detail ?? '');
+// What a request says, answered by the same projection the timeline uses.
+// Control words without prose read as the action they name.
+function messageText(turn) {
+  return textOf(turn?.request) || '';
 }
 
-// For display only. The type name is a last-resort label so a bodyless request
-// is not rendered blank; it is never the request's text and must not be
-// compared against one.
-function messageText(turn) {
-  return exactMessageText(turn) || String(turn?.request?.type || '');
+// Only prose a person authored can be compared against what the receiver
+// buffered. An action label describes a request, it is not its text, so a
+// request stating no prose cannot be edited rather than being edited against
+// its own label.
+function exactMessageText(turn) {
+  const body = argsOf(turn?.request);
+  for (const value of [body.text, body.new_text, body.body, body.answer, body.message, body.prompt]) {
+    if (typeof value === 'string' && value.trim()) return value;
+  }
+  return '';
 }
 
 function actorID(turn) {

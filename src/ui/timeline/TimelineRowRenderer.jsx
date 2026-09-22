@@ -74,6 +74,35 @@ function textContent(payload) {
 // words use a closed label table and only their documented identifier field;
 // an unknown system word gets a generic safe label. Never stringify an
 // operation body to invent a label or expose a wire type to the reader.
+// Every agent control word states what it does. A request that carries no
+// prose still has to read as the action it is; the type name is an identifier,
+// not something a person wrote. Words that do carry prose (ask/queue/steer,
+// and replace via new_text) never reach this table — textContent answers first.
+const AGENT_OPERATION_LABELS = Object.freeze({
+  [TYPES.agentAsk]: '向 Agent 提问',
+  [TYPES.agentQueue]: '加入待办任务',
+  [TYPES.agentSteer]: '插入到当前回合',
+  [TYPES.agentReplace]: '修改任务内容',
+  [TYPES.agentInterrupt]: '停止',
+  [TYPES.agentDismiss]: '请对方放弃一条等待中的任务',
+  [TYPES.agentHold]: '暂停等待区',
+  [TYPES.agentUnhold]: '继续等待区',
+  [TYPES.agentHoldExpired]: '等待区暂停已到期',
+  [TYPES.agentFork]: '分叉出新 Agent',
+  [TYPES.agentCompact]: '压缩上下文',
+  [TYPES.agentNew]: '新建对话',
+  [TYPES.agentSelect]: '切换模型与算力',
+  [TYPES.agentOptions]: '读取 Agent 可用模型',
+  [TYPES.agentContext]: '查看上下文用量',
+});
+
+const AGENT_OPERATION_DETAIL_KEYS = Object.freeze({
+  [TYPES.agentDismiss]: 'target',
+  [TYPES.agentHold]: 'target',
+  [TYPES.agentReplace]: 'target',
+  [TYPES.agentSelect]: 'model',
+});
+
 const SYSTEM_OPERATION_LABELS = Object.freeze({
   [TYPES.member.create]: '添加参与者',
   [TYPES.member.admit]: '邀请成员加入',
@@ -208,6 +237,16 @@ function systemOperationText(envelope, body) {
   return `${label}${status ? `（${status}）` : ''}${detail ? `：${detail}` : ''}`;
 }
 
+function agentOperationText(envelope, body) {
+  const label = AGENT_OPERATION_LABELS[String(envelope?.type || '')];
+  if (!label) return '';
+  const detailKey = AGENT_OPERATION_DETAIL_KEYS[envelope.type];
+  const detail = detailKey && (typeof body?.[detailKey] === 'string' || typeof body?.[detailKey] === 'number')
+    ? String(body[detailKey]).trim()
+    : '';
+  return `${label}${detail ? `：${detail}` : ''}`;
+}
+
 function isTimelineSystemEvent(envelope) {
   return envelope?.visibility === 'system' || SYSTEM_EVENT_DECODERS.has(envelope?.type);
 }
@@ -255,7 +294,7 @@ function systemEventPresentation(envelope, names) {
   };
 }
 
-function textOf(envelope, names) {
+export function textOf(envelope, names) {
   if (!hasCanonicalBody(envelope)) return '';
   const system = systemEventPresentation(envelope, names);
   if (system?.handled) return system.text;
@@ -266,6 +305,8 @@ function textOf(envelope, names) {
   // carries prose, the reader must see that user-authored content verbatim.
   const systemText = systemOperationText(envelope, body);
   if (systemText) return systemText;
+  const agentText = agentOperationText(envelope, body);
+  if (agentText) return agentText;
   const result = body.result ?? body.output;
   if (result == null) return '';
   if (typeof result === 'string') return result;
