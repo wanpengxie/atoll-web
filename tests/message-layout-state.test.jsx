@@ -28,17 +28,11 @@ it('keeps geometry choices across recycled rows without leaking to another row',
   expect(view.getByRole('button').getAttribute('aria-expanded')).toBe('true');
 });
 
-it('preserves presentation choices even in following sessions, independently of measurement snapshots', () => {
-  const sessions = createViewSessionStore();
-  const store = createMessageLayoutStore([], (layoutChoices) => sessions.writeConversation('a', { layoutChoices }));
-  store.set('expanded', ['child-a'], []);
-  const copy = sessions.read('a');
-  copy.layoutChoices[0][1].push('not-persisted');
-  expect(sessions.read('a').layoutChoices).toEqual([['expanded', ['child-a']]]);
+it('never persists a per-message presentation choice', () => {
+  const sessions = createViewSessionStore({ storage: null });
+  sessions.writeConversation('a', { layoutChoices: [['expanded', ['child-a']]] });
+  expect(sessions.read('a')).not.toHaveProperty('layoutChoices');
   expect(sessions.read('a')).not.toHaveProperty('viewportSnapshot');
-  expect(sessions.read('b').layoutChoices).toEqual([]);
-  const restored = createMessageLayoutStore(sessions.read('a').layoutChoices);
-  expect(restored.get('expanded', [])).toEqual(['child-a']);
 });
 
 it('preserves Mermaid source geometry after the row is recycled', async () => {

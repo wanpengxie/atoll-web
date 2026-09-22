@@ -4,13 +4,29 @@ import { createMessageLayoutStore } from './MessageLayoutState.jsx';
 
 export { CONVERSATION_SCOPE };
 
+// What the reader did to individual messages — expanded or collapsed a long
+// body, switched a diagram to its source — lasts for this page only. It
+// survives switching channels and back, and is gone on reload, where every
+// long message starts collapsed again. Keyed by the principal's store so a
+// different login never inherits it.
+const pageMessageChoices = new WeakMap();
+
+function messageChoicesFor(channelId, viewSessions) {
+  const owner = viewSessions || pageMessageChoices;
+  if (!pageMessageChoices.has(owner)) pageMessageChoices.set(owner, new Map());
+  const channels = pageMessageChoices.get(owner);
+  if (!channels.has(channelId)) channels.set(channelId, { foldOverrides: new Map(), layoutChoices: [] });
+  return channels.get(channelId);
+}
+
 function readPreferences(channelId, viewSessions) {
   const stored = viewSessions?.read(channelId) || {};
+  const choices = messageChoicesFor(channelId, viewSessions);
   return {
     scope: stored.scope || CONVERSATION_SCOPE.mine,
     actorFilter: new Set(stored.actorFilter || []),
-    foldOverrides: new Map(stored.foldOverrides || []),
-    layoutChoices: stored.layoutChoices,
+    foldOverrides: new Map(choices.foldOverrides),
+    layoutChoices: choices.layoutChoices,
   };
 }
 
@@ -30,7 +46,7 @@ export function useTimelinePreferences({ channelId, viewSessions }) {
       foldOverrides: initial.foldOverrides,
       messageLayoutStore: createMessageLayoutStore(
         initial.layoutChoices,
-        (layoutChoices) => write({ layoutChoices }),
+        (layoutChoices) => { messageChoicesFor(nextChannelId, nextViewSessions).layoutChoices = layoutChoices; },
       ),
       write,
     };
@@ -58,9 +74,8 @@ export function useTimelinePreferences({ channelId, viewSessions }) {
     session.write({
       scope: session.scope,
       actorFilter: [...session.actorFilter],
-      foldOverrides: [...session.foldOverrides],
     });
-  }, [session]);
+  }, [session.actorFilter, session.scope, session.write]);
 
   const toggleScope = useCallback(() => {
     setSession((current) => current.owner !== session.owner ? current : ({
@@ -86,8 +101,9 @@ export function useTimelinePreferences({ channelId, viewSessions }) {
       return { ...current, actorFilter: next };
     });
   }, [session.owner]);
-  const toggleFold = useCallback((id, expanded, control) => {
+  const toggleFold = useCallback((id, expanded) => {
     if (committedOwnerRef.current !== session.owner) return;
+    messageChoicesFor(session.owner.channelId, session.owner.viewSessions).foldOverrides.set(id, expanded);
     setSession((current) => current.owner !== session.owner ? current : ({
       ...current,
       foldOverrides: new Map(current.foldOverrides).set(id, expanded),

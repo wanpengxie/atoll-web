@@ -1,15 +1,13 @@
 import { CONVERSATION_SCOPE } from './conversation-presentation.js';
 
-// Per-channel conversation preferences: scope, actor filter, fold and layout
-// choices. Reading position is not a preference and is never stored.
+// Per-channel conversation preferences: scope and actor filter. What a reader
+// did to one message (expanded, collapsed, switched a diagram to source) is
+// page state and is never stored; neither is the reading position.
 
 function defaultPreferences() {
   return {
     scope: CONVERSATION_SCOPE.mine,
     actorFilter: [],
-    foldOverrides: [],
-    foldDefaults: [],
-    layoutChoices: [],
   };
 }
 
@@ -17,15 +15,6 @@ function copyPreferences(value = {}) {
   return {
     scope: value.scope === CONVERSATION_SCOPE.all ? CONVERSATION_SCOPE.all : CONVERSATION_SCOPE.mine,
     actorFilter: [...new Set(value.actorFilter || [])].filter(Boolean).sort(),
-    foldOverrides: [...(value.foldOverrides || [])]
-      .filter((entry) => Array.isArray(entry) && entry.length === 2 && entry[0])
-      .map(([id, expanded]) => [String(id), Boolean(expanded)]),
-    foldDefaults: [...new Set(value.foldDefaults || [])].filter(Boolean).map(String),
-    layoutChoices: (value.layoutChoices || []).filter((entry) => (
-      Array.isArray(entry) && typeof entry[0] === 'string'
-      && (typeof entry[1] === 'boolean' || typeof entry[1] === 'string'
-        || (Array.isArray(entry[1]) && entry[1].every((item) => typeof item === 'string')))
-    )).map(([key, choice]) => [key, Array.isArray(choice) ? [...choice] : choice]),
   };
 }
 
@@ -36,8 +25,9 @@ function sameStringArray(left = [], right = []) {
   return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
-// The key and schema are unchanged so existing preferences survive; any
-// reading entries an older build stored are ignored and dropped on next write.
+// The key and schema are unchanged so existing preferences survive; reading
+// entries and per-message choices an older build stored are ignored and
+// dropped on the next write.
 const VIEW_SESSION_SCHEMA = 3;
 
 function storageKey(principalID) {
