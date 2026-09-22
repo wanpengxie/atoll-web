@@ -6,6 +6,11 @@ function idOf(item) {
   return presentationEntryId(item);
 }
 
+function seqOf(item) {
+  const seq = Number(item?.seq || 0);
+  return Number.isFinite(seq) && seq > 0 ? seq : 0;
+}
+
 function boundedDemand(value) {
   return Math.max(1, Math.min(MAX_DEMAND_UNITS, Number(value) || 1));
 }
@@ -65,12 +70,40 @@ export function createHistoryPresentationAdmission({ onChange = () => {} } = {})
       sourceFenceActive: canInherit ? existing.sourceFenceActive === true : false,
       deferredIDs: Object.freeze([]),
       committed: null,
+      // The reveal's floor: the oldest seq the reader already had when the
+      // reveal began. Admission governs rows older than this and nothing
+      // else. 0 means "derive from the baseline rows" (history start).
+      floorSeq: Number(token?.anchorSeq || 0) > 0
+        ? Number(token.anchorSeq)
+        : (canInherit ? Number(existing.floorSeq || 0) : 0),
       authorityRevision: nextAuthorityRevision,
     };
     nextAuthorityRevision += 1;
     channels.set(channelId, state);
     onChange(channelId);
     return state.token;
+  }
+
+  // Admission is a history-reveal mechanism. It classifies rows by where they
+  // come from, not by their position in the list: only rows older than the
+  // reveal floor (pages fetched upward) can be staged or withheld. Live push
+  // rows, updates to rows the reader has, and local echoes (no seq) are the
+  // reader's timeline and always pass straight through with their current
+  // content.
+  function floorOf(state, items) {
+    if (state.floorSeq > 0) return state.floorSeq;
+    const baseline = new Set(state.uiBaselineIDs);
+    let floor = 0;
+    for (const item of items) {
+      const seq = seqOf(item);
+      if (seq > 0 && baseline.has(idOf(item)) && (!floor || seq < floor)) floor = seq;
+    }
+    return floor;
+  }
+
+  function governed(state, item, floor) {
+    const seq = seqOf(item);
+    return floor > 0 && seq > 0 && seq < floor && !state.lastAdmittedIDs.includes(idOf(item));
   }
 
   function orderedBoundary(ids, baselineIDs, start = -1) {
@@ -110,6 +143,25 @@ export function createHistoryPresentationAdmission({ onChange = () => {} } = {})
   function observeCandidate(state, items, meta = {}) {
     const ids = items.map(idOf);
     let stagedItems;
+    if (!state.floorSeq && state.durableBaselineIDs.length) {
+      const baseline = new Set(state.durableBaselineIDs);
+      for (const item of items) {
+        const seq = seqOf(item);
+        if (seq > 0 && baseline.has(idOf(item)) && (!state.floorSeq || seq < state.floorSeq)) state.floorSeq = seq;
+      }
+    }
+    if (state.floorSeq > 0) {
+      stagedItems = items.filter((item) => Boolean(idOf(item)) && governed(state, item, state.floorSeq));
+      state.stagedIDs = Object.freeze(stagedItems.map(idOf));
+      state.completeUnits = completeConversationUnits(stagedItems);
+      state.candidateSourceRevision = Number(meta.sourceRevision || 0);
+      advanceAuthority(state);
+      return {
+        stagedIDs: state.stagedIDs,
+        completeUnits: state.completeUnits,
+        fulfilled: state.completeUnits >= state.token.demandUnits,
+      };
+    }
     if (!state.durableBaselineIDs.length) {
       stagedItems = items.filter((item) => Boolean(idOf(item)));
     } else {
@@ -147,6 +199,8 @@ export function createHistoryPresentationAdmission({ onChange = () => {} } = {})
   }
 
   function evaluatePending(state, items) {
+    const floor = floorOf(state, items);
+    if (floor > 0) return evaluated(state, items.filter((item) => !governed(state, item, floor)));
     if (!state.uiBaselineIDs.length) return evaluated(state, []);
     const ids = items.map(idOf);
     const boundary = orderedBoundary(ids, state.uiBaselineIDs);
@@ -163,6 +217,15 @@ export function createHistoryPresentationAdmission({ onChange = () => {} } = {})
   function evaluateCommitted(state, items) {
     const ids = items.map(idOf);
     const stagedIDs = state.committed?.stagedIDs || [];
+    const floor = floorOf(state, items);
+    if (floor > 0) {
+      const stagedSet = new Set(stagedIDs);
+      const admitted = items.filter((item) => stagedSet.has(idOf(item)) || !governed(state, item, floor));
+      const deferred = items.filter((item) => !stagedSet.has(idOf(item)) && governed(state, item, floor));
+      return evaluated(state, admitted, {
+        deferredIDs: Object.freeze(deferred.map(idOf).filter(Boolean)),
+      });
+    }
     let previous = -1;
     const stagedIndexes = [];
     for (const stagedID of stagedIDs) {
@@ -408,6 +471,9 @@ export function createHistoryPresentationAdmission({ onChange = () => {} } = {})
   // reader already has.
   function sourceFence(channelId) {
     const state = channels.get(channelId);
+    // A reveal never freezes the content of rows the reader already has;
+    // live progress and terminals keep flowing while older rows are staged.
+    if (state?.floorSeq > 0) return null;
     return state?.sourceFenceActive === true && state.phase === 'committed-awaiting-layout'
       ? Number(state.releaseSourceRevision || 0)
       : null;
@@ -447,14 +513,17 @@ export function createHistoryPresentationAdmission({ onChange = () => {} } = {})
       : (changes.frontInsertedIDs || []);
     const exactIDs = insertedIDs.length === stagedIDs.length
       && insertedIDs.every((id, index) => id === stagedIDs[index]);
-    const noPollution = (changes.backInsertedIDs || []).length === 0
+    // Live rows appended at the bottom and content updates to the reader's
+    // rows may land in the same commit as the prepend; they are not the
+    // reveal's business. Only the staged front insert identifies it.
+    const noPollution = state.floorSeq > 0 || ((changes.backInsertedIDs || []).length === 0
       && (changes.removed || []).length === 0
-      && (changes.updated || []).length === 0;
+      && (changes.updated || []).length === 0);
     const structuralCommit = emptyBaseline
       ? noPollution
         && (presentationSnapshot.rows || []).length === stagedIDs.length
         && (presentationSnapshot.rows || []).every((row, index) => row?.id === stagedIDs[index])
-      : changes.kind === 'prepend' && noPollution;
+      : (state.floorSeq > 0 || changes.kind === 'prepend') && noPollution;
     if (!exactIDs || !structuralCommit) {
       return Object.freeze({
         accepted: false,

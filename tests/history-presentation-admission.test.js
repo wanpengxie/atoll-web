@@ -340,18 +340,16 @@ describe('history presentation admission', () => {
     });
   });
 
-  it('retires the reveal but keeps the reader rows when the baseline stops being an ordered subsequence', () => {
+  it('classifies by seq: a reordered baseline still stages only rows older than the floor', () => {
     const changed = vi.fn();
     const admission = createAdmissionAuthority({ onChange: changed });
     admission.begin('channel', token());
     const candidate = [item('a', 10), item('c', 30), item('b', 20)];
-    expect(admission.observe('channel', candidate, meta(12))).toMatchObject({ rebased: true });
+    // The floor is the oldest seq the reader had (anchorSeq 20). Order and
+    // identity of the reader's own rows no longer matter.
+    expect(admission.observe('channel', candidate, meta(12))).toMatchObject({ stagedIDs: ['a'] });
     expect(admission.snapshot('channel').phase).toBe('pending');
-    // Only the unreleased older prefix ('a') stays withheld. The rows the
-    // reader already has — and anything newer — remain visible; a broken
-    // baseline order must never blank or freeze the timeline.
     expect(ids(commitAdmission(admission, 'channel', candidate, meta(12)))).toEqual(['c', 'b']);
-    expect(admission.snapshot('channel').phase).toBe('holding');
   });
 
   it('shows new live rows and content updates while a cancelled reveal is held', () => {
@@ -512,27 +510,21 @@ describe('history presentation admission', () => {
     updatedB.envelope.payload.text = 'late baseline update';
     const current = [item('a', 10), updatedB, c, item('d', 40)];
     const releaseItems = commitAdmission(admission, 'channel', current, meta(13));
-    expect(ids(releaseItems)).toEqual(['a', 'b', 'c']);
-    expect(releaseItems[1]).toBe(barrier.entities.get('b').body);
-    expect(releaseItems[1].envelope.payload.text).toBe('b');
-    const sourceFence = admission.sourceFence('channel');
+    // A live push ('d') and a content update to a row the reader has ('b')
+    // are never held by a reveal: they land in the same commit as the
+    // staged prefix, with their current content.
+    expect(ids(releaseItems)).toEqual(['a', 'b', 'c', 'd']);
+    expect(releaseItems[1].envelope.payload.text).toBe('late baseline update');
+    expect(admission.sourceFence('channel')).toBeNull();
     const released = commitPresentation(presentation, releaseItems, {
-      nextViewID: 'channel:mine:agent', epoch: 'channel:7', sourceRevision: sourceFence,
-      sourceChanges: [],
-    });
-    expect(released.changes).toMatchObject({
-      kind: 'prepend', frontInsertedIDs: ['a'], backInsertedIDs: [], updated: [], removed: [],
-    });
-    expect(admission.acknowledge('channel', commit.commitID)).toBe(true);
-
-    const ordinary = commitPresentation(presentation, current, {
       nextViewID: 'channel:mine:agent', epoch: 'channel:7', sourceRevision: 13,
       sourceChanges: [{ revision: 13, id: 'b', kind: 'content' }],
     });
-    expect(ordinary.changes).toMatchObject({
-      kind: 'append', frontInsertedIDs: [], backInsertedIDs: ['d'], updated: ['b'],
+    expect(released.changes).toMatchObject({
+      frontInsertedIDs: ['a'], backInsertedIDs: ['d'], updated: ['b'],
     });
-    expect(initial.entities.get('b')).not.toBe(ordinary.entities.get('b'));
+    expect(initial.entities.get('b')).not.toBe(released.entities.get('b'));
+    expect(admission.acknowledge('channel', commit.commitID)).toBe(true);
   });
 
   it('releases only the exact settled prefix and defers later older facts', () => {
