@@ -43,9 +43,19 @@ function editLeaseCapabilityState(capability) {
   return supportsEditLeaseCAS(capability) ? 'supported' : 'unsupported';
 }
 
-function messageText(turn) {
+// The body a request actually carries. A replace states its body as
+// `new_text`, which is what the reader sees and what a later edit must compare
+// against. Returns '' when the request states no body at all.
+function exactMessageText(turn) {
   const body = argsOf(turn?.request);
-  return String(body.text ?? body.body ?? body.title ?? body.detail ?? turn?.request?.type ?? '');
+  return String(body.text ?? body.new_text ?? body.body ?? body.title ?? body.detail ?? '');
+}
+
+// For display only. The type name is a last-resort label so a bodyless request
+// is not rendered blank; it is never the request's text and must not be
+// compared against one.
+function messageText(turn) {
+  return exactMessageText(turn) || String(turn?.request?.type || '');
 }
 
 function actorID(turn) {
@@ -957,6 +967,10 @@ export function useWaitingEditingController({
       setEditNotice(capabilityState === 'unknown' ? '正在确认 Agent 编辑能力，请稍候' : '当前 Agent 不支持安全编辑');
       return;
     }
+    if (!exactMessageText(turn)) {
+      setEditNotice('这条消息没有可编辑的正文');
+      return;
+    }
     const draft = {
       sessionId: newId(),
       releaseMessageId: newId(),
@@ -965,8 +979,8 @@ export function useWaitingEditingController({
       actorId: id,
       holdId: '',
       location: latestStage(turn),
-      oldText: messageText(turn),
-      text: messageText(turn),
+      oldText: exactMessageText(turn),
+      text: exactMessageText(turn),
       attachments: argsOf(turn.request).attachments || [],
       phase: 'requesting_lock',
       error: '',
@@ -1042,7 +1056,15 @@ export function useWaitingEditingController({
       const releasing = { ...saving, replacementId: String(replacementId), phase: 'releasing' };
       editingRef.current = releasing;
       setEditing((current) => current?.sessionId === session.sessionId ? releasing : current);
-      await release(releasing);
+      // The replacement is in the send queue, so the edit intent has been
+      // handed over and this session is done. Releasing the hold is cleanup:
+      // if it fails the lease expires on its own, and holding the Composer in
+      // edit mode over it would turn every later message into another replace.
+      try {
+        await release(releasing);
+      } catch {
+        // The hold expires on its own; nothing here can act on the failure.
+      }
       setResumePin(releasing.replacementId);
       editingRef.current = null;
       setEditing((current) => current?.sessionId === session.sessionId ? null : current);
