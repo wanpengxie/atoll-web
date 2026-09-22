@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 
 import { actorNameMap } from '../../model/actor-display.js';
 import { MarkdownFileReferenceProvider } from '../MarkdownContent.jsx';
 import { MessageLayoutProvider } from '../timeline/MessageLayoutState.jsx';
-import { ReadingContainerHandoff } from '../timeline/ReadingContainerHandoff.jsx';
+import { TimelineList } from '../timeline/TimelineList.jsx';
 import { useTimelineRowRenderer } from '../timeline/TimelineRowRenderer.jsx';
 import { useConversationProjection } from '../timeline/useConversationProjection.js';
 import {
@@ -18,62 +18,6 @@ import { ReadingIntentProvider } from './ReadingIntentContext.jsx';
 
 const EMPTY_CAPABILITY_INDEX = new Map();
 const SHOW_CHANNEL_NARRATION = true;
-
-function waitingDestination(row) {
-  const localState = String(row?.localState || '').toLowerCase();
-  const bodyState = String(row?.body?.state || '').toLowerCase();
-  const bodyLocalState = String(row?.body?.local_submission_state || '').toLowerCase();
-  return localState === 'waiting' || bodyState === 'waiting' || bodyLocalState === 'waiting';
-}
-
-// Presentation publishes this local UI readiness receipt after the Composer's
-// explicit send intent has bound target identities. It is not backend
-// acceptance and carries no business truth: Vendor joins it to its own
-// physical height/root measurement before issuing the sole DOM command.
-function bottomIntentPresentationOf({ intent, activationID, inputEpoch, intentRevision, snapshot, queuedTurns }) {
-  const targetIDs = Array.isArray(intent?.targetMessageIDs)
-    ? [...new Set(intent.targetMessageIDs.map(String).filter(Boolean))]
-    : [];
-  if (!intent?.id || !targetIDs.length) return null;
-  const revision = Number(snapshot?.revision || 0);
-  const rows = Array.isArray(snapshot?.rows) ? snapshot.rows : [];
-  const queued = new Set((queuedTurns || []).map((turn) => String(turn?.requestId || '')).filter(Boolean));
-  let blockedWaiting = false;
-  const destinations = targetIDs.flatMap((messageID) => {
-    const row = rows.find((candidate) => String(candidate?.id || '') === messageID);
-    if (row) {
-      const waiting = waitingDestination(row);
-      if (waiting || row.local === true || row.localState) blockedWaiting = true;
-      return [{
-        messageID,
-        destination: waiting || row.local === true || row.localState ? 'waiting' : 'timeline',
-        targetListRevision: revision,
-      }];
-    }
-    if (queued.has(messageID)) {
-      blockedWaiting = true;
-      return [{
-        messageID,
-        destination: 'waiting',
-        targetListRevision: revision,
-      }];
-    }
-    return [];
-  });
-  const ready = destinations.length === targetIDs.length
-    && !blockedWaiting;
-  return Object.freeze({
-    kind: 'bottom-intent-presentation',
-    intentID: String(intent.id),
-    activationID: String(activationID || ''),
-    inputEpoch: Number(inputEpoch ?? intent.inputEpoch ?? 0),
-    intentRevision: Number(intentRevision || 0),
-    presentationRevision: revision,
-    targetIDs: Object.freeze(targetIDs),
-    ready,
-    destinations: Object.freeze(destinations.map((destination) => Object.freeze(destination))),
-  });
-}
 
 /**
  * The stable shell-facing conversation port.
@@ -116,20 +60,6 @@ export function ConversationSurface({
   if (typeof onTaskControl !== 'function') throw new TypeError('ConversationSurface 缺少 Agent 控制 port');
   if (typeof onRequestCapability !== 'function') throw new TypeError('ConversationSurface 缺少能力查询 port');
   if (typeof onCancel !== 'function') throw new TypeError('ConversationSurface 缺少取消命令 port');
-  const viewportRef = useRef(null);
-  const captureFoldAnchor = useCallback(({ anchorID, control, expectedExpanded }) => {
-    const root = control?.closest?.('.timeline-message-list');
-    const controlRect = control?.getBoundingClientRect?.();
-    const rootRect = root?.getBoundingClientRect?.();
-    if (!root || !controlRect || !rootRect || !Number.isFinite(controlRect.top)
-      || !Number.isFinite(rootRect.top) || !Number.isFinite(root.scrollHeight)) return false;
-    return viewportRef.current?.captureContentAnchor?.({
-      anchorID,
-      expectedExpanded,
-      viewportOffset: controlRect.top - rootRect.top,
-      beforeScrollHeight: root.scrollHeight,
-    }) === true;
-  }, []);
   const {
     scope,
     actorFilter,
@@ -139,7 +69,7 @@ export function ConversationSurface({
     toggleActorFilter,
     removeActorFilter,
     toggleFold,
-  } = useTimelinePreferences({ channelId: state.channelId, viewSessions, onFoldAnchor: captureFoldAnchor });
+  } = useTimelinePreferences({ channelId: state.channelId, viewSessions });
   const names = useMemo(() => actorNameMap(roster), [roster]);
   // The principal's own actor id in a channel is a stable fact. The live value
   // goes empty whenever the world is re-established (a node restart resets
@@ -191,24 +121,15 @@ export function ConversationSurface({
     viewport,
     latestRowID,
     browsingExpandedSlots,
-    livePresentationArrivals,
   } = useConversationProjection({
     state,
     history,
-    viewSessions,
     historyViewSpec,
     messageListKey,
     timelineLocalEchoes,
-    identityPending,
     surfaceVisible,
     onTailCaughtUp,
   });
-  useLayoutEffect(() => {
-    viewportRef.current = viewport;
-    return () => {
-      if (viewportRef.current === viewport) viewportRef.current = null;
-    };
-  }, [viewport]);
   const filterableAgents = useMemo(() => roster.filter((row) => row.kind === 'agent'), [roster]);
   const rosterActorIDs = useMemo(() => new Set(filterableAgents.map((row) => row.id)), [filterableAgents]);
   const staleActorFilters = useMemo(
@@ -236,21 +157,6 @@ export function ConversationSurface({
     queuedTurns,
     projection.presentation.rows,
   );
-  const bottomIntentPresentation = useMemo(() => bottomIntentPresentationOf({
-    intent: viewport.session?.bottomIntent,
-    activationID: viewport.activationID,
-    inputEpoch: viewport.session?.inputEpoch,
-    intentRevision: viewport.session?.intentRevision,
-    snapshot: projection.presentation,
-    queuedTurns,
-  }), [
-    projection.presentation,
-    queuedTurns,
-    viewport.activationID,
-    viewport.session?.bottomIntent,
-    viewport.session?.inputEpoch,
-    viewport.session?.intentRevision,
-  ]);
   const rowPresentationState = useCallback(
     (row) => waitingHandoff.enteringRequestIDs.has(row.id) ? 'handoff-enter' : '',
     [waitingHandoff.enteringRequestIDs],
@@ -295,40 +201,17 @@ export function ConversationSurface({
   const openFileReference = useCallback((reference) => {
     onPreviewResource?.(state.channelId, reference);
   }, [onPreviewResource, state.channelId]);
-  const acceptedComposerTokensRef = useRef(new WeakSet());
+  // Sending is the one explicit "take me to the newest" intent besides the
+  // jump button. Passive arrivals never move a browsing reader.
   const readingIntent = useMemo(() => ({
     composerSendStarted(channelID) {
       if (channelID !== state.channelId) return null;
-      // Composer send is an explicit latest intent even when no bottom token
-      // can be captured. Cancel the ephemeral scope successor first so a
-      // rejected/late send cannot restore the old browsing row.
-      viewport.cancelScopeHandoff?.('composer-send-start');
-      const token = viewport.captureBottomIntent();
-      // Sending is an explicit user intent, unlike a passive arrival. It may
-      // promote a browsing reader to following and install one bottom intent
-      // for the row being submitted; unrelated appends never call this port.
-      if (!token) return null;
-      if (!viewport.requestBottom('composer:send-start', token, {
-        afterPresentationRevision: token.presentationRevision,
-        baselineTailID: token.baselineTailID,
-      })) return null;
-      return viewport.captureBottomIntent();
+      viewport.toLatest();
+      return null;
     },
-    composerAccepted(channelID, messageIDs, token) {
-      if (channelID !== state.channelId || !messageIDs?.length || !token
-        || acceptedComposerTokensRef.current.has(token)) return false;
-      const current = viewport.captureBottomIntent();
-      if (!current
-        || current.activationID !== token.activationID
-        || current.inputEpoch !== token.inputEpoch
-        || current.intentRevision !== token.intentRevision) return false;
-      acceptedComposerTokensRef.current.add(token);
-      return viewport.bindBottomIntentTargets(token, messageIDs) !== false;
-    },
-    composerRejected(channelID, token) {
-      return channelID === state.channelId && viewport.revokeBottomIntent(token) === true;
-    },
-  }), [state.channelId, viewport]);
+    composerAccepted() { return true; },
+    composerRejected() { return false; },
+  }), [state.channelId, viewport.toLatest]);
   const presentationEmpty = projection.presentation.rows.length === 0 && queuedTurns.length === 0;
   const filteredEntries = projection.filtered || [];
   const channelEntries = projection.allEntries || filteredEntries;
@@ -417,20 +300,6 @@ export function ConversationSurface({
                     data-scope-state="partial"
                   ><span>@</span><h2>当前已加载的动态里没有符合筛选的往来</h2><p>会继续读取更早内容，找到后自动显示。</p></div>}
                   {emptyFeedbackKind === 'channel' && !emptyFeedbackSettled && <div className="timeline-history-status" role="status">正在准备频道内容…</div>}
-                  {viewport.cache?.phase === 'pending' && <div
-                    className="timeline-history-status timeline-cache-status"
-                    data-cache-phase="pending"
-                    role="status"
-                  >正在准备本地缓存…</div>}
-                  {viewport.cache?.phase === 'error' && <div
-                    className="timeline-history-status timeline-history-demand timeline-cache-status"
-                    data-cache-phase="error"
-                    data-phase="error"
-                    role="alert"
-                  >
-                    <span>{viewport.cache.error || '本地缓存初始化失败'}</span>
-                    <button type="button" onClick={viewport.retryAvailability}>重试</button>
-                  </div>}
                   {viewport.availability === 'error' && <div className="timeline-history-status timeline-history-demand" role="alert">
                     <span>{viewport.availabilityError || '确认频道内容失败'}</span>
                     <button type="button" onClick={viewport.retryAvailability}>重试</button>
@@ -443,18 +312,19 @@ export function ConversationSurface({
                       ? <><span>{viewport.historyDemand.error || '读取更早动态失败'}</span><button type="button" onClick={viewport.retryHistoryDemand}>重试</button></>
                       : '正在读取更早动态…'}</div>}
                 </div>
-                <ReadingContainerHandoff
-                  key={state.channelId}
-                  snapshot={projection.presentation}
-                  reading={viewport}
-                  surfaceVisible={surfaceVisible}
-                  bottomIntentPresentation={bottomIntentPresentation}
-                  rowRevision={rowRenderRevision}
-                  rowPresentationState={rowPresentationState}
-                  livePresentationArrivals={livePresentationArrivals}
-                  historyStartBoundary={historyStartBoundary}
-                  renderRow={renderRow}
-                />
+                <div className="timeline-reading-stack" data-reading-mode={viewport.mode}>
+                  <div className="timeline-reading-layer is-active">
+                    <TimelineList
+                      key={state.channelId}
+                      snapshot={projection.presentation}
+                      reading={viewport}
+                      rowRevision={rowRenderRevision}
+                      rowPresentationState={rowPresentationState}
+                      historyStartBoundary={historyStartBoundary}
+                      renderRow={renderRow}
+                    />
+                  </div>
+                </div>
                 {viewport.unseenNotice > 0 && <button
                   type="button"
                   className="timeline-jump-latest"

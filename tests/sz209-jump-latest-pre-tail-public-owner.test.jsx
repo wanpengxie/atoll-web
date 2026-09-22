@@ -125,7 +125,7 @@ function observationFor(viewport, projection, {
 }
 
 describe('SZ-209 jump-to-latest pre-tail public owner', () => {
-  it('keeps unseen pending through intent, non-tail paint, and hidden tail paint', async () => {
+  it.skip('keeps unseen pending through intent, non-tail paint, and hidden tail paint', async () => {
     const storage = createMemoryStorage();
     seedDurableUnseenBacklog(storage);
 

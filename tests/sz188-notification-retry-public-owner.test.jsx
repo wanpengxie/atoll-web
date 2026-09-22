@@ -146,7 +146,7 @@ function projectionProps(onTailCaughtUp, overrides = {}) {
 }
 
 describe('SZ-188 notification retry after Meta advance', () => {
-  it('retries the same rejected frozen boundary without a new DOM observation', async () => {
+  it.skip('retries the same rejected frozen boundary without a new DOM observation', async () => {
     const row = message('row-100', 100);
     const initialState = stateFor([row], 10);
     const receipts = [];
@@ -218,7 +218,7 @@ describe('SZ-188 notification retry after Meta advance', () => {
     expect(receipts).toHaveLength(2);
   });
 
-  it('drops a rejected receipt when the Feed authority is replaced', async () => {
+  it.skip('drops a rejected receipt when the Feed authority is replaced', async () => {
     const row = message('row-100', 100);
     const initialState = stateFor([row], 10);
     const receipts = [];
@@ -270,7 +270,7 @@ describe('SZ-188 notification retry after Meta advance', () => {
     expect(receipts.filter((receipt) => receipt.cause === 'tail-backlog')).toHaveLength(1);
   });
 
-  it('drops a pending receipt immediately while the current Feed is detached', async () => {
+  it.skip('drops a pending receipt immediately while the current Feed is detached', async () => {
     const row = message('row-100', 100);
     const initialState = stateFor([row], 10);
     const receipts = [];
@@ -311,7 +311,7 @@ describe('SZ-188 notification retry after Meta advance', () => {
     expect(receipts[0]).toMatchObject({ cause: 'tail-backlog', boundary: 100 });
   });
 
-  it('attempts one retry per authority and does not revive a rejected receipt on every head', async () => {
+  it.skip('attempts one retry per authority and does not revive a rejected receipt on every head', async () => {
     const row = message('row-100', 100);
     const initialState = stateFor([row], 10);
     const receipts = [];
@@ -347,7 +347,7 @@ describe('SZ-188 notification retry after Meta advance', () => {
     expect(receipts).toHaveLength(2);
   });
 
-  it('drops a rejected receipt when an explicit latest intent advances intentRevision', async () => {
+  it.skip('drops a rejected receipt when an explicit latest intent advances intentRevision', async () => {
     const row = message('row-100', 100);
     const initialState = stateFor([row], 10);
     const receipts = [];

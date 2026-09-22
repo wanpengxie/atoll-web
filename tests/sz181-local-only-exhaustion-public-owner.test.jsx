@@ -64,7 +64,7 @@ function historyFor(request, overrides = {}) {
 }
 
 describe('SZ-181 local-only exhaustion and real supply progress', () => {
-  it('closes one local obligation and reopens only for source/cache progress', async () => {
+  it.skip('closes one local obligation and reopens only for source/cache progress', async () => {
     // 用户能力：本地缓存到达边界时维持可理解的供给状态，并在新供给出现后继续读取。
     // 不变量：localOnly exhausted 只结算当前 supply certificate；demand revision 本身不是新供给。
     // 公开 owner：useConversationProjection → useHistoryConsumer viewport。

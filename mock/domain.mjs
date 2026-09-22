@@ -548,7 +548,7 @@ export class MockDomain {
   }
 
   configureFault(fault) {
-    const targets = ['attach', 'submit', 'resolve', 'cancel', 'after', 'cancel_timer', 'resource', 'observe', 'unobserve', 'receipt', 'feed', 'obs'];
+    const targets = ['attach', 'submit', 'resolve', 'cancel', 'after', 'cancel_timer', 'resource', 'observe', 'unobserve', 'receipt', 'feed', 'obs', 'history'];
     const modes = ['reject', 'delay', 'drop', 'partial'];
     if (!targets.includes(fault?.target)) throw new TypeError('unknown fault target');
     if (!modes.includes(fault?.mode)) throw new TypeError('unknown fault mode');

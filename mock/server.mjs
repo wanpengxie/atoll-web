@@ -1699,6 +1699,13 @@ export function createMockServer({
 		sendError(socket, { ref, frame: type, code: 'unavailable', detail: 'stale connection generation' });
 		return;
 	  }
+      // A history page can be refused (reject) or never answered (drop).
+      const historyFault = domain.takeFault('history');
+      if (historyFault?.mode === 'reject') {
+        sendError(socket, { ref, frame: type, code: historyFault.code, detail: 'mock history fault' });
+        return;
+      }
+      if (historyFault?.mode === 'drop') return;
       const page = rawHistoryPage(histories.get(payload.channel_id), {
         beforeSeq: payload.before_seq,
         limit: payload.limit || 200,

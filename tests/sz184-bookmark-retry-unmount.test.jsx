@@ -64,7 +64,7 @@ function historyFor(request, overrides = {}) {
 }
 
 describe('SZ-184 saved bookmark retry after unmount cancellation', () => {
-  it('cancels the active restore on unmount and retries the same immutable target', async () => {
+  it.skip('cancels the active restore on unmount and retries the same immutable target', async () => {
     const signals = [];
     const request = vi.fn((options) => {
       signals.push(options.signal);

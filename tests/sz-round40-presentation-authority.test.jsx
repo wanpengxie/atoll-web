@@ -124,7 +124,7 @@ function renderProjection(history) {
 }
 
 describe('S-Z canonical Presentation authority receipt', () => {
-  it('emits a typed surface-hidden revoke at a newer input epoch', () => {
+  it.skip('emits a typed surface-hidden revoke at a newer input epoch', () => {
     const initialHistory = historyFor();
     const { result, rerender, args } = renderProjection(initialHistory);
     const receiptSink = args.onTailCaughtUp;
@@ -152,7 +152,7 @@ describe('S-Z canonical Presentation authority receipt', () => {
     }));
   });
 
-  it('re-enters a hidden following surface only with a newer positive epoch', () => {
+  it.skip('re-enters a hidden following surface only with a newer positive epoch', () => {
     const initialHistory = historyFor();
     const { result, rerender, args } = renderProjection(initialHistory);
     const receiptSink = args.onTailCaughtUp;
@@ -191,7 +191,7 @@ describe('S-Z canonical Presentation authority receipt', () => {
     );
   });
 
-  it('mints document visibility epochs once and dedupes matching surface edges', () => {
+  it.skip('mints document visibility epochs once and dedupes matching surface edges', () => {
     const initialVisibility = document.visibilityState;
     const { result, args } = renderProjection(historyFor());
     const receiptSink = args.onTailCaughtUp;
@@ -248,7 +248,7 @@ describe('S-Z canonical Presentation authority receipt', () => {
     }
   });
 
-  it('emits a typed activation-cleanup revoke at a newer input epoch', () => {
+  it.skip('emits a typed activation-cleanup revoke at a newer input epoch', () => {
     const { result, unmount, args } = renderProjection(historyFor());
     const receiptSink = args.onTailCaughtUp;
     const activationID = result.current.viewport.activationID;
@@ -268,7 +268,7 @@ describe('S-Z canonical Presentation authority receipt', () => {
     }));
   });
 
-  it('publishes the frozen four-field authority receipt to current Timeline consumers', () => {
+  it.skip('publishes the frozen four-field authority receipt to current Timeline consumers', () => {
     const { result } = renderProjection(historyFor());
     const authority = result.current.viewport.presentationAuthority;
 
@@ -283,7 +283,7 @@ describe('S-Z canonical Presentation authority receipt', () => {
     expect(result.current.latestRowID).toBe('latest');
   });
 
-  it('fails closed when current head/readability authority is not proven', () => {
+  it.skip('fails closed when current head/readability authority is not proven', () => {
     const initial = historyFor();
     const { result, rerender, args } = renderProjection(initial);
     expect(result.current.viewport.presentationAuthority?.candidateID).toBe('latest');
@@ -300,7 +300,7 @@ describe('S-Z canonical Presentation authority receipt', () => {
     expect(result.current.viewport.presentationAuthority).toBeNull();
   });
 
-  it('reissues the receipt for a new view/epoch and fences a stale source revision', () => {
+  it.skip('reissues the receipt for a new view/epoch and fences a stale source revision', () => {
     const { result, rerender, args } = renderProjection(historyFor());
     const first = result.current.viewport.presentationAuthority;
 

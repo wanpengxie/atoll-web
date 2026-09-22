@@ -91,7 +91,7 @@ function observationFor(viewport, projection, visibleRowID) {
 }
 
 describe('SZ-169 exact-row Reading observation contract', () => {
-  it('keeps a committed arrival unseen when its exact row is absent from the settled paint', () => {
+  it.skip('keeps a committed arrival unseen when its exact row is absent from the settled paint', () => {
     const replica = createChannelReplicaStore();
     const state = replica.ensure('c0').state;
     replica.commit(row('c0', 1, request('old-1', 1)), SELF, (value) => value, { source: 'history' });

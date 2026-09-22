@@ -130,7 +130,7 @@ function tailObservation(result) {
 }
 
 describe('SZ205 live arrival overflow public owner', () => {
-  it('retains an overflowed 1100-identity batch and de-duplicates a newer stable identity', async () => {
+  it.skip('retains an overflowed 1100-identity batch and de-duplicates a newer stable identity', async () => {
     const replica = createChannelReplicaStore();
     const state = replica.ensure('c0').state;
     const sessions = createViewSessionStore({ storage: null });

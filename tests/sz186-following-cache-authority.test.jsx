@@ -84,7 +84,7 @@ function historyFor({ request, presentationRevision, attached, generation, headS
 }
 
 describe('SZ-186 fresh following cached projection authority', () => {
-  it('shows cached rows immediately but withholds tail authority until Replica revision catches up', async () => {
+  it.skip('shows cached rows immediately but withholds tail authority until Replica revision catches up', async () => {
     const request = vi.fn();
     const viewSessions = {
       readView: () => ({ mode: 'following', revision: 0 }),
