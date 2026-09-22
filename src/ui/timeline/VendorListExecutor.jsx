@@ -1731,15 +1731,20 @@ export function VendorListExecutor({
   //
   // Input evidence stays exactly as it is. It is a second source, not the only
   // one.
-  const demandOlderFromList = () => {
+  const reportListTop = (listAtTop) => {
     const root = rootRef.current;
     if (!root) return;
+    // The list's signals are about its rendered range (`startReached` fires
+    // once the first row is mounted, well below the top); the physical
+    // top itself is read from the scroller so the level is never raised by a
+    // row that merely became rendered.
+    const atTop = listAtTop === true && Number(root.scrollTop || 0) <= 1;
     reportDomEvidence(Object.freeze({
       type: 'scroll-position',
       activationID: readingRef.current.activationID,
       inputEpoch: navigationPolicy.currentInput().inputEpoch,
-      direction: 'older',
-      atTop: true,
+      direction: atTop ? 'older' : '',
+      atTop,
       scrollTop: Number(root.scrollTop || 0),
       scrollHeight: Number(root.scrollHeight || 0),
       clientHeight: Number(root.clientHeight || 0),
@@ -1747,6 +1752,7 @@ export function VendorListExecutor({
     }));
     scheduleObserve('layout');
   };
+  const demandOlderFromList = () => reportListTop(true);
 
   return <Virtuoso
     ref={virtuosoRef}
@@ -1896,6 +1902,6 @@ export function VendorListExecutor({
       scheduleObserve('layout');
     }}
     startReached={demandOlderFromList}
-    atTopStateChange={(atTop) => { if (atTop) demandOlderFromList(); }}
+    atTopStateChange={(atTop) => reportListTop(atTop === true)}
   />;
 }

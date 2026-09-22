@@ -552,19 +552,6 @@ function useProjectionReadingOwner({
     actorFiltered: Number(historyViewSpec?.actorFilter?.size || 0) > 0,
   }) : null;
 
-  // The projection Reading owner already owns both the physical root handoff
-  // and the effective document/surface visibility boundary.  Feed the
-  // history consumer a live read-only port to those observations; no second
-  // store or persisted session field is introduced.
-  const getContinuationLineage = useCallback(() => {
-    const root = rootActivationRef.current;
-    const rootIdentity = root.activationID === controller.activationID
-      ? Number(root.identity) : 0;
-    const visibilityEpoch = Number(visibilityBoundaryRef.current.visibilityEpoch);
-    return Object.freeze({ rootIdentity, visibilityEpoch });
-  }, [controller]);
-  const continuationLineage = getContinuationLineage();
-
   const historyConsumer = useHistoryConsumer({
     channelID,
     viewKey,
@@ -583,8 +570,6 @@ function useProjectionReadingOwner({
     hasManagedHistoryLifecycle: true,
     knownHead,
     history,
-    getContinuationLineage,
-    continuationLineage,
     localReplicaError: String(historyStatus.localReplicaError || ''),
     syncHistoryError: String(syncStatus.error || ''),
     foregroundHistoryError: historyStatus.historyDemand?.phase === 'error',

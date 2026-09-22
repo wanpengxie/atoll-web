@@ -37,6 +37,12 @@ const MOBILE_REPLICA_TARGET_ROWS = 400;
 // the browser contract's 1,000-row ceiling.
 const WARM_CACHE_TARGET_ROWS = HISTORY_PAGE_SIZE;
 const WARM_CACHE_MAX_PAGES = 4;
+// One semantic reveal request (a reader waiting at the physical top) owns as
+// many physical pages as it takes to expose visible rows for its view. Pages
+// that only advance the raw frontier are not a settlement; they continue the
+// same operation. The bound keeps one operation from scanning an entire
+// filtered channel while the reader has already moved on.
+export const HISTORY_REVEAL_MAX_PAGES = 32;
 
 const BACKGROUND_INTEREST_TYPES = new Set([
   HISTORY_INTENT.searchContext,
@@ -1513,7 +1519,7 @@ export function createChannelFeedRuntime(options = {}) {
     const demand = semanticDemands.get(channelId);
     const deferredDemand = demand?.phase === 'pending' && !status.attached;
     const next = {
-      loading: active.length > 0 || deferredDemand,
+      loading: active.length > 0 || deferredDemand || demand?.continuing === true,
       foregroundLoading: hasForeground || (deferredDemand && demand.foreground),
       backgroundLoading: !hasForeground && hasBackground,
     };
@@ -1544,6 +1550,8 @@ export function createChannelFeedRuntime(options = {}) {
 
   function finishSemanticDemand(demand) {
     if (!demand || demand.retired || demand.operations.size || demand.waiters.size) return false;
+    // A reveal scan settles its demand once, after its last physical page.
+    if (demand.continuing === true) return false;
     const status = histories.get(demand.channelId);
     if (semanticDemands.get(demand.channelId) !== demand
       || status?.historyDemand?.revision !== demand.revision) return false;
@@ -1644,6 +1652,8 @@ export function createChannelFeedRuntime(options = {}) {
       waiters: new Map(),
       operations: new Set(),
       retired: false,
+      continuing: false,
+      pagesIssued: 0,
       baselineSourceRevision: Number(replica.state(channelId)?._timelineRevision || 0),
     };
     semanticDemands.set(channelId, demand);
@@ -1939,6 +1949,8 @@ export function createChannelFeedRuntime(options = {}) {
     );
     let observed = demand?.lastObservation || null;
     const revealToken = demand?.revealToken || null;
+    const status = histories.get(operation.channelId);
+    let scanContinues = false;
     if (revealToken && !demand.revealSettled && !demand.retired) {
       observed = admission.observe(operation.channelId, projection.items, {
         operationID: revealToken.operationID,
@@ -1949,20 +1961,55 @@ export function createChannelFeedRuntime(options = {}) {
       demand.lastObservation = observed;
       const anotherPhysicalPending = [...demand.operations]
         .some((candidate) => candidate !== operation && !candidate.settled && !candidate.retired);
+      // A reveal scan (`untilRevealed`) is one semantic operation across as
+      // many physical pages as it takes to expose visible rows for this view.
+      // A page that only advanced the raw frontier is not a settlement: the
+      // admission transaction stays pending with whatever it has staged, and
+      // loadUntilRevealed issues the next page under the same demand/signal.
+      scanContinues = waiter.request?.untilRevealed === true
+        && !observed?.fulfilled
+        && observed?.stale !== true
+        && observed?.rebased !== true
+        && status?.hasOlder === true
+        && waiter.signal?.aborted !== true
+        && Number(demand.pagesIssued || 0) < HISTORY_REVEAL_MAX_PAGES;
       // A shared reveal authority may span concurrent physical ranges. Keep
       // its one admission transaction pending after an underfilled range so
       // a later range can contribute candidates; settle immediately only
       // when the demand is fulfilled or no physical range remains.
-      if (observed?.fulfilled || !anotherPhysicalPending) {
+      if (observed?.fulfilled || (!anotherPhysicalPending && !scanContinues)) {
         admission.settle(operation.channelId, observed?.fulfilled ? 'fulfilled' : 'exhausted');
         demand.revealSettled = true;
       }
     }
-    const status = histories.get(operation.channelId);
+    const revealed = Number(observed?.completeUnits || 0);
+    // One physical page has been projected for this waiter's view. This is
+    // the per-page check of the reveal loop: raw rows released against the
+    // anchor, and what the view now exposes.
+    diagnostic('debug', 'history.projection_checked', {
+      channelId: operation.channelId,
+      anchorSeq: historyNumeric(waiter.request?.anchorSeq),
+      firstVisibleSeq: Number(projection.firstVisibleSeq || 0),
+      released: Number(outcome.acceptedRows || 0),
+      revealed,
+      revealRows: historyNumeric(waiter.request?.revealRows),
+      revealBytes: historyNumeric(waiter.request?.revealBytes),
+      page: Number(demand?.pagesIssued || 0),
+      kind: scanContinues ? 'continue' : (observed?.fulfilled ? 'fulfilled' : ''),
+    });
+    // A reveal waiter is satisfied by visible rows, never by raw rows alone:
+    // the reader asked to see older history, and a physically accepted page
+    // with nothing visible for this view is a segment, not a settlement.
+    const kind = scanContinues
+      ? 'continue'
+      : revealToken
+        ? (observed?.fulfilled || revealed > 0 ? 'satisfied' : status?.hasOlder ? 'segment' : 'exhausted')
+        : (outcome.acceptedRows || observed?.fulfilled
+          ? 'satisfied' : status?.hasOlder ? 'segment' : 'exhausted');
     settleWaiter(waiter, {
-      kind: outcome.acceptedRows || observed?.fulfilled
-        ? 'satisfied' : status?.hasOlder ? 'segment' : 'exhausted',
+      kind,
       released: outcome.acceptedRows,
+      revealed,
       persistenceError: outcome.persistenceError || null,
       firstVisibleSeq: projection.firstVisibleSeq,
       projection,
@@ -2126,6 +2173,13 @@ export function createChannelFeedRuntime(options = {}) {
       return Promise.resolve({ kind: 'waiting', reason: 'history-grant-pending' });
     }
     removeDeferredHistoryRequest(channelId);
+    if (request.untilRevealed === true && semanticDemand?.revealIntent && !request.revealScanPage) {
+      return loadUntilRevealed(channelId, request, semanticDemand);
+    }
+    return loadPhysicalPage(channelId, request, semanticDemand);
+  }
+
+  function loadPhysicalPage(channelId, request, semanticDemand) {
     const key = physicalOperationKey(channelId, request);
     if (!key) return Promise.resolve({ kind: 'cancelled', reason: 'history-not-admitted' });
     let operation = physicalOperations.get(key);
@@ -2134,6 +2188,54 @@ export function createChannelFeedRuntime(options = {}) {
     const promise = attachHistoryWaiter(operation, request, semanticDemand);
     publish();
     return promise;
+  }
+
+  // One reveal request is one semantic operation. next() is one bounded
+  // physical page; project() is the waiter's own view projection, evaluated
+  // by admission after every page. Empty or fully hidden pages continue the
+  // same operation here, in the feed owner, with no React render or callback
+  // edge in between. The operation settles on: visible rows for this view,
+  // authoritative EOF, abort, source failure, or the page bound.
+  async function loadUntilRevealed(channelId, request, demand) {
+    demand.continuing = true;
+    demand.pagesIssued = 0;
+    let issuedBefore = 0;
+    let outcome = { kind: 'cancelled', reason: 'reveal-scan-not-started' };
+    try {
+      for (let page = 0; page < HISTORY_REVEAL_MAX_PAGES; page += 1) {
+        if (request.signal?.aborted) return { kind: 'cancelled', reason: 'aborted', pages: page };
+        if (demand.retired || semanticDemands.get(channelId) !== demand) {
+          return { kind: 'cancelled', reason: 'stale-authority', pages: page };
+        }
+        if (!historyAdmitted(channelId)) return { kind: 'cancelled', reason: 'history-not-admitted', pages: page };
+        const status = historyState(channelId);
+        const beforeSeq = page === 0
+          ? batchFor(channelId, request).beforeSeq
+          : historyNumeric(status.beforeSeq);
+        // A page that failed to move the cursor strictly older is a bounded
+        // terminal for this scan, not a reason to fetch the same range again.
+        if (page > 0 && (!beforeSeq || beforeSeq >= issuedBefore)) {
+          return { ...outcome, kind: status.hasOlder ? 'segment' : 'exhausted', reason: 'no-progress', pages: page };
+        }
+        demand.pagesIssued = page + 1;
+        issuedBefore = beforeSeq;
+        outcome = await loadPhysicalPage(channelId, {
+          ...request, beforeSeq, semanticDemand: demand, revealScanPage: page + 1,
+        }, demand);
+        if (outcome.kind !== 'continue') return { ...outcome, pages: page + 1 };
+        diagnostic('debug', 'history.reveal_scan_continue', {
+          channelId, page: page + 1, beforeSeq,
+          nextBeforeSeq: historyNumeric(historyState(channelId).beforeSeq),
+          released: Number(outcome.released || 0), revealed: Number(outcome.revealed || 0),
+        });
+      }
+      return { ...outcome, kind: historyState(channelId).hasOlder ? 'segment' : 'exhausted', reason: 'page-bound', pages: HISTORY_REVEAL_MAX_PAGES };
+    } finally {
+      demand.continuing = false;
+      const finished = finishSemanticDemand(demand);
+      const statusChanged = recomputePhysicalStatus(channelId);
+      if (finished || statusChanged) publish();
+    }
   }
 
   async function durableWarmRows(channelId) {

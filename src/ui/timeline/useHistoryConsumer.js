@@ -42,11 +42,6 @@ function clearHistoryStart(ref, reason = 'cancelled') {
   return { ...pending, reason };
 }
 
-function clearTopContinuation(ref) {
-  if (ref.current?.timer) globalThis.clearTimeout?.(ref.current.timer);
-  ref.current = null;
-}
-
 function cancelPositionLeaseWait(ref, reason, revoke = false) {
   const waiter = ref.current;
   if (!waiter) return;
@@ -58,40 +53,6 @@ function cancelPositionLeaseWait(ref, reason, revoke = false) {
     }));
   }
   waiter.resolve?.({ kind: 'cancelled', reason });
-}
-
-// Admission publishes the prepended snapshot before Vendor can paint the
-// accepted position-row lease. During that handoff the old historyAnchor is
-// intentionally absent from the new first-row snapshot. The accepted lease
-// is the stronger proof that continuation may wait for the paint fence.
-function positionLeaseHandoffReady(session) {
-  const lease = session?.positionRowLease;
-  return Boolean(lease?.messageID
-    && lease.activationID === session.activationID
-    && Number(lease.inputEpoch) === Number(session.inputEpoch)
-    && Number(lease.intentRevision) === Number(session.intentRevision)
-    && Number.isFinite(Number(lease.viewportOffset)));
-}
-
-// A sparse filtered page is allowed to continue only while the exact
-// Reading/physical boundary that issued it is still current.  These values
-// are observations or lifecycle identities, never progress counters.  Keep
-// the validation local to the existing history consumer; the values are
-// supplied by the projection Reading owner and are not persisted.
-function isValidContinuationLineage({ controller, activationID, channelID, viewKey,
-  inputEpoch, intentRevision, gestureID, rootIdentity, visibilityEpoch } = {}) {
-  return Boolean(controller
-    && activationID
-    && channelID
-    && viewKey
-    && Number.isSafeInteger(Number(inputEpoch))
-    && Number.isSafeInteger(Number(intentRevision))
-    && typeof gestureID === 'string'
-    && gestureID
-    && Number.isSafeInteger(Number(rootIdentity))
-    && Number(rootIdentity) > 0
-    && Number.isSafeInteger(Number(visibilityEpoch))
-    && Number(visibilityEpoch) >= 0);
 }
 
 export function useReadingInitialization({
@@ -157,8 +118,6 @@ export function useHistoryConsumer({
   hasManagedHistoryLifecycle,
   knownHead,
   history,
-  getContinuationLineage,
-  continuationLineage,
   localReplicaError,
   syncHistoryError,
   foregroundHistoryError,
@@ -169,8 +128,6 @@ export function useHistoryConsumer({
   const deferredRecheckRef = useRef(null);
   const failedAnticipatoryRef = useRef(null);
   const terminalRef = useRef(null);
-  const topContinuationRef = useRef(null);
-  const topBoundaryRef = useRef(null);
   const positionLeaseWaitRef = useRef(null);
   const grantTailRequestRef = useRef(null);
   const epochRef = useRef(0);
@@ -179,21 +136,6 @@ export function useHistoryConsumer({
   const [historyStartTick, setHistoryStartTick] = useState(0);
   const sourceKey = historySourceKey(historyStatus);
   const supplyKey = historySupplyKey(historyStatus);
-
-  const currentContinuationLineage = (currentSession = controller.getSnapshot().session) => {
-    const physical = getContinuationLineage?.() || {};
-    return Object.freeze({
-      controller,
-      activationID: controller.activationID,
-      channelID,
-      viewKey,
-      inputEpoch: Number(currentSession?.inputEpoch),
-      intentRevision: Number(currentSession?.intentRevision),
-      gestureID: String(currentSession?.historyAnchor?.gestureID || ''),
-      rootIdentity: Number(physical.rootIdentity),
-      visibilityEpoch: Number(physical.visibilityEpoch),
-    });
-  };
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -211,8 +153,6 @@ export function useHistoryConsumer({
     deferredRecheckRef.current?.resolve?.({ kind: 'cancelled', reason: 'underfill-owner-replaced' });
     deferredRecheckRef.current = null;
     cancelPositionLeaseWait(positionLeaseWaitRef, 'position-lease-owner-replaced', true);
-    clearTopContinuation(topContinuationRef);
-    topBoundaryRef.current = null;
     grantTailRequestRef.current = null;
     clearHistoryStart(historyStartRef, 'history-start-owner-replaced');
     setHistoryStartFailure(null);
@@ -231,10 +171,6 @@ export function useHistoryConsumer({
       if (positionLeaseWaitRef.current?.controller === controller) {
         cancelPositionLeaseWait(positionLeaseWaitRef, 'position-lease-owner-unmounted', true);
       }
-      if (topContinuationRef.current?.controller === controller) {
-        clearTopContinuation(topContinuationRef);
-      }
-      if (topBoundaryRef.current?.controller === controller) topBoundaryRef.current = null;
       clearHistoryStart(historyStartRef, 'history-start-owner-unmounted');
       if (failedAnticipatoryRef.current?.controller === controller) failedAnticipatoryRef.current = null;
     };
@@ -261,79 +197,29 @@ export function useHistoryConsumer({
     setHistoryStartFailure(null);
   }, [channelID, controller, historyStatus.generation, historyStatus.sourceLease, session.historyStartIntent, viewKey]);
 
-  // A continuation is leased to the exact semantic older intent that caused
-  // the typed top request. Any newer input, latest intent, direction reversal,
-  // or exit from browsing invalidates that lease at the commit boundary before
-  // a stale timer can issue another request.
-  useLayoutEffect(() => {
-    const continuation = topContinuationRef.current;
-    if (!continuation) return;
-    const liveLineage = currentContinuationLineage();
-    const validLiveLineage = isValidContinuationLineage(liveLineage);
-    const validContinuation = isValidContinuationLineage(continuation);
-    const sparseProof = continuation.stableTopContinuation === true
-      && String(snapshotRef.current.rows?.[0]?.id || '')
-        === String(continuation.continuationAnchorID || '')
-      && Number(snapshotRef.current.rows?.[0]?.seqLow || 0)
-        === Number(continuation.continuationAnchorSeq || 0)
-      && Number(continuation.continuationFirstVisibleSeq || 0)
-        === Number(continuation.continuationAnchorSeq || 0);
-    const sameIntent = validLiveLineage
-      && validContinuation
-      && continuation.controller === controller
-      && continuation.activationID === liveLineage.activationID
-      && continuation.channelID === liveLineage.channelID
-      && continuation.viewKey === liveLineage.viewKey
-      && session.mode === READING_MODE.browsing
-      && continuation.inputEpoch === liveLineage.inputEpoch
-      && continuation.intentRevision === liveLineage.intentRevision
-      && continuation.gestureID === liveLineage.gestureID
-      && continuation.rootIdentity === liveLineage.rootIdentity
-      && continuation.visibilityEpoch === liveLineage.visibilityEpoch
-      && continuation.inputEpoch === Number(session.inputEpoch)
-      && continuation.intentRevision === Number(session.intentRevision)
-      && (continuation.stableTopContinuation !== true || sparseProof)
-      && session.tailEvidence?.direction !== 'newer';
-    if (!sameIntent) {
-      if (positionLeaseWaitRef.current?.controller === controller) {
-        cancelPositionLeaseWait(positionLeaseWaitRef, 'position-lease-intent-replaced', true);
-      }
-      if (topContinuationRef.current === continuation) clearTopContinuation(topContinuationRef);
-      if (topBoundaryRef.current === continuation.topBoundary) topBoundaryRef.current = null;
-    }
-  }, [channelID, controller, currentContinuationLineage, getContinuationLineage,
-    session.inputEpoch, session.intentRevision, session.mode, session.tailEvidence,
-    continuationLineage?.gestureID, continuationLineage?.rootIdentity,
-    continuationLineage?.visibilityEpoch, viewKey]);
-
   const request = useCallback((reason, urgency = HISTORY_URGENCY.interactive, options = {}) => {
     const {
       revealRows, revealBytes, demandUnits = 1,
       intent = HISTORY_INTENT.scrollHistory, targetSeq = 0,
-      requiredVisibleCoverage = null, consumer = '', continuation = false,
-      stableTopContinuation = false, continuationAnchorID = '', continuationAnchorSeq = 0,
-      continuationFirstVisibleSeq = 0, continuationLease = null,
+      requiredVisibleCoverage = null, consumer = '',
       historyStartIntent = null, beforeSeq = 0, gestureID = '',
     } = options;
     const historyStart = historyStartIntent?.type === 'history-start';
-    if (!continuation && committedOwnerRef.current !== commitOwnerCandidate) {
+    if (committedOwnerRef.current !== commitOwnerCandidate) {
       return Promise.resolve({ kind: 'stale-owner', deduplicated: true });
     }
     const currentSession = controller.getSnapshot().session;
-    const firstRowAtStart = snapshotRef.current.rows[0] || null;
     if (!currentSession.positionRowLease
       && positionLeaseWaitRef.current?.controller === controller) {
       cancelPositionLeaseWait(positionLeaseWaitRef, 'position-lease-cleared');
     }
     // A committed prepend owns the next physical boundary until the accepted
-    // position-row lease reaches actual paint. Do not let a continuation or a
-    // second top/runway request race that one-shot restore. This check must
-    // precede continuation's snapshot-anchor fence: Admission publishes the
-    // prepended rows before Vendor paints/consumes the exact lease, so the
-    // old anchor is necessarily absent from the new snapshot for this brief
-    // handoff window.
+    // position-row lease reaches actual paint. Do not let a second top/runway
+    // request race that one-shot restore: Admission publishes the prepended
+    // rows before Vendor paints/consumes the exact lease, so the old anchor
+    // is necessarily absent from the new snapshot for this brief handoff.
     if (!historyStart && currentSession.positionRowLease
-      && (continuation || reason === 'top' || reason === 'runway')) {
+      && (reason === 'top' || reason === 'runway')) {
       const existing = positionLeaseWaitRef.current;
       if (existing?.controller === controller) return existing.promise;
       const waiter = {
@@ -345,7 +231,6 @@ export function useHistoryConsumer({
         reason,
         urgency,
         options,
-        continuation,
         attempts: 0,
         timer: null,
         resolve: null,
@@ -368,7 +253,7 @@ export function useHistoryConsumer({
         }
         if (!live.positionRowLease) {
           positionLeaseWaitRef.current = null;
-          waiter.resolve?.(request(reason, urgency, { ...options, continuation }));
+          waiter.resolve?.(request(reason, urgency, options));
           return;
         }
         // A failed lease may be replaced by the same older intent. Wait on
@@ -385,54 +270,6 @@ export function useHistoryConsumer({
       waiter.timer = globalThis.setTimeout?.(check, 16) || 0;
       if (!waiter.timer) check();
       return waiter.promise;
-    }
-    if (continuation && !historyStart) {
-      const continuationRecord = continuationLease || topContinuationRef.current;
-      const liveLineage = currentContinuationLineage(currentSession);
-      const firstID = snapshotRef.current.rows[0]?.id;
-      const anchor = currentSession.historyAnchor;
-      const stableTop = stableTopContinuation === true
-        && String(firstID || '') === String(continuationAnchorID || '')
-        && Number(snapshotRef.current.rows[0]?.seqLow || 0) === Number(continuationAnchorSeq || 0)
-        && Number(continuationFirstVisibleSeq || 0) === Number(continuationAnchorSeq || 0);
-      const validLiveLineage = isValidContinuationLineage(liveLineage);
-      const validContinuation = isValidContinuationLineage(continuationRecord);
-      const exactLineage = Boolean(continuationRecord)
-        && validLiveLineage
-        && validContinuation
-        && continuationRecord.controller === liveLineage.controller
-        && continuationRecord.activationID === liveLineage.activationID
-        && continuationRecord.channelID === liveLineage.channelID
-        && continuationRecord.viewKey === liveLineage.viewKey
-        && continuationRecord.inputEpoch === liveLineage.inputEpoch
-        && continuationRecord.intentRevision === liveLineage.intentRevision
-        && continuationRecord.gestureID === liveLineage.gestureID
-        && continuationRecord.rootIdentity === liveLineage.rootIdentity
-        && continuationRecord.visibilityEpoch === liveLineage.visibilityEpoch;
-      if (!exactLineage || ((!anchor || String(anchor.messageID) !== String(firstID || '')
-        || !Number.isFinite(Number(anchor.viewportOffset))) && !stableTop)) {
-        if (topContinuationRef.current === continuationRecord) clearTopContinuation(topContinuationRef);
-        if (topBoundaryRef.current === continuationRecord?.topBoundary) topBoundaryRef.current = null;
-        return Promise.resolve({ kind: 'position-anchor-missing', deduplicated: true });
-      }
-    }
-    // A top request can arrive while an anticipatory runway request is still
-    // acquiring a page.  Record the physical boundary before looking at the
-    // active operation, so promotion below can hand the exact same older
-    // intent to a successor request after the acquisition settles.
-    if (reason === 'top' && !continuation) {
-      const topLineage = currentContinuationLineage(currentSession);
-      topBoundaryRef.current = Object.freeze({
-        controller: topLineage.controller,
-        activationID: topLineage.activationID,
-        channelID: topLineage.channelID,
-        viewKey: topLineage.viewKey,
-        inputEpoch: Number(currentSession.inputEpoch || 0),
-        intentRevision: Number(currentSession.intentRevision || 0),
-        gestureID: topLineage.gestureID,
-        rootIdentity: topLineage.rootIdentity,
-        visibilityEpoch: topLineage.visibilityEpoch,
-      });
     }
     const requestOwner = committedOwnerRef.current;
     const first = snapshotRef.current.rows[0];
@@ -526,78 +363,6 @@ export function useHistoryConsumer({
           channelId: channelID, epoch: active.epoch, viewKey, reason, promoted,
         });
       }
-      if (reason === 'top' && !continuation) {
-        // Do not leave a promoted runway operation as the terminal event.  A
-        // page may have advanced the raw feed without exposing any row in the
-        // active filtered Presentation; the same top intent must issue the
-        // next acquisition until Admission can stage a real prepend or EOF.
-        if (!active.topContinuationPromise) {
-          active.topContinuationPromise = active.promise.then((result) => {
-            const owner = committedOwnerRef.current;
-            if (owner?.controller !== controller
-              || owner.activationID !== controller.activationID
-              || owner.channelID !== channelID || owner.viewKey !== viewKey) {
-              return { kind: 'stale-owner', deduplicated: true };
-            }
-            // The active request was born under an older committed-owner
-            // candidate.  Its successor may be issued only when the same
-            // Reading lineage is still current.  A newer wheel, root, or
-            // visibility boundary must leave the result fail-closed for new
-            // input to reissue.
-            const currentSession = controller.getSnapshot().session;
-            const liveLineage = currentContinuationLineage(currentSession);
-            const boundary = topBoundaryRef.current;
-            const first = snapshotRef.current.rows[0];
-            const sparseProof = Boolean(firstRowAtStart?.id)
-              && String(first?.id || '') === String(firstRowAtStart.id)
-              && Number(first?.seqLow || 0) === Number(firstRowAtStart.seqLow || 0)
-              && Number(result?.firstVisibleSeq || 0) === Number(firstRowAtStart.seqLow || 0);
-            const exactLineage = Boolean(boundary)
-              && isValidContinuationLineage(boundary)
-              && isValidContinuationLineage(liveLineage)
-              && boundary.controller === controller
-              && boundary.activationID === liveLineage.activationID
-              && boundary.channelID === liveLineage.channelID
-              && boundary.viewKey === liveLineage.viewKey
-              && boundary.inputEpoch === liveLineage.inputEpoch
-              && boundary.intentRevision === liveLineage.intentRevision
-              && boundary.gestureID === liveLineage.gestureID
-              && boundary.rootIdentity === liveLineage.rootIdentity
-              && boundary.visibilityEpoch === liveLineage.visibilityEpoch;
-            if (!exactLineage) {
-              if (topBoundaryRef.current === boundary) topBoundaryRef.current = null;
-              return { kind: 'cancelled', reason: 'continuation-lineage-replaced' };
-            }
-            const stableTopContinuation = sparseProof;
-            const continuationLease = {
-              controller: boundary.controller,
-              activationID: boundary.activationID,
-              channelID: boundary.channelID,
-              viewKey: boundary.viewKey,
-              inputEpoch: boundary.inputEpoch,
-              intentRevision: boundary.intentRevision,
-              gestureID: boundary.gestureID,
-              rootIdentity: boundary.rootIdentity,
-              visibilityEpoch: boundary.visibilityEpoch,
-              stableTopContinuation,
-              continuationAnchorID: first?.id || '',
-              continuationAnchorSeq: Number(first?.seqLow || 0),
-              continuationFirstVisibleSeq: Number(result?.firstVisibleSeq || 0),
-              topBoundary: boundary,
-            };
-            return request(reason, urgency, {
-              ...options,
-              continuation: true,
-              stableTopContinuation,
-              continuationAnchorID: first?.id || '',
-              continuationAnchorSeq: Number(first?.seqLow || 0),
-              continuationFirstVisibleSeq: Number(result?.firstVisibleSeq || 0),
-              continuationLease,
-            });
-          });
-        }
-        return active.topContinuationPromise;
-      }
       return active.promise;
     }
     const admission = blockingAdmission(historyStatusRef.current, {
@@ -666,6 +431,11 @@ export function useHistoryConsumer({
       beforeSeq: Number(beforeSeq || 0) || undefined,
       requiredVisibleCoverage: requiredVisibleCoverage || undefined,
       revealRows, revealBytes, reason,
+      // A reader waiting at the physical top asks to *see* older history.
+      // The feed owner scans physical pages inside this one operation until
+      // its view exposes rows (or EOF / abort / page bound); the consumer
+      // never re-issues a top request to cross hidden pages.
+      untilRevealed: reason === 'top' || reason === 'retry',
       explicitRetry: reason === 'retry' || reason === 'retry-restore',
       viewSpec: historyViewSpec, historyRevealIntent: revealIntent,
       onOperation(next) {
@@ -705,170 +475,6 @@ export function useHistoryConsumer({
         channelId: channelID, epoch, viewKey, reason,
         anchorSeq: Number(first?.seqLow || 0), result: result?.kind || 'failed',
       });
-      // A top request is issued at the physical boundary, before the prepend
-      // can move that boundary away from scrollTop=0. The old history
-      // scheduler kept this one boundary obligation alive until the next
-      // committed page had either reached EOF or exposed fresh typed boundary
-      // evidence. The feed runtime now settles one page at a time, so retain
-      // that obligation in this owner and schedule its successor after React
-      // has published the new supply. A newer-direction intent cancels it.
-      const settledSession = current ? currentOwner.controller.getSnapshot().session : null;
-      const frontierSeq = Number(currentStatus.oldestSeq
-        || currentOwner.snapshot?.rows?.[0]?.seqLow || 0);
-      // A sparse filtered page can advance the physical frontier without
-      // changing the semantic first row.  In that case there is no prepend
-      // lease to carry.  The first-row/sequence proof below is still only a
-      // physical-page observation; the exact Reading lineage remains the
-      // authority that permits a successor request.
-      const settledLineage = settledSession
-        ? currentContinuationLineage(settledSession) : null;
-      const boundary = topBoundaryRef.current;
-      const sparseTopProof = Boolean(first?.id)
-        && String(currentOwner.snapshot?.rows?.[0]?.id || '') === String(first.id)
-        && Number(currentOwner.snapshot?.rows?.[0]?.seqLow || 0) === Number(first.seqLow || 0)
-        && Number(result?.firstVisibleSeq || 0) === Number(first.seqLow || 0);
-      const stableTopContinuation = sparseTopProof;
-      const sameExactLineage = Boolean(boundary && settledSession && settledLineage)
-        && isValidContinuationLineage(boundary)
-        && isValidContinuationLineage(settledLineage)
-        && boundary.controller === controller
-        && boundary.activationID === settledLineage.activationID
-        && boundary.channelID === settledLineage.channelID
-        && boundary.viewKey === settledLineage.viewKey
-        && boundary.inputEpoch === settledLineage.inputEpoch
-        && boundary.intentRevision === settledLineage.intentRevision
-        && boundary.gestureID === settledLineage.gestureID
-        && boundary.rootIdentity === settledLineage.rootIdentity
-        && boundary.visibilityEpoch === settledLineage.visibilityEpoch
-        && boundary.inputEpoch === Number(settledSession.inputEpoch)
-        && boundary.intentRevision === Number(settledSession.intentRevision)
-        && settledSession.mode === READING_MODE.browsing
-        && settledSession.tailEvidence?.direction !== 'newer';
-      const continueTop = current && reason === 'top' && result?.kind === 'satisfied'
-        && currentStatus.hasOlder === true && frontierSeq > 1
-        && Number(settledSession?.inputEpoch || 0) > 0
-        && sameExactLineage;
-      const continuationAnchorReady = positionLeaseHandoffReady(settledSession)
-          || (settledSession?.historyAnchor?.messageID
-          && String(settledSession.historyAnchor.messageID)
-            === String(currentOwner.snapshot?.rows?.[0]?.id || '')
-            && Number.isFinite(Number(settledSession.historyAnchor.viewportOffset)))
-          || stableTopContinuation;
-      if (current && reason === 'top' && !sameExactLineage) {
-        if (positionLeaseWaitRef.current?.controller === controller) {
-          cancelPositionLeaseWait(positionLeaseWaitRef, 'position-lease-lineage-replaced', true);
-        }
-        if (topContinuationRef.current?.controller === controller) {
-          clearTopContinuation(topContinuationRef);
-        }
-        if (topBoundaryRef.current === boundary) topBoundaryRef.current = null;
-      }
-      if (continueTop && continuationAnchorReady) {
-        const continuation = {
-          controller: boundary.controller,
-          activationID: boundary.activationID,
-          channelID: boundary.channelID,
-          viewKey: boundary.viewKey,
-          inputEpoch: boundary.inputEpoch,
-          intentRevision: boundary.intentRevision,
-          gestureID: boundary.gestureID,
-          rootIdentity: boundary.rootIdentity,
-          visibilityEpoch: boundary.visibilityEpoch,
-          reason,
-          urgency,
-          options,
-          stableTopContinuation,
-          continuationAnchorID: first?.id || '',
-          continuationAnchorSeq: Number(first?.seqLow || 0),
-          continuationFirstVisibleSeq: Number(result?.firstVisibleSeq || 0),
-          topBoundary: boundary,
-          timer: null,
-        };
-        topContinuationRef.current?.timer
-          && globalThis.clearTimeout?.(topContinuationRef.current.timer);
-        topContinuationRef.current = continuation;
-        continuation.timer = globalThis.setTimeout?.(() => {
-          if (topContinuationRef.current !== continuation) return;
-          topContinuationRef.current = null;
-          const owner = committedOwnerRef.current;
-          const ownerSession = owner?.controller?.getSnapshot?.().session;
-          const ownerStatus = owner?.historyStatus || {};
-          const ownerFrontier = Number(ownerStatus.oldestSeq || owner?.snapshot?.rows?.[0]?.seqLow || 0);
-          const ownerDirection = ownerSession?.tailEvidence?.direction
-            || (ownerSession?.mode === 'browsing' && Number(ownerSession?.inputEpoch || 0) > 0
-              ? 'older' : '');
-          const ownerInputEpoch = Number(ownerSession?.inputEpoch || 0);
-          const ownerLineage = ownerSession
-            ? currentContinuationLineage(ownerSession) : null;
-          const sparseProof = continuation.stableTopContinuation === true
-            && String(owner?.snapshot?.rows?.[0]?.id || '')
-              === String(continuation.continuationAnchorID || '')
-            && Number(owner?.snapshot?.rows?.[0]?.seqLow || 0)
-              === Number(continuation.continuationAnchorSeq || 0)
-            && Number(continuation.continuationFirstVisibleSeq || 0)
-              === Number(continuation.continuationAnchorSeq || 0);
-          const sameOlderIntent = ownerSession?.mode === READING_MODE.browsing
-            && ownerDirection === 'older'
-            && isValidContinuationLineage(continuation)
-            && isValidContinuationLineage(ownerLineage)
-            && continuation.controller === ownerLineage?.controller
-            && continuation.activationID === ownerLineage?.activationID
-            && continuation.channelID === ownerLineage?.channelID
-            && continuation.viewKey === ownerLineage?.viewKey
-            && continuation.inputEpoch === ownerLineage?.inputEpoch
-            && continuation.intentRevision === ownerLineage?.intentRevision
-            && continuation.gestureID === ownerLineage?.gestureID
-            && continuation.rootIdentity === ownerLineage?.rootIdentity
-            && continuation.visibilityEpoch === ownerLineage?.visibilityEpoch
-            && continuation.inputEpoch === ownerInputEpoch
-            && continuation.intentRevision === Number(ownerSession?.intentRevision || 0)
-            && continuation.topBoundary?.controller === controller
-            && continuation.topBoundary.activationID === continuation.activationID
-            && continuation.topBoundary.channelID === continuation.channelID
-            && continuation.topBoundary.viewKey === continuation.viewKey
-            && continuation.topBoundary.inputEpoch === continuation.inputEpoch
-            && continuation.topBoundary.intentRevision === continuation.intentRevision
-            && continuation.topBoundary.gestureID === continuation.gestureID
-            && continuation.topBoundary.rootIdentity === continuation.rootIdentity
-            && continuation.topBoundary.visibilityEpoch === continuation.visibilityEpoch
-            && (continuation.stableTopContinuation !== true || sparseProof);
-          const ownerAnchorReady = positionLeaseHandoffReady(ownerSession)
-            || (ownerSession?.historyAnchor?.messageID
-            && String(ownerSession.historyAnchor.messageID)
-            === String(owner?.snapshot?.rows?.[0]?.id || '')
-            && Number.isFinite(Number(ownerSession.historyAnchor.viewportOffset)))
-            || sparseProof;
-          if (owner?.controller !== controller || owner.channelID !== channelID
-            || owner.viewKey !== viewKey || !sameOlderIntent
-            || !ownerAnchorReady
-            || ownerStatus.hasOlder !== true || ownerFrontier <= 1) {
-            if (topBoundaryRef.current === continuation.topBoundary) topBoundaryRef.current = null;
-            return;
-          }
-          const admission = ownerStatus.presentationAdmission;
-          const admissionState = admission?.snapshot?.(channelID);
-          const admissionToken = admissionState?.token || admissionState?.committed;
-          if (admissionToken && ownerInputEpoch > Number(admissionToken.inputEpoch || 0)) {
-            admission?.advanceInputEpoch?.(channelID, {
-              operationID: admissionToken.operationID,
-              activationID: controller.activationID,
-              direction: 'older',
-              inputEpoch: ownerInputEpoch,
-              currentInputEpoch: ownerInputEpoch,
-              intentRevision: Number(ownerSession?.intentRevision || 0),
-            });
-          }
-          void request(continuation.reason, continuation.urgency, {
-            ...continuation.options,
-            continuation: true,
-            stableTopContinuation: continuation.stableTopContinuation,
-            continuationAnchorID: continuation.continuationAnchorID,
-            continuationAnchorSeq: continuation.continuationAnchorSeq,
-            continuationFirstVisibleSeq: continuation.continuationFirstVisibleSeq,
-            continuationLease: continuation,
-          });
-        }, 100);
-      }
       return current && consumer === HISTORY_CONSUMER.viewportUnderfill && result?.kind === 'satisfied'
         ? { kind: 'consumer-recheck', reason: 'acquisition-satisfied' } : result;
     }, (error) => {
@@ -902,10 +508,8 @@ export function useHistoryConsumer({
       historyStartIntent,
     };
     return promise;
-  }, [channelID, commitOwnerCandidate, committedOwnerRef, controller, getContinuationLineage,
-    historyStatusRef, historyViewSpec, requestPort, snapshotRef,
-    continuationLineage?.gestureID, continuationLineage?.rootIdentity,
-    continuationLineage?.visibilityEpoch, viewKey]);
+  }, [channelID, commitOwnerCandidate, committedOwnerRef, controller,
+    historyStatusRef, historyViewSpec, requestPort, snapshotRef, viewKey]);
 
   // A membership regrant may hydrate a stale durable window before the new
   // surface paint. That window is readable, but it is not the current tail;
@@ -1193,8 +797,6 @@ export function useHistoryConsumer({
     cancel(reason) {
       activeRef.current?.abortController?.abort(reason);
       activeRef.current = null;
-      clearTopContinuation(topContinuationRef);
-      if (topBoundaryRef.current?.controller === controller) topBoundaryRef.current = null;
       clearHistoryStart(historyStartRef, reason || 'history-cancelled');
     },
   });

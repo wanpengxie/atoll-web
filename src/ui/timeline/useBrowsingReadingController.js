@@ -1,7 +1,15 @@
 import { useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 import { diagnostic } from '../../model/diagnostics.js';
+import { READING_MODE } from '../../model/reading-session.js';
+import { historySupplyKey } from './history-consumer-obligation.js';
 
 const RUNWAY_MINIMUM_PX = 800;
+// A top demand that settled without a terminal (admission pending, owner
+// replaced, deduplicated) is re-issued by the next level evaluation, never
+// tighter than this.  Terminal results re-arm through the supply key instead.
+const TOP_RETRY_MIN_MS = 120;
+const TOP_RETRY_MAX_MS = 2000;
+const TOP_TERMINAL_KINDS = new Set(['satisfied', 'exhausted', 'failed', 'segment']);
 
 const sameInput = (input, owner) => Boolean(input.active
   && input.activationID === owner.activationID && input.inputEpoch === owner.inputEpoch);
@@ -12,6 +20,24 @@ const idleInput = (reading) => ({
   direction: '',
   canRequestHistory: false,
   active: false,
+});
+
+// "The reader is at the oldest loaded row and wants older history" is a
+// level, not an event.  It is held here, outside any effect cleanup, for one
+// activation; it is set by every physical top signal (native scroll, a wheel
+// at the clamped top, the list's own startReached / atTopStateChange) and
+// cleared only when the reader physically leaves the top.  While the level is
+// up and supply can still grow, exactly one top operation is outstanding at a
+// time; a settled operation is consumed for the supply it was issued against
+// and re-arms as soon as the supply changes or the reader leaves and returns.
+const idleTopLevel = (activationID = '') => ({
+  activationID,
+  atTop: false,
+  demandUnits: 1,
+  active: null,
+  consumedSupplyKey: '',
+  retryAt: 0,
+  retries: 0,
 });
 
 function consumeHistoryConsumerResult(pending, recheck) {
@@ -34,59 +60,164 @@ export function useBrowsingReadingController({
   const readingRef = useRef(reading);
   const snapshotRef = useRef(snapshot);
   const handoffPendingRef = useRef(handoffPending === true);
+  const rootNodeRef = useRef(rootNode);
   const inputRef = useRef(idleInput(reading));
-  const frontierDemandKeyRef = useRef('');
+  const runwayDemandKeyRef = useRef('');
   const coverageDemandKeyRef = useRef('');
+  const topLevelRef = useRef(idleTopLevel(reading.activationID));
+  // Readiness for top demands is the list's own settled paint receipt: the
+  // browsing list mounts at the scroll origin and only later paints the saved
+  // reading position, so its at-top signal before that receipt is not the
+  // reader waiting at the oldest row.  One accepted settled observation per
+  // activation is the fence; every later top signal in that activation counts.
+  const settledOnceRef = useRef({ activationID: '', ready: false });
+  const onTopDemandSettledRef = useRef(onTopDemandSettled);
+  onTopDemandSettledRef.current = onTopDemandSettled;
+
+  const leaveTop = useCallback((source = 'scroll') => {
+    const level = topLevelRef.current;
+    if (!level.atTop) return;
+    level.atTop = false;
+    level.consumedSupplyKey = '';
+    level.retryAt = 0;
+    level.retries = 0;
+    const status = readingRef.current.status || {};
+    diagnostic('debug', 'history.top_left', { channelId: status.channelId || '', source });
+  }, []);
+
+  // Evaluate the level against the current owner facts.  Readiness is a gate
+  // on *whether* to ask; the feed operation decides *how much* to fetch.
+  const pumpTop = useCallback((source = 'publish') => {
+    const level = topLevelRef.current;
+    const owner = readingRef.current;
+    const data = snapshotRef.current;
+    const current = owner.getSession();
+    const status = owner.status || {};
+    if (!level.atTop || level.active || handoffPendingRef.current) return false;
+    if (level.activationID !== current.activationID) return false;
+    if (current.mode !== READING_MODE.browsing) return false;
+    const ready = settledOnceRef.current;
+    if (ready.activationID !== current.activationID || ready.ready !== true) return false;
+    if (owner.initializing === true || owner.restorePending === true) return false;
+    const root = rootNodeRef.current;
+    if (root && Number(root.scrollTop || 0) > 1) {
+      leaveTop('physical');
+      return false;
+    }
+    if (!data.rows.length || status.attached !== true || status.messageCurrent !== true) return false;
+    if (status.hasOlder !== true && Number(status.buffered || 0) <= 0) return false;
+    if (status.historyDemand?.phase === 'error') return false;
+    const supplyKey = historySupplyKey(status);
+    if (level.consumedSupplyKey === supplyKey) return false;
+    const now = Date.now();
+    if (now < level.retryAt) return false;
+    const input = inputRef.current;
+    const detail = Object.freeze({
+      demandUnits: Math.max(1, Number(level.demandUnits) || 1),
+      activationID: current.activationID,
+      inputEpoch: Number(current.inputEpoch),
+      gestureID: input.active ? String(input.gestureID || '') : '',
+      hostRole: input.hostRole,
+      hostToken: input.hostToken,
+      source,
+    });
+    diagnostic('debug', 'history.top_level_demand', {
+      channelId: status.channelId || '', source, inputEpoch: detail.inputEpoch,
+      demandUnits: detail.demandUnits, oldestSeq: Number(status.oldestSeq || 0),
+      rowCount: data.rows.length,
+    });
+    const pending = owner.onAtTop(detail);
+    level.active = { pending, supplyKey };
+    void Promise.resolve(pending).then((result) => {
+      const live = topLevelRef.current;
+      if (live.active?.pending !== pending) return;
+      live.active = null;
+      const kind = result?.kind || 'failed';
+      if (TOP_TERMINAL_KINDS.has(kind)) {
+        live.consumedSupplyKey = supplyKey;
+        live.retries = 0;
+        // A segment advanced the raw frontier without exposing rows for this
+        // view; the level stays up and the changed supply re-arms it, paced
+        // so a long hidden stretch is scanned in visible steps.
+        live.retryAt = kind === 'segment' ? Date.now() + TOP_RETRY_MIN_MS : 0;
+        onTopDemandSettledRef.current?.(Object.freeze({ ...detail, result: kind }));
+      } else {
+        live.retries += 1;
+        live.retryAt = Date.now() + Math.min(TOP_RETRY_MAX_MS, TOP_RETRY_MIN_MS * (2 ** (live.retries - 1)));
+      }
+      diagnostic('debug', 'history.top_level_settled', {
+        channelId: status.channelId || '', source, result: kind,
+        terminal: TOP_TERMINAL_KINDS.has(kind), retries: live.retries,
+      });
+      // The reader may still be at the top (short list, hidden stretch, or a
+      // prepend that kept scrollTop at 0).  Re-evaluate once the owner has
+      // published the settled supply; a consumed supply key makes this inert.
+      globalThis.setTimeout?.(() => { pumpTop('settled'); }, live.retryAt ? Math.max(0, live.retryAt - Date.now()) : 0);
+    });
+    return true;
+  }, [leaveTop]);
+
+  const enterTop = useCallback((evidence, source = 'evidence') => {
+    const level = topLevelRef.current;
+    const current = readingRef.current.getSession();
+    if (evidence.activationID !== current.activationID) return false;
+    level.activationID = current.activationID;
+    level.demandUnits = Math.max(1, Number(evidence.demandUnits) || 1);
+    if (!level.atTop) {
+      level.atTop = true;
+      level.consumedSupplyKey = '';
+      level.retryAt = 0;
+      level.retries = 0;
+      const status = readingRef.current.status || {};
+      diagnostic('debug', 'history.top_entered', {
+        channelId: status.channelId || '', source, inputEpoch: Number(current.inputEpoch),
+      });
+    }
+    return pumpTop(source);
+  }, [pumpTop]);
 
   useLayoutEffect(() => {
     readingRef.current = reading;
     snapshotRef.current = snapshot;
+    rootNodeRef.current = rootNode;
     handoffPendingRef.current = handoffPending === true;
     if (inputRef.current.activationID !== reading.activationID) {
       inputRef.current = idleInput(reading);
-      frontierDemandKeyRef.current = '';
+      runwayDemandKeyRef.current = '';
       coverageDemandKeyRef.current = '';
     }
-  }, [handoffPending, reading, reading.activationID, reading.session.inputEpoch, rootIdentity, rootMountedRef, rootNode, snapshot]);
+    if (topLevelRef.current.activationID !== reading.activationID) {
+      topLevelRef.current = idleTopLevel(reading.activationID);
+    }
+    if (settledOnceRef.current.activationID !== reading.activationID) {
+      settledOnceRef.current = { activationID: reading.activationID, ready: false };
+    }
+    // Every owner publication re-evaluates the level: attach, supply growth,
+    // admission settle, and mode changes all arrive here without any DOM edge.
+    pumpTop('publish');
+  }, [handoffPending, pumpTop, reading, reading.activationID, reading.session.inputEpoch, rootIdentity, rootMountedRef, rootNode, snapshot]);
 
-  const requestHistory = useCallback((evidence, reason) => {
+  const requestRunway = useCallback((evidence) => {
     const owner = readingRef.current;
     const current = owner.getSession();
     if (handoffPendingRef.current || evidence.activationID !== current.activationID) return;
-    // Runway is an anticipatory obligation; once the same physical wheel
-    // burst reaches scrollTop=0 it must be promoted to the interactive top
-    // obligation even though the coordinator intentionally keeps one input
-    // epoch across Chromium's per-tick `scrollend` events. Keep each reason
-    // independently deduped, but do not include the visible frontier: a
+    // Runway is an anticipatory obligation scoped to one physical gesture.
+    // Keep it deduped per input epoch; do not include the visible frontier: a
     // prepend can change the first row while the same native gesture is still
     // live, and that must not reopen the bounded demand.
-    const key = `${current.activationID}:${current.inputEpoch}:${reason}`;
-    if (frontierDemandKeyRef.current === key) return;
-    frontierDemandKeyRef.current = key;
+    const key = `${current.activationID}:${current.inputEpoch}:runway`;
+    if (runwayDemandKeyRef.current === key) return;
+    runwayDemandKeyRef.current = key;
     const input = inputRef.current;
-    const detail = Object.freeze({
+    return owner.onNearTop(Object.freeze({
       demandUnits: evidence.demandUnits,
       activationID: current.activationID,
       inputEpoch: Number(current.inputEpoch),
       gestureID: String(input.gestureID || ''),
       hostRole: input.hostRole,
       hostToken: input.hostToken,
-    });
-    const pending = reason === 'runway' ? owner.onNearTop(detail) : owner.onAtTop(detail);
-    // A top demand is the semantic owner of the wheel lease. Release only
-    // after the owner reports a terminal result; admission-pending and stale
-    // deduplication are not settlements and must not mint a new gesture.
-    if (reason === 'top' && pending && typeof pending.then === 'function') {
-      void Promise.resolve(pending).then((result) => {
-        if (!['satisfied', 'exhausted', 'failed'].includes(result?.kind)) return;
-        onTopDemandSettled?.(Object.freeze({
-          ...detail,
-          result: result.kind,
-        }));
-      });
-    }
-    return pending;
-  }, [onTopDemandSettled]);
+    }));
+  }, []);
 
   const reportDomEvidence = useCallback((evidence) => {
     const owner = readingRef.current;
@@ -185,6 +316,13 @@ export function useBrowsingReadingController({
         geometryRevision: evidence.geometryRevision,
         activationID: evidence.activationID,
       });
+      if (accepted !== false && settled) {
+        const ready = settledOnceRef.current;
+        if (ready.activationID !== current.activationID || !ready.ready) {
+          settledOnceRef.current = { activationID: current.activationID, ready: true };
+          pumpTop('settled-observation');
+        }
+      }
       // Reading is the semantic owner of the observation lease. A controller
       // rejection (including a same-stack epoch/root replacement) must be
       // visible to the Vendor so its pending paint request is retried or
@@ -289,15 +427,20 @@ export function useBrowsingReadingController({
     }
 
     if (evidence.type === 'scroll-position') {
+      // The physical top is a level owned above input attribution: any way of
+      // arriving there (native scroll, a wheel at the clamp, the list's own
+      // start/at-top signals, a restored position, a layout that keeps the
+      // reader at 0) raises it, and only physically leaving lowers it.
+      if (evidence.atTop === true) enterTop(evidence, evidence.direction ? 'input' : 'list');
+      else if (Number(evidence.scrollTop) > 1) leaveTop('scroll');
+      // Runway stays an anticipatory, gesture-scoped obligation.
       const input = inputRef.current;
       if (!sameInput(input, current) || evidence.inputEpoch !== current.inputEpoch) return;
       const direction = input.direction === 'browse' ? evidence.direction : input.direction;
       if (evidence.direction && direction === evidence.direction
-        && input.canRequestHistory && direction === 'older') {
-        if (evidence.atTop) requestHistory(evidence, 'top');
-        else if (evidence.scrollTop <= Math.max(RUNWAY_MINIMUM_PX, evidence.clientHeight)) {
-          requestHistory(evidence, 'runway');
-        }
+        && input.canRequestHistory && direction === 'older' && evidence.atTop !== true
+        && evidence.scrollTop <= Math.max(RUNWAY_MINIMUM_PX, evidence.clientHeight)) {
+        requestRunway(evidence);
       }
       return;
     }
@@ -330,7 +473,7 @@ export function useBrowsingReadingController({
       evidence.onWake?.();
     });
     return true;
-  }, [requestHistory, rootIdentity, rootMountedRef, rootNode]);
+  }, [enterTop, leaveTop, pumpTop, requestRunway, rootIdentity, rootMountedRef, rootNode]);
 
   const navigationPolicy = useMemo(() => Object.freeze({
     onNavigationUpdate(transaction) {
