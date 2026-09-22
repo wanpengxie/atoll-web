@@ -223,6 +223,7 @@ export const Composer = memo(function Composer({ model, commands, className = ''
   // Switching channels restores from here; a reload deliberately does not,
   // because a reload is exactly when we stop knowing whether it still applies.
   const bodiesRef = useRef(new Map());
+  const presentationKey = `${model.channelId}\u0000${model.editSession?.targetId || ''}`;
 
   const [fileDragActive, setFileDragActive] = useState(false);
   const [uploadBusy, setUploadBusy] = useState(false);
@@ -262,7 +263,7 @@ export const Composer = memo(function Composer({ model, commands, className = ''
     if (!current || current !== editorRef.current || current.isDestroyed) return;
     const value = editorText(current);
     pendingTextRef.current = value;
-    bodiesRef.current.set(latestRef.current.model.channelId, value);
+    bodiesRef.current.set(latestRef.current.presentationKey, value);
   }, []);
 
   const syncAfterComposition = useCallback((current) => {
@@ -293,8 +294,8 @@ export const Composer = memo(function Composer({ model, commands, className = ''
       createSuggestionExtension({ name: MENTION_MODE, char: '@', port: suggestionPortRef }),
       createSuggestionExtension({ name: COMMAND_MODE, char: '/', startOfLine: true, port: suggestionPortRef }),
     ],
-    content: bodiesRef.current.has(model.channelId)
-      ? editorDocument(bodiesRef.current.get(model.channelId))
+    content: bodiesRef.current.has(presentationKey)
+      ? editorDocument(bodiesRef.current.get(presentationKey))
       : (model.draft.doc?.type === 'doc' ? model.draft.doc : editorDocument(model.draft.text)),
     editable: !disabled,
     immediatelyRender: false,
@@ -337,7 +338,7 @@ export const Composer = memo(function Composer({ model, commands, className = ''
           if (!result) return;
           applyingRef.current = true; editorRef.current?.commands.clearContent(false); applyingRef.current = false;
           pendingTextRef.current = null;
-          bodiesRef.current.delete(current.channelId);
+          bodiesRef.current.delete(latestRef.current.presentationKey);
         });
         return true;
       },
@@ -346,11 +347,11 @@ export const Composer = memo(function Composer({ model, commands, className = ''
       if (applyingRef.current || composingRef.current || current.isDestroyed || current.view.composing) return;
       const value = editorText(current);
       pendingTextRef.current = value;
-      bodiesRef.current.set(latestRef.current.model.channelId, value);
+      bodiesRef.current.set(latestRef.current.presentationKey, value);
     },
   }, [model.channelId]);
   editorRef.current = editor;
-  latestRef.current = { model, commands, readingIntent, openMode };
+  latestRef.current = { model, commands, readingIntent, openMode, presentationKey };
   activeIndexRef.current = activeIndex;
   // Everything the plugin needs that changes between renders. The plugin is
   // built once per editor and reads through this, so a mode never depends on
@@ -405,19 +406,18 @@ export const Composer = memo(function Composer({ model, commands, className = ''
         }
         editor.chain().focus().deleteRange({ from, to: range.to }).run();
         pendingTextRef.current = editorText(editor);
-        bodiesRef.current.set(latestRef.current.model.channelId, pendingTextRef.current);
+        bodiesRef.current.set(latestRef.current.presentationKey, pendingTextRef.current);
         invoke(latestRef.current.commands.pickMention, item);
         dismissedRef.current = {};
         return;
       }
       editor.chain().focus().insertContentAt(range, `/${item.command} `).run();
       pendingTextRef.current = editorText(editor);
-      bodiesRef.current.set(latestRef.current.model.channelId, pendingTextRef.current);
+      bodiesRef.current.set(latestRef.current.presentationKey, pendingTextRef.current);
       dismissedRef.current = {};
     },
   };
 
-  const presentationKey = `${model.channelId}\u0000${model.editSession?.targetId || ''}`;
   const compositionOwnerRef = useRef({ editor, presentationKey });
   useLayoutEffect(() => {
     const previous = compositionOwnerRef.current;
@@ -456,8 +456,8 @@ export const Composer = memo(function Composer({ model, commands, className = ''
     const ownerChanged = lastPresentationKeyRef.current !== presentationKey;
     if (!ownerChanged) return;
     lastPresentationKeyRef.current = presentationKey;
-    const restored = bodiesRef.current.has(model.channelId)
-      ? bodiesRef.current.get(model.channelId)
+    const restored = bodiesRef.current.has(presentationKey)
+      ? bodiesRef.current.get(presentationKey)
       : model.draft.text;
     if (editorText(editor) === restored) return;
     applyingRef.current = true;
@@ -530,7 +530,7 @@ export const Composer = memo(function Composer({ model, commands, className = ''
     if (!result || !editor || editor.isDestroyed) return;
     applyingRef.current = true; editor.commands.clearContent(false); applyingRef.current = false;
     pendingTextRef.current = null;
-    bodiesRef.current.delete(model.channelId);
+    bodiesRef.current.delete(presentationKey);
   };
   const submit = (event) => {
     event?.preventDefault?.();
