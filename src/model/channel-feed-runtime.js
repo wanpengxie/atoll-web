@@ -1162,6 +1162,9 @@ export function createChannelFeedRuntime(options = {}) {
       if (accessChanged) callback('onAccessChanged');
       if (directoryInvalidatedEnvelope) callback('onDirectoryInvalidated', directoryInvalidatedEnvelope);
       if (publishChange) publish({ index: true });
+      if (source === 'live') {
+        for (const row of accepted) diagnostic('debug', 'feed.live_applied', { channelId: row.channel_id, seq: historyNumeric(row.seq), msgType: String(row.envelope?.msg_type || row.envelope?.type || ''), sender: String(row.envelope?.sender?.id || '') });
+      }
       if (persist) void cache.saveRows(accepted).catch(cacheError);
     }
     return accepted;
@@ -2590,21 +2593,24 @@ export function createChannelFeedRuntime(options = {}) {
     const nextChannelIDs = new Set(entries.map((entry) => String(entry?.channel_id || '')).filter(Boolean));
     for (const [channelId, status] of histories) {
       if (nextChannelIDs.has(channelId)) {
-        // A grant is a new control-context admission even when the wire
-        // generation number is reused. Do not let the old tail claim survive
-        // while cache selection or the new tail proof is pending.
+        // A re-grant is a new control-context admission even when the wire
+        // generation number is reused: the old tail *claim* does not survive
+        // until the new tail proof lands. The coverage ranges themselves are
+        // a fact about rows this client already holds, so they are kept and
+        // corrected by what the grant and the next pages deliver; the claim
+        // is recomputed from them, never from a cleared slate.
         status.controlCurrent = false;
-        status.controlCoverage = [];
         status.controlTailCoverage = false;
         status.controlParentClosure = false;
+        if (detail?.forceReset === true) status.controlCoverage = [];
         continue;
       }
       status.attached = false;
       status.messageCurrent = false;
       status.controlCurrent = false;
-      status.controlCoverage = [];
       status.controlTailCoverage = false;
       status.controlParentClosure = false;
+      if (detail?.forceReset === true) status.controlCoverage = [];
       status.notificationAuthorityRevision = ++notificationAuthorityRevision;
     }
     let selectedMeta = cache.metaSnapshot();
@@ -2849,7 +2855,9 @@ export function createChannelFeedRuntime(options = {}) {
       status.attached = false;
       status.messageCurrent = false;
       status.controlCurrent = false;
-      status.controlCoverage = [];
+      // Rows and their coverage survive a disconnect; the reconnect grant
+      // merges the new head and the missing stretch shows as a gap until the
+      // tail is refilled. Only the claim is withdrawn here.
       status.controlTailCoverage = false;
       status.controlParentClosure = false;
       status.loading = false;

@@ -217,13 +217,14 @@ function baseWaitProps(overrides = {}) {
 }
 
 describe('等待区准入/分组显示（WaitingLayer，与 tests/agent-control.test.jsx 同一 owner）', () => {
-  it('[AD-022] does not resurrect cached queued controls before the backend tail is current', () => {
+  it('[AD-022] keeps a queued fact visible while the backend tail is not current', () => {
     const cachedQueued = turn({ requestId: 'cached-queued', actorId: 'agent', type: 'agent.ask', requestSeq: 1, provisional: [queuedFrame('cached-queued')] });
     const state = stateOf([cachedQueued]);
-    // 用户能力：控制尾部未 current 时不能看到缓存 queued 的取消/编辑入口。
-    // authority 恢复后再由同一公开 WaitingLayer owner 呈现事实和控制。
+    // 不变量：一条回合不在消息区就在等待区。控制尾部是否 current 是传输层的
+    // 瞬时事实，只能影响按钮，不能让整块等待区消失；否则消息区已经把这条
+    // 回合交给等待区，等待区又不画，用户刚发的消息就哪儿都不在。
     const view = render(<WaitingLayer {...baseWaitProps({ turns: [cachedQueued], state, targetAuthority: { current: false, actorIDs: new Set(['agent']) } })} />);
-    expect(document.querySelector('.agent-wait-layer')).toBeNull();
+    expect(document.querySelector('.agent-wait-layer')).toBeTruthy();
     view.rerender(<WaitingLayer {...baseWaitProps({ turns: [cachedQueued], state, targetAuthority: { current: true, actorIDs: new Set(['agent']) } })} />);
     expect(document.querySelector('.agent-wait-layer')).toBeTruthy();
   });

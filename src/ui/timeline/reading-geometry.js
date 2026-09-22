@@ -72,6 +72,14 @@ export function visibleRowEvidence(root, rows) {
     const messageID = String(node.dataset.presentationRowId || '');
     if (!messageID) continue;
     const row = rowByID.get(messageID);
+    // Geometry first: rows outside the readable viewport are the majority of
+    // what Virtuoso keeps mounted, and they need no style or hit-test work.
+    const rect = node.getBoundingClientRect();
+    const left = Math.max(rootRect.left, rect.left);
+    const right = Math.min(rootRect.right, rect.right);
+    const top = Math.max(rootRect.top, rect.top);
+    const bottom = Math.min(readableBottom, rect.bottom);
+    if (right - left <= 1 || bottom - top <= 1) continue;
     // The DOM is the committed paint boundary. A live presentation row can
     // land one frame after the snapshot ref used by the scheduled observer;
     // keep its exact ID in the evidence instead of dropping it as "unknown".
@@ -87,12 +95,6 @@ export function visibleRowEvidence(root, rows) {
         checkVisibilityCSS: true,
       }));
     if (!painted) continue;
-    const rect = node.getBoundingClientRect();
-    const left = Math.max(rootRect.left, rect.left);
-    const right = Math.min(rootRect.right, rect.right);
-    const top = Math.max(rootRect.top, rect.top);
-    const bottom = Math.min(readableBottom, rect.bottom);
-    if (right - left <= 1 || bottom - top <= 1) continue;
     // The waiting dock is outside the reading root but paints above its lower
     // rows. A row with any actually hit-tested dock coverage is not yet a
     // readable arrival; keep its obligation until a later paint exposes it.
@@ -131,9 +133,15 @@ export function topVisibleBookmark(root, rows) {
   if (!root || !rows?.length) return null;
   const rootRect = root.getBoundingClientRect?.();
   if (!rootRect) return null;
+  const rects = new Map();
+  const rectOf = (node) => {
+    let rect = rects.get(node);
+    if (!rect) { rect = node.getBoundingClientRect(); rects.set(node, rect); }
+    return rect;
+  };
   const rowNode = [...root.querySelectorAll('[data-presentation-row-id]')]
     .filter((node) => {
-      const rect = node.getBoundingClientRect();
+      const rect = rectOf(node);
       const left = Math.max(rootRect.left, rect.left);
       const right = Math.min(rootRect.right, rect.right);
       const top = Math.max(rootRect.top, rect.top);
@@ -149,7 +157,7 @@ export function topVisibleBookmark(root, rows) {
         return Boolean(hit && (hit === node || node.contains(hit)));
       });
     })
-    .sort((left, right) => left.getBoundingClientRect().top - right.getBoundingClientRect().top)[0] || null;
+    .sort((left, right) => rectOf(left).top - rectOf(right).top)[0] || null;
   if (!rowNode) return null;
   const messageID = String(rowNode.dataset.presentationRowId || '');
   const index = rows.findIndex((row) => row.id === messageID);

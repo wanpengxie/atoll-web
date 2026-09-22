@@ -633,11 +633,12 @@ export function WaitingLayer({
     setCollapsed(false);
   }, [state.channelId]);
   if (!turns.length && !handoffs.length) return null;
-  // A false control-tail authority means these queued rows are cache-only.
-  // Do not resurrect their actions or waiting chrome until the committed tail
-  // is current again; null/unknown authority still renders its safe read-only
-  // verification state below.
-  if (targetAuthority?.current === false) return null;
+  // Visibility is the timeline's invariant, not the roster's: a queued turn
+  // the message area hands to this dock is shown here no matter what the
+  // roster or control-tail currency says at this instant. Currency only
+  // governs the controls, through targetCurrentness below; it used to hide
+  // the whole dock, which left a just-sent message in neither area whenever
+  // one physical seq was missing from the coverage ranges.
   const presented = [
     ...turns.map((turn, order) => ({ turn, order, exiting: false })),
     ...handoffs.map((entry) => ({ turn: entry.turn, order: entry.order, exiting: true })),

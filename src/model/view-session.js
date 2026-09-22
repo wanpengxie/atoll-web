@@ -141,18 +141,27 @@ function parseStored(storage, principalID) {
   }
 }
 
+function readRaw(storage, principalID) {
+  const key = storageKey(principalID);
+  if (!key || !storage?.getItem) return null;
+  try { return storage.getItem(key); } catch { return null; }
+}
+
 function writeStored(storage, principalID, preferences, readings) {
   const key = storageKey(principalID);
-  if (!key || !storage?.setItem) return;
+  if (!key || !storage?.setItem) return null;
+  const text = JSON.stringify({
+    schema: VIEW_SESSION_SCHEMA,
+    preferences: Object.fromEntries([...preferences].map(([channelID, item]) => [channelID, copyPreferences(item)])),
+    readings: Object.fromEntries([...readings].map(([keyID, item]) => [keyID, copyPersistedReading(item)])),
+  });
   try {
-    storage.setItem(key, JSON.stringify({
-      schema: VIEW_SESSION_SCHEMA,
-      preferences: Object.fromEntries([...preferences].map(([channelID, item]) => [channelID, copyPreferences(item)])),
-      readings: Object.fromEntries([...readings].map(([keyID, item]) => [keyID, copyPersistedReading(item)])),
-    }));
+    storage.setItem(key, text);
+    return text;
   } catch {
     // Persistence is an accelerator. A disabled/full convenience store must
     // not break the active reading session.
+    return null;
   }
 }
 
@@ -181,6 +190,7 @@ export function createViewSessionStore({ principalID = '', storage = globalThis.
   }
 
   function refresh(key = '') {
+    if (!storedChangedElsewhere()) return;
     const latest = parseStored(storage, principalID);
     if (!key) {
       for (const [channelID, item] of latest.preferences) preferences.set(channelID, item);
@@ -191,12 +201,20 @@ export function createViewSessionStore({ principalID = '', storage = globalThis.
     if (item) mergeStoredReading(key, item);
   }
 
+  // Storage is a durable copy; the in-memory maps are the authority. Every
+  // save used to re-parse the whole stored document before writing it back,
+  // on every reading revision. Remember the document this store last wrote:
+  // when storage still holds exactly that text, nobody else has written and
+  // there is nothing to merge, so the parse is skipped and only the write
+  // remains.
+  let lastWritten = readRaw(storage, principalID);
+  const storedChangedElsewhere = () => readRaw(storage, principalID) !== lastWritten;
   const persist = ({ preserveLatestPreferences = false } = {}) => {
-    if (preserveLatestPreferences) {
+    if (preserveLatestPreferences && storedChangedElsewhere()) {
       const latest = parseStored(storage, principalID);
       for (const [channelID, item] of latest.preferences) preferences.set(channelID, item);
     }
-    writeStored(storage, principalID, preferences, readings);
+    lastWritten = writeStored(storage, principalID, preferences, readings);
   };
 
   const store = Object.freeze({

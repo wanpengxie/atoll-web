@@ -142,7 +142,22 @@ export function useChannelRoster({
     });
     store.retiredChannels.clear();
     store.authorities.clear();
-    store.selves.clear();
+    // The principal's own actor id in a channel is a durable identity fact of
+    // this server world; it is never a per-connection fact. Clearing it on
+    // every attach blanked selfId until the roster refresh landed, and the
+    // conversation scope fell back from "mine" to "all" in between. Keep it
+    // for channels the attach still lists (or when the attach carries no
+    // membership list); a world reset still clears everything.
+    if (channels) {
+      for (const channelId of [...store.selves.keys()]) if (!channels.has(channelId)) store.selves.delete(channelId);
+    }
+    if (Array.isArray(memberships)) {
+      for (const entry of memberships) {
+        const channelId = String(entry?.channel_id || '');
+        const actorId = String(entry?.actor_id || '');
+        if (channelId && actorId) store.selves.set(channelId, actorId);
+      }
+    }
     publish();
     return store.attachAuthority;
   }, [clearTimers, fenceAllRefreshes, owner, publish]);

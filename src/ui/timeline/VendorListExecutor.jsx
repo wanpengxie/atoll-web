@@ -59,6 +59,8 @@ function RowContent({ row, revision, renderRow }) {
   });
 }
 
+const RUNWAY_EVIDENCE_PX = 800;
+
 const MessageRow = memo(function MessageRow({ row, revision, renderRow, presentationState }) {
   return <MessageLayoutScope rowID={row.id}>
     <div
@@ -585,6 +587,12 @@ export function VendorListExecutor({
     const pending = observationRequestRef.current;
     const pendingFence = pending?.fence || null;
     const requested = settled === true;
+    // While a native gesture owns the viewport, Virtuoso's per-frame range
+    // and height callbacks are not reading evidence: sampling every mounted
+    // row's geometry on each of them, and publishing a session revision per
+    // frame, is what made scrolling stutter. The gesture's own end issues the
+    // one settled observation; only that request is honoured meanwhile.
+    if (!requested && source === 'layout' && navigationPolicy.currentInput().active) return;
     const requestSource = requested && source === 'layout' ? 'settled' : source;
     let nextRequest;
     if (requested) {
@@ -621,7 +629,7 @@ export function VendorListExecutor({
         scheduleObserve(request.source, true);
       }
     }) || 0;
-  }, [currentRootIdentity, observe]);
+  }, [currentRootIdentity, navigationPolicy, observe]);
 
   // All following-tail DOM writes pass through this one physical gate. The
   // semantic intent remains in Reading; this ref only suppresses a same-root,
@@ -1362,7 +1370,14 @@ export function VendorListExecutor({
     // Consume the already-owned following intent at that boundary, rather
     // than waiting for the vendor's next-frame followOutput callback.
     const observer = new globalThis.MutationObserver(() => {
-      restoreContentAnchor('layout');
+      // Virtuoso restyles its items on every scrolled frame. A browsing
+      // reader with no pending anchor command owes nothing to this mutation;
+      // reacting here re-entered geometry sampling and a Reading publish on
+      // every frame. Following keeps its tail enforcement and paint sample.
+      const owner = readingRef.current;
+      const current = owner.getSession?.();
+      if (owner.contentAnchorCommand?.()) restoreContentAnchor('layout');
+      if (current?.mode !== READING_MODE.following) return;
       enforceFollowingTail('layout');
       // A row can be committed by Virtuoso after its range/height callback;
       // sample the actual painted DOM on the next frame so Reading receives
@@ -1505,7 +1520,13 @@ export function VendorListExecutor({
       const direction = top < lastScrollTopRef.current ? 'older' : top > lastScrollTopRef.current ? 'newer' : '';
       lastScrollTopRef.current = top;
       const input = navigationPolicy.currentInput();
-      if (input.active) coordinator.recordScroll({ ...host, direction, bookmark: topVisibleBookmark(root, snapshotRef.current.rows) });
+      // Scrolling is the browser's. A scroll event only advances the
+      // transaction and reports the physical position; the reading bookmark
+      // is taken once, from the settled paint after the gesture ends, never
+      // by hit-testing every mounted row on every frame.
+      if (input.active) coordinator.recordScroll({ ...host, direction, bookmark: null });
+      const clientHeight = Number(root.clientHeight || 0);
+      const nearTop = top <= Math.max(RUNWAY_EVIDENCE_PX, clientHeight);
       reportDomEvidence(Object.freeze({
         type: 'scroll-position',
         activationID: readingRef.current.activationID,
@@ -1514,10 +1535,12 @@ export function VendorListExecutor({
         atTop: top <= 1,
         scrollTop: top,
         scrollHeight: Number(root.scrollHeight || 0),
-        clientHeight: Number(root.clientHeight || 0),
-        demandUnits: completeViewportUnits(root),
+        clientHeight,
+        // The viewport-unit count is a DOM sweep; it only matters where a
+        // history demand can be issued.
+        demandUnits: nearTop ? completeViewportUnits(root) : 1,
       }));
-      scheduleObserve(input.active ? 'user' : 'layout');
+      if (!input.active) scheduleObserve('layout');
     };
     root.addEventListener('wheel', wheel, { passive: true });
     root.addEventListener('keydown', keydown);
@@ -1813,7 +1836,9 @@ export function VendorListExecutor({
           underfilled: root.scrollHeight <= root.clientHeight + 1,
           scrollHeight: Number(root.scrollHeight || 0),
           clientHeight: Number(root.clientHeight || 0),
-          demandUnits: completeViewportUnits(root),
+          // rangeChanged fires on every scrolled frame; the viewport-unit
+          // sweep only matters when the viewport is actually underfilled.
+          demandUnits: root.scrollHeight <= root.clientHeight + 1 ? completeViewportUnits(root) : 1,
           startIndex: Number(range.startIndex),
           endIndex: Number(range.endIndex),
           root,
