@@ -135,12 +135,24 @@ export function createHistoryPresentationAdmission({ onChange = () => {} } = {})
 
   // UI admission always reconstructs from the current raw UI items. State
   // retains identities only, never durable-feed entry objects.
+  // Admission withholds exactly one thing: older rows a history reveal has
+  // not released yet. Everything from the oldest row the reader already has
+  // onward is the reader's timeline — new live rows, rows whose identity
+  // changed (a local echo replaced by its canonical row, a turn that moved
+  // into the waiting dock) — and is never held back. A broken baseline order
+  // only retires the reveal transaction; it must not freeze the tail.
+  function firstKnownIndex(state, ids) {
+    const known = new Set([...state.lastAdmittedIDs, ...state.uiBaselineIDs]);
+    return ids.findIndex((id) => known.has(id));
+  }
+
   function evaluatePending(state, items) {
     if (!state.uiBaselineIDs.length) return evaluated(state, []);
     const ids = items.map(idOf);
     const boundary = orderedBoundary(ids, state.uiBaselineIDs);
     if (!boundary) {
-      return evaluated(state, lastAdmitted(state, items), {
+      const first = firstKnownIndex(state, ids);
+      return evaluated(state, first < 0 ? items : items.slice(first), {
         nextPhase: 'holding',
         clearCommitted: true,
       });
@@ -389,9 +401,14 @@ export function createHistoryPresentationAdmission({ onChange = () => {} } = {})
     return true;
   }
 
+  // Pinning the source revision keeps existing rows' heights still while the
+  // reveal's position lease is being painted. That window is the
+  // committed-awaiting-layout phase and nothing else: a cancelled or held
+  // transaction must never freeze progress and terminal updates of rows the
+  // reader already has.
   function sourceFence(channelId) {
     const state = channels.get(channelId);
-    return state?.sourceFenceActive === true
+    return state?.sourceFenceActive === true && state.phase === 'committed-awaiting-layout'
       ? Number(state.releaseSourceRevision || 0)
       : null;
   }

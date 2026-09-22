@@ -340,15 +340,32 @@ describe('history presentation admission', () => {
     });
   });
 
-  it('fails closed and rebases when the baseline stops being an ordered subsequence', () => {
+  it('retires the reveal but keeps the reader rows when the baseline stops being an ordered subsequence', () => {
     const changed = vi.fn();
     const admission = createAdmissionAuthority({ onChange: changed });
     admission.begin('channel', token());
     const candidate = [item('a', 10), item('c', 30), item('b', 20)];
     expect(admission.observe('channel', candidate, meta(12))).toMatchObject({ rebased: true });
     expect(admission.snapshot('channel').phase).toBe('pending');
-    expect(ids(commitAdmission(admission, 'channel', candidate, meta(12)))).toEqual([]);
+    // Only the unreleased older prefix ('a') stays withheld. The rows the
+    // reader already has — and anything newer — remain visible; a broken
+    // baseline order must never blank or freeze the timeline.
+    expect(ids(commitAdmission(admission, 'channel', candidate, meta(12)))).toEqual(['c', 'b']);
     expect(admission.snapshot('channel').phase).toBe('holding');
+  });
+
+  it('shows new live rows and content updates while a cancelled reveal is held', () => {
+    const admission = createAdmissionAuthority();
+    admission.begin('channel', token());
+    const base = [item('b', 20), item('c', 30)];
+    commitAdmission(admission, 'channel', base, meta(11));
+    admission.cancel('channel', admission.snapshot('channel').token?.operationID || token().operationID, { sourceRevision: 11 });
+    expect(admission.snapshot('channel').phase).toBe('holding');
+    // The baseline row 'c' was replaced (local echo → canonical), and a new
+    // live row arrived: both are the reader's tail and must be shown.
+    const live = [item('b', 20), item('c2', 31), item('d', 40)];
+    expect(ids(commitAdmission(admission, 'channel', live, meta(12)))).toEqual(['b', 'c2', 'd']);
+    expect(admission.sourceFence('channel')).toBeNull();
   });
 
   it('does not release a committed prefix into a different view or epoch', () => {
