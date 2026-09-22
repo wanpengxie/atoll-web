@@ -46,6 +46,30 @@ const probe = (messageId, expiresAtMs) => ({
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe('a submission carrying an absolute deadline', () => {
+  it('is dropped at hydration, not left for a retry pass that skips its state', async () => {
+    serial += 1;
+    const principalId = `probe-root-restore-${serial}`;
+    const store = createOutboxStore({ databaseName: `probe-restore-${serial}-${Date.now()}` });
+    await store.putMany(principalId, [{
+      key: 'restored-stale', messageId: 'restored-stale', channelId: 'c0',
+      // A state the reconnect retry pass never visits.
+      state: 'delayed', createdAt: 1, updatedAt: 1, error: null,
+      frame: {
+        id: 'restored-stale', channel_id: 'c0', msg_type: 'actor.describe', kind: 'request',
+        payload: { text: '读取能力' }, audience: ['agent:worker:1'], visibility: 'public',
+        expires_at_ms: Date.now() - 1,
+      },
+    }]);
+    const submit = vi.fn().mockResolvedValue({ ok: true });
+    const config = { ...harness({ submit }), principalId, outboxFactory: () => store };
+    const { result } = renderHook(() => useComposerSubmissionRuntime(config));
+
+    await waitFor(() => expect(result.current.pending).toEqual([]));
+    expect(submit).not.toHaveBeenCalled();
+    await waitFor(async () => expect(await store.restore(principalId)).toEqual([]));
+    store.close();
+  });
+
   it('is dropped rather than retried once its deadline has passed', async () => {
     const config = harness();
     const { result } = renderHook(() => useComposerSubmissionRuntime(config));

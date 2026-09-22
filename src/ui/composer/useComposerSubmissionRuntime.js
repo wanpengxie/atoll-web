@@ -504,7 +504,19 @@ export function useComposerSubmissionRuntime({
       }
       if (!alive || !isLiveLifecycle(lifecycleRef.current, lifecycleGeneration)
         || generation !== hydrationRef.current || authorityRef.current?.principalId !== principalId) return;
-      const restoredRows = submissionRows.map(restoredSubmission).filter(Boolean);
+      const allRestored = submissionRows.map(restoredSubmission).filter(Boolean);
+      // A frame that states its own deadline stops being worth sending once
+      // that instant passes. Restoring one keeps a row the transport will
+      // always refuse, so drop it here rather than waiting for a retry pass
+      // that only visits some states.
+      const expiredRows = allRestored.filter((row) => {
+        const expiresAt = Number(row.frame?.expires_at_ms || 0);
+        return expiresAt > 0 && expiresAt <= Date.now();
+      });
+      const restoredRows = allRestored.filter((row) => !expiredRows.includes(row));
+      for (const row of expiredRows) {
+        void outboxRef.current.remove(principalId, row.messageId).catch(() => {});
+      }
       const restoredControls = Object.fromEntries(submissionRows
         .map((row) => restoredControlState(row, principalId))
         .filter(Boolean)
