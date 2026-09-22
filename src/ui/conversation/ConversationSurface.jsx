@@ -88,7 +88,7 @@ export function ConversationSurface({
   viewSessions,
   roster = [],
   waitingRosterAuthority = null,
-  selfId = '',
+  selfId: liveSelfId = '',
   agentActivity = null,
   onAcknowledgeAgentActivity,
   pending = [],
@@ -141,6 +141,19 @@ export function ConversationSurface({
     toggleFold,
   } = useTimelinePreferences({ channelId: state.channelId, viewSessions, onFoldAnchor: captureFoldAnchor });
   const names = useMemo(() => actorNameMap(roster), [roster]);
+  // The principal's own actor id in a channel is a stable fact. The live value
+  // goes empty whenever the world is re-established (a node restart resets
+  // access and roster until the new attach receipt lands); that gap must not
+  // re-scope the conversation from "mine" to "all", hide the scope toggle, or
+  // change who owns a control. Keep the last confirmed id for this channel and
+  // let the next confirmed one correct it — never clear it first.
+  const knownSelfRef = useRef({ channelId: '', selfId: '' });
+  if (liveSelfId && (knownSelfRef.current.channelId !== state.channelId
+    || knownSelfRef.current.selfId !== liveSelfId)) {
+    knownSelfRef.current = { channelId: state.channelId, selfId: liveSelfId };
+  }
+  const selfId = liveSelfId
+    || (knownSelfRef.current.channelId === state.channelId ? knownSelfRef.current.selfId : '');
   const identityPending = !selfId;
   const projectionScope = identityPending && scope === CONVERSATION_SCOPE.mine
     ? CONVERSATION_SCOPE.all
