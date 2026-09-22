@@ -429,8 +429,11 @@ function awaitingTurns(state, awaiting, pending, editingTargetId) {
     if (row.channelId && state?.channelId && row.channelId !== state.channelId) continue;
     const canonical = timelineTurn(state, row.messageId);
     if (canonical && (canonical.terminal || canonical.provisional?.length)) continue;
+    // A landed turn keeps its ledger identity and therefore its controls;
+    // `local` means "no canonical turn yet", and marking one here would close
+    // insert/cancel/edit on a request that can take them.
     turns.push(canonical
-      ? { ...canonical, local: true, waitingPresentation: waitingPresentationFor(submissionState) }
+      ? { ...canonical, waitingPresentation: waitingPresentationFor(submissionState) }
       : localAwaitingTurn(row, submissionState));
   }
   return turns;
