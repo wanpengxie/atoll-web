@@ -106,6 +106,7 @@ export function useTimelineReading({
   const rangeRef = useRef({ known: false, start: 0, end: 0 });
   const seenTimerRef = useRef(null);
   const inputAtRef = useRef(0);
+  const followedTailRef = useRef('');
   const movedUpRef = useRef(false);
   const lastTopRef = useRef(0);
   const scrollerCleanupRef = useRef(null);
@@ -297,8 +298,19 @@ export function useTimelineReading({
           node.removeEventListener('pointerdown', onInput);
         };
       },
+      // The patched vendor asks this whenever its formal range count grows.
+      // That also happens with no new output at all: a row re-measured after
+      // a revision change, or the rows above admitted by the reader's own
+      // upward notch. Following means following new rows at the tail, so
+      // answer "follow" only when the tail of the data actually changed.
       followOutput() {
-        return modeRef.current === READING_MODE.following ? 'auto' : false;
+        if (modeRef.current !== READING_MODE.following) return false;
+        const rows = rowsRef.current;
+        const tail = rows.length ? String(rows[rows.length - 1]?.id || '') : '';
+        // Older history prepended above changes the count, not the tail.
+        if (tail === followedTailRef.current) return false;
+        followedTailRef.current = tail;
+        return 'auto';
       },
       atBottomStateChange(value) {
         const next = value === true;
@@ -406,6 +418,8 @@ export function useTimelineReading({
     farRef.current = false;
     setFarFromBottomState(false);
     rangeRef.current = { known: false, start: 0, end: 0 };
+    const opened = rowsRef.current;
+    followedTailRef.current = opened.length ? String(opened[opened.length - 1]?.id || '') : '';
     scheduler.token = null;
     scheduler.attempts = 0;
     scheduler.definitive = false;
