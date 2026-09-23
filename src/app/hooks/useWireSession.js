@@ -600,10 +600,21 @@ function parseRouteFocus(value) {
   return Object.freeze({ type, key });
 }
 
+// The last channel this browser was on: where an address without a channel
+// (a bookmark, a fresh tab) opens. Only a request; the directory validates it.
+const LAST_CHANNEL_KEY = 'atoll.web.last-channel';
+function rememberLastChannel(channelId) {
+  if (!channelId) return;
+  try { globalThis.localStorage?.setItem(LAST_CHANNEL_KEY, String(channelId)); } catch { /* storage is optional */ }
+}
+function lastChannel() {
+  try { return String(globalThis.localStorage?.getItem(LAST_CHANNEL_KEY) || ''); } catch { return ''; }
+}
+
 function readInitialRoute() {
   const hash = String(globalThis.location?.hash || '');
   const match = hash.match(/^#\/channels\/([^/]+)\/([^?]+)/);
-  if (!match) return { channelId: '', view: 'conversation', focus: null };
+  if (!match) return { channelId: lastChannel(), view: 'conversation', focus: null };
   let channelId = '';
   let rawView = '';
   try { channelId = decodeURIComponent(match[1]); rawView = decodeURIComponent(match[2]); } catch { return { channelId: '', view: 'conversation', focus: null }; }
@@ -744,6 +755,7 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
     if (activeChannelRef.current !== channelId) filesReturnIntentRef.current = null;
     activeChannelRef.current = channelId;
     setActiveChannelId(channelId);
+    rememberLastChannel(channelId);
   }, []);
   const commitActiveView = useCallback((view) => {
     activeViewRef.current = view;
@@ -798,6 +810,15 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
       if (retiredNotice) onNotice(retiredNotice);
     }
   }, [accessRef, activeChannelId, channels, commitActiveChannel, commitActiveView, commitFocus, onNotice, onSelect]);
+
+  // The warm boot selects a channel before the directory arrives, without an
+  // address. Once that channel is a real one, the address names it too, so a
+  // reload and a shared link open the same place (replace, no history entry).
+  useEffect(() => {
+    if (!activeChannelId || !channels.some((row) => row.id === activeChannelId)) return;
+    if (/^#\/channels\/[^/]+\//.test(String(globalThis.location?.hash || ''))) return;
+    writeRoute(activeChannelId, activeViewRef.current, true, focusRef.current);
+  }, [activeChannelId, channels]);
 
   // Terminal visibility is a navigation fact, so directory/world replacement
   // must retire facts for identities that are no longer in the public channel
@@ -1065,7 +1086,12 @@ export function useWireConnection({
       access.wire('disconnected');
       setChannels(new Map(cachedBootstrap.profiles.map((row) => [row.id, row])));
       if (!localFocus) {
-        localFocus = cachedBootstrap.memberships[0]?.channel_id || '';
+        // The address (or, without one, the last channel) is what the reader
+        // asked for; the first cached membership is only the fallback.
+        const requested = readInitialRoute().channelId;
+        const known = requested && (cachedBootstrap.memberships.some((entry) => entry.channel_id === requested)
+          || cachedBootstrap.profiles.some((row) => row.id === requested));
+        localFocus = known ? requested : cachedBootstrap.memberships[0]?.channel_id || '';
         activeChannelRef.current = localFocus;
         if (localFocus) setActiveChannelId(localFocus);
       }
