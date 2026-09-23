@@ -94,7 +94,7 @@ test('TC-0194 F5-004 创建操作进入 Operation Center 并可回到原频道�
   await expect(operation).toHaveCount(1);
   await operation.click();
   await expect(page.locator('.turn-card').filter({ hasText: '创建子频道' })).toBeVisible();
-  await expect(page.getByRole('region', { name: '回合详情' })).toContainText('operation-room');
+  await expect(page.getByRole('complementary', { name: '回合详情' })).toContainText('operation-room');
   await expect(page.locator('main h1')).toHaveText('c0');
 });
 

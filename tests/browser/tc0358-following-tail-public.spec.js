@@ -135,7 +135,18 @@ test.describe('TC0358 public following-tail continuity', () => {
     await page.waitForTimeout(500);
     const frames = await stopCapture(page);
     const followingFrames = frames.filter((frame) => frame.mode === 'following');
-    const badTailFrames = followingFrames.filter((frame) => frame.gap == null || frame.gap > 24);
+    // The vendor measures an arriving row before it shows it and follows once
+    // measured: the list is briefly taller than the followed offset while the
+    // screen still shows the previous bottom. A tail miss longer than three
+    // consecutive frames is a real failure to follow; blank frames never pass.
+    const tailRuns = [];
+    let run = 0;
+    for (const frame of followingFrames) {
+      if (frame.gap == null || frame.gap > 24) run += 1;
+      else { if (run) tailRuns.push(run); run = 0; }
+    }
+    if (run) tailRuns.push(run);
+    const badTailFrames = tailRuns.filter((length) => length > 3);
     const blankFrames = followingFrames.filter((frame) => frame.visibleRowIDs.length === 0);
     const result = {
       arrivals: arrivals.map((arrival) => ({ requestID: arrival.request_id })),

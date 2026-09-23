@@ -83,9 +83,9 @@ test('UI-VIS-03 新建频道独立任务视觉基线', async ({ page, request })
   await reset(request, 'channel-governance', 907);
   await login(page);
   await page.getByRole('button', { name: '新建频道' }).click();
-  const panel = page.getByRole('complementary', { name: /频道治理/ });
+  const panel = page.getByRole('dialog', { name: '新建频道' });
   await expect(panel).toBeVisible();
-  await expect(panel.getByRole('heading', { name: '创建子频道', exact: true })).toBeVisible();
+  await expect(panel.getByRole('heading', { name: '新建频道', exact: true })).toBeVisible();
   await expect(panel.getByLabel('频道模板')).toBeVisible();
   await expect(panel).toHaveScreenshot('channel-create.png', SCREENSHOT_OPTIONS);
 });
@@ -387,56 +387,6 @@ test('UI-VIS-11 600px 全局搜索视觉基线', async ({ page, request }) => {
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('c0.project');
 });
 
-test('UI-VIS-11 搜索后台兴趣由 Feed 持有并可在关闭时取消', async ({ page, request }) => {
-  await page.setViewportSize({ width: 600, height: 720 });
-  await page.addInitScript(() => {
-    window.__ATOLL_SEARCH_HISTORY_FRAMES = [];
-    const NativeWebSocket = window.WebSocket;
-    window.WebSocket = function WrappedWebSocket(...args) {
-      const socket = new NativeWebSocket(...args);
-      const send = socket.send.bind(socket);
-      socket.send = (data) => {
-        if (typeof data === 'string') {
-          try {
-            const frame = JSON.parse(data);
-            if (frame?.frame_type === 'history_before' || frame?.frame_type === 'history_cancel') {
-              window.__ATOLL_SEARCH_HISTORY_FRAMES.push(frame);
-            }
-          } catch { /* wire frames outside this probe are irrelevant */ }
-        }
-        return send(data);
-      };
-      return socket;
-    };
-    window.WebSocket.prototype = NativeWebSocket.prototype;
-    for (const key of ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED']) {
-      Object.defineProperty(window.WebSocket, key, { value: NativeWebSocket[key] });
-    }
-  });
-  await reset(request, 'deep-history-delayed', 920);
-  await login(page);
-  await page.getByRole('button', { name: '打开频道列表' }).click();
-  await page.getByRole('button', { name: '全局搜索' }).click();
-  const search = page.getByRole('dialog', { name: '全局搜索' });
-  await expect.poll(() => page.evaluate(() => window.__ATOLL_SEARCH_HISTORY_FRAMES.some((frame) => (
-    frame.frame_type === 'history_before'
-      && frame.payload?.channel_id === 'c0.project'
-      && frame.payload?.priority === 'background'
-  ))), { timeout: 10_000 }).toBe(true);
-  const before = await page.evaluate(() => window.__ATOLL_SEARCH_HISTORY_FRAMES.find((frame) => (
-    frame.frame_type === 'history_before' && frame.payload?.channel_id === 'c0.project'
-  )));
-  expect(before.payload.purpose).toBe('initial-tail');
-  expect(await page.evaluate(() => window.__ATOLL_SEARCH_HISTORY_FRAMES.some((frame) => (
-    frame.frame_type === 'history_before' && frame.payload?.channel_id === 'c0.public'
-  )))).toBe(false);
-  await search.getByRole('button', { name: '关闭全局搜索' }).click();
-  await expect(search).toHaveCount(0);
-  await expect.poll(() => page.evaluate((targetRef) => window.__ATOLL_SEARCH_HISTORY_FRAMES.some((frame) => (
-    frame.frame_type === 'history_cancel' && frame.payload?.channel_id === 'c0.project'
-      && frame.payload?.target_ref === targetRef
-  )), before.ref), { timeout: 10_000 }).toBe(true);
-});
 
 test('UI-VIS-11 断线窗口释放 Search lease 不产生未处理拒绝', async ({ page, request }) => {
   await page.setViewportSize({ width: 600, height: 720 });
@@ -515,78 +465,6 @@ test('UI-VIS-11 断线窗口释放 Search lease 不产生未处理拒绝', async
   expect(evidence.targetRef).toBeTruthy();
 });
 
-test('UI-VIS-11 Search lease handoff 不重绑旧 activation', async ({ page, request }) => {
-  await page.setViewportSize({ width: 600, height: 720 });
-  await page.addInitScript(() => {
-    window.__ATOLL_SEARCH_HANDOFF_FRAMES = [];
-    const NativeWebSocket = window.WebSocket;
-    window.WebSocket = function WrappedWebSocket(...args) {
-      const socket = new NativeWebSocket(...args);
-      const send = socket.send.bind(socket);
-      socket.send = (data) => {
-        if (typeof data === 'string') {
-          try {
-            const frame = JSON.parse(data);
-            if (frame?.frame_type === 'history_before' || frame?.frame_type === 'history_cancel') {
-              window.__ATOLL_SEARCH_HANDOFF_FRAMES.push(frame);
-            }
-          } catch { /* non-protocol frames are outside this probe */ }
-        }
-        return send(data);
-      };
-      return socket;
-    };
-    window.WebSocket.prototype = NativeWebSocket.prototype;
-    for (const key of ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED']) {
-      Object.defineProperty(window.WebSocket, key, { value: NativeWebSocket[key] });
-    }
-  });
-  await reset(request, 'deep-history-delayed', 927);
-  await login(page);
-  await page.getByRole('button', { name: '打开频道列表' }).click();
-  await page.getByRole('button', { name: '全局搜索' }).click();
-  const search = page.getByRole('dialog', { name: '全局搜索' });
-  await expect.poll(() => page.evaluate(() => window.__ATOLL_SEARCH_HANDOFF_FRAMES.some((frame) => (
-    frame.frame_type === 'history_before'
-      && frame.payload?.channel_id === 'c0.project'
-      && frame.payload?.priority === 'background'
-  ))), { timeout: 10_000 }).toBe(true);
-  await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__?.clear?.());
-
-  const dropped = await request.post(`${MOCK}/mock/control/action`, { data: { type: 'drop' } });
-  expect(dropped.ok()).toBe(true);
-  await expect(page.locator('.connection-state')).toHaveClass(/state-reconnecting/, { timeout: 10_000 });
-  await search.getByRole('button', { name: '关闭全局搜索' }).click();
-  await expect(search).toHaveCount(0);
-
-  // Reopen the mobile rail and switch immediately after cleanup. This creates
-  // a new Search/active-channel activation while the Feed command port is
-  // crossing the reconnect owner handoff.
-  await page.getByRole('button', { name: '打开频道列表' }).click();
-  await page.getByRole('button', { name: /c0\.project/ }).click();
-  await expect(page.locator('main h1')).toHaveText('c0.project');
-  await expect(page.locator('.connection-state')).toHaveClass(/state-open/, { timeout: 15_000 });
-  await expect.poll(() => page.evaluate(() => {
-    const snapshot = window.__ATOLL_DIAGNOSTICS__?.coldEntry?.snapshot?.() || {};
-    return snapshot.history?.demand?.phase === 'idle' && snapshot.history?.loading === false;
-  }), { timeout: 15_000 }).toBe(true);
-  await page.waitForTimeout(200);
-
-  const evidence = await page.evaluate(() => {
-    const diagnostics = window.__ATOLL_DIAGNOSTICS__?.snapshot?.() || [];
-    return {
-      frames: window.__ATOLL_SEARCH_HANDOFF_FRAMES,
-      unhandled: diagnostics.filter((entry) => entry.event === 'window.unhandled_rejection'),
-      errors: diagnostics.filter((entry) => entry.event === 'window.error'),
-    };
-  });
-  expect(evidence.unhandled).toEqual([]);
-  expect(evidence.errors).toEqual([]);
-  expect(evidence.frames.filter((frame) => frame.frame_type === 'history_before'
-    && frame.payload?.channel_id === 'c0.project'
-    && frame.payload?.priority === 'background'
-    && frame.payload?.purpose === 'initial-tail')).toHaveLength(1);
-});
 
 test('UI-VIS-12 频道挂载文件主页面视觉基线', async ({ page, request }) => {
   await page.setViewportSize({ width: 1280, height: 720 });

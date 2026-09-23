@@ -78,7 +78,10 @@ test('TC0207 F7 mobile channel drawer keeps Agent activity visible, bounded, and
   // Selecting the current channel closes the full-screen rail on mobile.
   await page.locator('.channel-item').filter({ has: page.locator('.channel-name', { hasText: /^c0$/ }) }).click();
   await advanceComputation(request, 3);
-  await expect(steward).toHaveClass(/activity-settled/);
+  // The reader is on this channel at its newest row, so the completion is
+  // read as it lands: no running marker and no lingering "done" marker.
+  await expect(steward).not.toHaveClass(/activity-active/);
+  await expect(steward).not.toHaveClass(/activity-settled/);
   await steward.click();
   await expect(steward).toHaveAttribute('aria-pressed', 'true');
   await expect(steward.locator('.agent-activity-dot')).toHaveCount(0);

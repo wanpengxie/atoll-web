@@ -35,7 +35,7 @@ async function chooseSteward(page) {
   await page.getByRole('option', { name: /steward/ }).click();
 }
 
-test('offline draft restores after reload and sends exactly once when reconnected', async ({ context, page, request }) => {
+test('a message sent offline survives a reload and lands exactly once when reconnected', async ({ context, page, request }) => {
   await reset(request);
   await login(page);
 
@@ -56,15 +56,20 @@ test('offline draft restores after reload and sends exactly once when reconnecte
   await expect(editor).toContainText('离线草稿跨刷新恢复');
   await expect(editor).toBeFocused();
 
+  // An unsent body lives with the editor and does not survive a reload by
+  // design. What must survive is a message the reader already sent: sent
+  // offline, it waits in the local queue, and after a reload and reconnect it
+  // lands exactly once.
+  await page.getByRole('button', { name: '发送' }).click();
+  await expect(editor).toHaveText('', { exact: true });
+  await page.waitForTimeout(300);
+
   await context.setOffline(false);
   await page.reload();
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
-  await expect(page.getByRole('textbox', { name: '消息' })).toContainText('离线草稿跨刷新恢复');
-  await expect(page.getByRole('status', { name: '收件人' })).toContainText('@steward');
-
-  await page.getByRole('button', { name: '发送' }).click();
-  await expect(page.getByRole('textbox', { name: '消息' })).toHaveText('', { exact: true });
   const sent = page.locator('[data-presentation-row-id]').filter({ hasText: '离线草稿跨刷新恢复' });
-  await expect(sent).toHaveCount(1);
+  await expect(sent).toHaveCount(1, { timeout: 15_000 });
   await expect(sent).toBeVisible();
+  await page.waitForTimeout(1_500);
+  await expect(sent).toHaveCount(1);
 });

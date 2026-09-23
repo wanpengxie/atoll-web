@@ -66,8 +66,8 @@ test('TC-0324 D-BR-01/02/04 c0 child creation converges and exposes detail', asy
   await expect(operation).toHaveCount(1);
   await operation.click();
   await expect(page.locator('.turn-card').filter({ hasText: '创建子频道' })).toBeVisible();
-  await expect(page.getByRole('region', { name: '回合详情' })).toContainText('design-room');
-  await page.getByRole('button', { name: '← 返回动态' }).click();
+  await expect(page.getByRole('complementary', { name: '回合详情' })).toContainText('design-room');
+  await page.getByRole('complementary', { name: '回合详情' }).getByRole('button', { name: '关闭过程' }).click();
 
   // Current Governance is the canonical detail projection.  It must expose
   // the created child and its serving status under the c0 parent, not invent a

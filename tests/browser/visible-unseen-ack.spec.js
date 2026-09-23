@@ -140,15 +140,32 @@ test('Waiting-covered committed arrival remains unseen until actually exposed', 
   await expect.poll(() => viewport.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeGreaterThan(24);
   await approval(request);
   await expect(page.getByRole('button', { name: /1 条新动态/ })).toBeVisible();
-  await wheelToPhysicalGap(page, 70);
-  await page.waitForTimeout(150);
+  // Bring the arrival up in small notches until it has entered the list but
+  // lies entirely behind the waiting dock: not on screen for the reader.
+  const where = () => page.evaluate(() => {
+    const list = document.querySelector('.timeline-message-list').getBoundingClientRect();
+    const dock = document.querySelector('.agent-wait-layer')?.getBoundingClientRect();
+    const card = [...document.querySelectorAll('[data-presentation-row-id]')]
+      .find((node) => node.textContent.includes('Approve live mock action'))?.getBoundingClientRect();
+    return { listBottom: list.bottom, dockTop: dock?.top ?? list.bottom, cardTop: card?.top ?? Infinity };
+  });
+  for (let step = 0; step < 80; step += 1) {
+    const now = await where();
+    if (now.cardTop < now.listBottom) break;
+    await page.mouse.wheel(0, 40);
+    await page.waitForTimeout(40);
+  }
+  const covered = await where();
+  expect(covered.cardTop).toBeGreaterThanOrEqual(covered.dockTop);
+  expect(covered.cardTop).toBeLessThan(covered.listBottom);
+  await page.waitForTimeout(450);
+  await expect(page.getByRole('button', { name: /1 条新动态/ })).toBeVisible();
 
-  const sample = await evidence(page, 'Approve live mock action');
-  await attachJSON(testInfo, 'waiting-covered-unseen.json', { sample });
-  expect(sample.gap).toBeGreaterThan(1);
-  expect(sample.rowIntersectsViewport).toBe(true);
-  expect(sample.viewportVisiblePixels).toBeGreaterThan(0);
-  expect(sample.waitingOverlap).toBeGreaterThan(0);
-  expect(sample.overlapOwnedByWaiting).toBe(true);
-  expect(sample.jump).toBe('↓ 1 条新动态');
+  // Past the dock it is on screen, and it is read.
+  for (let step = 0; step < 40 && (await where()).cardTop > (await where()).dockTop - 40; step += 1) {
+    await page.mouse.wheel(0, 40);
+    await page.waitForTimeout(40);
+  }
+  await expect(page.getByRole('button', { name: /1 条新动态/ })).toHaveCount(0, { timeout: 5_000 });
+  await attachJSON(testInfo, 'waiting-covered-unseen.json', { covered });
 });

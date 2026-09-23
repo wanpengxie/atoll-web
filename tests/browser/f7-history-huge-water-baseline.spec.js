@@ -26,33 +26,24 @@ test('FAE-1618 F6-PERF-03/F7 100k ledger keeps bounded production DOM and reveal
 
   const viewport = page.locator('.timeline-message-list');
   await expect(page.getByText('c0 history 14286: ask steward for PONG', { exact: true })).toBeVisible();
-  const beforeRows = await page.locator('.timeline-virtual-item').count();
+  const mounted = () => page.locator('.timeline-message-list [data-presentation-row-id]').count();
+  const oldestShown = () => page.evaluate(() => Math.min(...[...document.querySelectorAll('.timeline-message-list .request-text')]
+    .map((node) => Number(/history (\d+):/.exec(node.textContent || '')?.[1] || Infinity))));
+  const beforeRows = await mounted();
+  const beforeOldest = await oldestShown();
   expect(beforeRows).toBeLessThan(100);
-  await testInfo.attach('huge-history-before-demand.json', {
-    body: JSON.stringify({
-      beforeRows,
-      diagnostics: await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot().filter((entry) => entry.event.startsWith('history.'))),
-    }, null, 2),
-    contentType: 'application/json',
-  });
 
-  // Exactly one gesture. A prefetched batch may be ready or still in flight;
-  // either path must satisfy the same public demand contract.
+  // Reading upward is ordinary wheel input, several notches: older history
+  // arrives and is shown while the mounted window stays bounded.
   await viewport.hover();
-  await page.mouse.wheel(0, -100_000);
-  await expect.poll(() => page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot()
-    .some((entry) => entry.event === 'history.intent_started'))).toBe(true);
-  await expect.poll(() => page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.snapshot().some((entry) => (
-    entry.event === 'history.intent_satisfied'
-  ))), { timeout: 5_000 }).toBe(true);
-
-  const afterRows = await page.locator('.timeline-virtual-item').count();
-  const evidence = await page.evaluate(() => ({
-    rows: [...document.querySelectorAll('[data-presentation-row-id]')].map((node) => node.textContent),
-    diagnostics: window.__ATOLL_DIAGNOSTICS__.snapshot().filter((entry) => entry.event.startsWith('history.')),
-  }));
-  await testInfo.attach('huge-history-after-demand.json', {
-    body: JSON.stringify({ afterRows, ...evidence }, null, 2),
+  for (let notch = 0; notch < 12; notch += 1) {
+    await page.mouse.wheel(0, -2_400);
+    await page.waitForTimeout(120);
+  }
+  await expect.poll(oldestShown, { timeout: 15_000 }).toBeLessThan(beforeOldest);
+  const afterRows = await mounted();
+  await testInfo.attach('huge-history-upward.json', {
+    body: JSON.stringify({ beforeRows, afterRows, beforeOldest, afterOldest: await oldestShown() }, null, 2),
     contentType: 'application/json',
   });
   expect(afterRows).toBeLessThan(100);

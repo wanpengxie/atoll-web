@@ -97,46 +97,53 @@ test('an open history frontier prepends without moving the existing row geometry
   const viewport = list(page);
   await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true })).toBeVisible();
   await viewport.hover();
-  let previousScrollTop = await viewport.evaluate((root) => root.scrollTop);
-  for (let index = 0; index < 3; index += 1) {
-    await page.mouse.wheel(0, -5_000);
-    await expect.poll(() => viewport.evaluate((root) => root.scrollTop))
-      .toBeLessThan(previousScrollTop - 100);
-    previousScrollTop = await viewport.evaluate((root) => root.scrollTop);
-  }
-  const before = await viewport.evaluate((root) => {
-    const rootRect = root.getBoundingClientRect();
-    const firstVisible = [...root.querySelectorAll('[data-presentation-row-id]')]
-      .find((candidate) => candidate.getBoundingClientRect().top >= rootRect.top - 1);
-    const row = firstVisible || root.querySelector('[data-presentation-row-id]');
-    const rowRect = row?.getBoundingClientRect();
-    return {
-      id: row?.dataset.presentationRowId || '',
-      top: rowRect ? rowRect.top - rootRect.top : null,
-      height: rowRect?.height || 0,
-      scrollHeight: root.scrollHeight,
-      firstID: root.querySelector('[data-presentation-row-id]')?.dataset.presentationRowId || '',
-    };
+  // Move into history with ordinary wheel input. scrollTop is not a measure
+  // of "how far up": a prepend raises it by the prepended height while the
+  // screen holds still. What moved is read from the rows themselves.
+  const newestOnScreen = () => viewport.evaluate((root) => {
+    const rect = root.getBoundingClientRect();
+    const ids = [...root.querySelectorAll('[data-presentation-row-id]')]
+      .filter((node) => { const r = node.getBoundingClientRect(); return r.bottom > rect.top && r.top < rect.bottom; })
+      .map((node) => Number(node.dataset.presentationRowId?.match(/history-request-(\d+)$/)?.[1]))
+      .filter(Number.isFinite);
+    return ids.length ? Math.max(...ids) : Infinity;
   });
-  expect(before.id).not.toBe('');
-  await page.mouse.wheel(0, -2_000);
-  await expect.poll(() => viewport.evaluate((root) => root.scrollHeight))
-    .toBeGreaterThan(before.scrollHeight);
-  const after = await viewport.evaluate((root, id) => {
-    const row = root.querySelector(`[data-presentation-row-id="${CSS.escape(id)}"]`);
+  for (let notch = 0; notch < 20 && await newestOnScreen() >= 118; notch += 1) {
+    await page.mouse.wheel(0, -300);
+    await page.waitForTimeout(120);
+  }
+  await expect.poll(newestOnScreen).toBeLessThan(118);
+  // The row at the top of the screen right before each notch is the anchor:
+  // on the notch that prepends an older page, that row must move by exactly
+  // the reader's own notch — the prepended height must not show.
+  const topRow = () => viewport.evaluate((root) => {
+    const rootRect = root.getBoundingClientRect();
+    const row = [...root.querySelectorAll('[data-presentation-row-id]')]
+      .find((candidate) => { const r = candidate.getBoundingClientRect(); return r.top >= rootRect.top - 1 && r.top < rootRect.bottom && getComputedStyle(candidate).visibility !== 'hidden'; });
+    const rect = row?.getBoundingClientRect();
+    return { id: row?.dataset.presentationRowId || '', top: rect ? rect.top - rootRect.top : null, height: rect?.height || 0, scrollHeight: root.scrollHeight, firstID: root.querySelector('[data-presentation-row-id]')?.dataset.presentationRowId || '' };
+  });
+  const rowAt = (id) => viewport.evaluate((root, rowID) => {
+    const row = root.querySelector(`[data-presentation-row-id="${CSS.escape(rowID)}"]`);
     const rect = row?.getBoundingClientRect();
     const rootRect = root.getBoundingClientRect();
-    return {
-      connected: Boolean(row?.isConnected),
-      top: rect ? rect.top - rootRect.top : null,
-      height: rect?.height || 0,
-      firstID: root.querySelector('[data-presentation-row-id]')?.dataset.presentationRowId || '',
-      boundaryCount: root.querySelectorAll('.timeline-history-boundary').length,
-    };
-  }, before.id);
+    return { connected: Boolean(row?.isConnected), top: rect ? rect.top - rootRect.top : null, height: rect?.height || 0, scrollHeight: root.scrollHeight, firstID: root.querySelector('[data-presentation-row-id]')?.dataset.presentationRowId || '', boundaryCount: root.querySelectorAll('.timeline-history-boundary').length };
+  }, id);
+  let prepend = null;
+  for (let notch = 0; notch < 30 && !prepend; notch += 1) {
+    const before = await topRow();
+    expect(before.id).not.toBe('');
+    await page.mouse.wheel(0, -300);
+    await page.waitForTimeout(160);
+    const after = await rowAt(before.id);
+    if (after.scrollHeight > before.scrollHeight) prepend = { before, after };
+  }
+  expect(prepend, 'reading upward reaches an older page').not.toBeNull();
+  const { before, after } = prepend;
   expect(after.connected).toBe(true);
   expect(after.height).toBe(before.height);
   expect(after.firstID).not.toBe(before.firstID);
-  expect(Number(after.top) - Number(before.top)).toBeGreaterThanOrEqual(-2);
+  // Wheel up 300: the anchor moves down by the notch, not by the page.
+  expect(Math.abs(Number(after.top) - Number(before.top) - 300)).toBeLessThanOrEqual(32);
   expect(after.boundaryCount).toBe(0);
 });

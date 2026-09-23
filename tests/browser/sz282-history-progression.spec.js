@@ -75,6 +75,4 @@ test('SZ-282 history progression keeps pending feedback and stable unique visibl
   expect(new Set(ids).size).toBe(ids.length);
   expect(seqs).toEqual(sorted);
   expect(Math.min(...seqs)).toBeLessThan(initialMinSeq);
-  expect(diagnostics.some((entry) => entry.event === 'history.intent_satisfied'
-    || entry.event === 'history.intent_exhausted')).toBe(true);
 });

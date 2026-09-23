@@ -487,7 +487,12 @@ export function useTimelineReading({
   const reportOnScreenRef = useRef(() => {});
   reportOnScreenRef.current = (node) => {
     if (!node?.isConnected) return;
-    const view = node.getBoundingClientRect();
+    const list = node.getBoundingClientRect();
+    // The waiting dock floats over the bottom of the list: what is under it
+    // is not on screen for the reader.
+    const dock = node.closest('.conversation-surface')?.querySelector('.agent-wait-layer')?.getBoundingClientRect();
+    const bottom = dock && dock.height > 0 && dock.top < list.bottom && dock.bottom > list.top ? Math.max(list.top, dock.top) : list.bottom;
+    const view = { top: list.top, bottom };
     const seqByID = new Map(rowsRef.current.map((row) => [String(row?.id || ''), row]));
     let high = 0;
     for (const element of node.querySelectorAll('[data-presentation-row-id]')) {

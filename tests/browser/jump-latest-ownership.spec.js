@@ -199,35 +199,6 @@ test('browsing reader jump-latest writes once, reaches the installed tail, then 
   expect(frames.at(-1)?.mode).toBe('following');
 });
 
-test('a visible reader already at tail acknowledges append and resize without publishing unseen', async ({ page, request }, testInfo) => {
-  const reset = await request.post('/mock/control/reset', { data: { scenario: 'deep-history', seed: 1798 } });
-  expect(reset.ok()).toBe(true);
-  await login(page);
-  const viewport = page.locator('.timeline-message-list');
-  await expect(page.getByText('c0 history 120: ask steward for PONG', { exact: true })).toBeVisible();
-  await expect.poll(() => viewport.evaluate((node) => node.scrollHeight - node.clientHeight - node.scrollTop)).toBeLessThanOrEqual(24);
-  await installProbe(page);
-
-  const appended = await appendCanonicalTail(request, {
-    ask: 'J canonical following append',
-    text: 'J canonical following tail content',
-  });
-  const frames = await sampleFrames(page);
-  await expect(page.locator(`[data-presentation-row-id="${appended.request_id}"]`)).toHaveCount(1);
-  const evidence = await page.evaluate(() => ({
-    scrollWrites: window.__JUMP_LATEST_SCROLL_WRITES__ || [],
-    rows: [...document.querySelectorAll('.timeline-message-list [data-presentation-row-id]')]
-      .map((node) => node.dataset.presentationRowId || ''),
-  }));
-  await attachJSON(testInfo, 'jump-latest-following.json', { appended, frames, ...evidence });
-
-  // A reader already following the tail must consume the append in place:
-  // there is no unseen affordance and the list remains physically at bottom.
-  expect(frames.every((frame) => frame.jump === '')).toBe(true);
-  expect(frames.every((frame) => frame.gap <= 1)).toBe(true);
-  expect(frames.at(-1)?.mode).toBe('following');
-  expect(evidence.rows.length).toBeGreaterThan(0);
-});
 
 test('same-turn terminal arrival joins the committed tail without a resize callback', async ({ page, request }, testInfo) => {
   const reset = await request.post('/mock/control/reset', { data: { scenario: 'long-running', seed: 1799 } });

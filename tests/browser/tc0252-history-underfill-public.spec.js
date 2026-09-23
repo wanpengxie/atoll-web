@@ -57,8 +57,13 @@ test('TC-0252 public underfill keeps the history surface readable until older co
       if (frames.at(-1)?.historyOneVisible) break;
     }
 
-    await expect.poll(() => page.getByText('c0 history 1: ask steward for PONG', { exact: true })
-      .isVisible().catch(() => false), { timeout: 15_000, intervals: [100, 250, 500] }).toBe(true);
+    // A prepend holds the screen still (no jump), so the start of the channel
+    // is reached by reading on, not by waiting: keep scrolling up until the
+    // first row is on screen.
+    await expect.poll(async () => {
+      await page.mouse.wheel(0, -1_800);
+      return page.getByText('c0 history 1: ask steward for PONG', { exact: true }).isVisible().catch(() => false);
+    }, { timeout: 20_000, intervals: [150, 250, 400] }).toBe(true);
     const settled = await page.evaluate(publicSnapshot);
     expect(settled.activeLists).toBe(1);
     expect(settled.rowCount).toBeGreaterThan(0);

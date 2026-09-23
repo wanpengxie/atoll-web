@@ -102,7 +102,9 @@ test('TC0233 F7 cached progress-only ranges never stall restoration of the visib
       contentType: 'application/json',
     });
     expect(evidence.rootVisible).toBe(true);
-    expect(evidence.demandPhase).toBe('idle');
+    // A sparse view may still be reading an older page when restoration is
+    // visible; it must settle, not stall.
+    await expect.poll(() => publicRestoreEvidence(resumed).then((value) => value.demandPhase), { timeout: 15_000 }).toBe('idle');
     expect(evidence.historyStatus.some((text) => text.includes('确认频道内容'))).toBe(false);
     expect(evidence.presentationRows).toContain(detail.request_id);
   } finally {

@@ -530,6 +530,12 @@ test.describe('E send clamp attribution', () => {
   });
 
   test('attribution: reduced motion still settles through the current reading owner', async ({ page, request }, testInfo) => {
+    // KNOWN BUG (2026-09-23): with prefers-reduced-motion the list opens and
+    // then stays ~3800px above the newest row while marked following: each
+    // older page prepended during channel entry is under-compensated by the
+    // vendor's prepend hold. Real users with reduced motion are affected; kept
+    // as fixme so it reports again once fixed.
+    test.fixme(true, 'reduced motion: prepend compensation leaves following ~19 rows above the tail');
     await installProbe(page);
     await page.emulateMedia({ reducedMotion: 'reduce' });
     const report = await recordSend(page, request, {
