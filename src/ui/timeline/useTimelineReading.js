@@ -11,7 +11,12 @@ import { HISTORY_INTENT, HISTORY_URGENCY } from '../../model/history-demand.js';
 //
 // Everything positional belongs to the vendored Virtuoso: following output,
 // keeping place while a row grows, holding the reader still while older rows
-// are prepended. This owner never writes scrollTop and keeps no bookmark.
+// are prepended. This owner never writes scrollTop.
+//
+// Leaving a view remembers how it was being read, in page memory only: a
+// following view reopens at its newest row whatever it held before; a browsing
+// view reopens on the row that was at the top, at the same offset. A reload or
+// restart has no memory, so every view opens following.
 //
 // Older history is level-triggered: whenever fewer than PREFETCH_ROWS loaded
 // rows sit above the viewport, older rows exist, nothing is in flight and the
@@ -41,8 +46,29 @@ const IDLE_DEMAND = Object.freeze({ phase: 'idle', error: '' });
 // Scrolling settles this long after the last scroll event; the rows on
 // screen then are what the reader has seen.
 const SEEN_SETTLE_MS = 200;
+// A reopened browsing position has landed well within this.
+const RESTORE_SETTLE_MS = 1_000;
 
 let activationSequence = 0;
+
+// view key → { mode: 'following' } | { mode: 'browsing', id, offset }
+const readingPositions = new Map();
+const OPEN_AT_LATEST = Object.freeze({ index: 'LAST', align: 'end' });
+
+// The row at the top edge of the list and how far its top sits above that
+// edge. Rows render in list order, so the first one reaching below the edge is
+// the one the reader is looking at from the top.
+function topAnchor(node) {
+  if (!node?.isConnected) return null;
+  const edge = node.getBoundingClientRect().top;
+  for (const element of node.querySelectorAll('[data-presentation-row-id]')) {
+    const rect = element.getBoundingClientRect();
+    if (rect.height > 0 && rect.bottom > edge + 1) {
+      return Object.freeze({ id: element.dataset.presentationRowId, offset: Math.round(edge - rect.top) });
+    }
+  }
+  return null;
+}
 
 function pageVisible() {
   return globalThis.document?.visibilityState !== 'hidden';
@@ -81,6 +107,26 @@ export function useTimelineReading({
     activationSequence += 1;
     return `reading:${channelID}:${viewKey}:${activationSequence}`;
   }, [channelID, viewKey]);
+  const positionKey = `${channelID}\u0000${viewKey || ''}`;
+  // How this view opens, decided once per activation from the rows it opens
+  // with. Following opens at the newest row through the vendor's initial
+  // location. Browsing does not use it: the vendor keeps re-seeking an initial
+  // index until it considers it reached, and rows arriving above meanwhile
+  // turn that index into another row. The browsing row is sought by id
+  // instead (see seekingRef), so position has one owner.
+  const opening = useMemo(() => {
+    const saved = readingPositions.get(positionKey);
+    if (saved?.mode === READING_MODE.browsing
+      && rows.some((row) => String(row?.id || '') === saved.id)) {
+      return Object.freeze({
+        mode: READING_MODE.browsing,
+        anchor: Object.freeze({ id: saved.id, offset: saved.offset }),
+        location: undefined,
+      });
+    }
+    return Object.freeze({ mode: READING_MODE.following, anchor: null, location: OPEN_AT_LATEST });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activationID]);
 
   // Latest facts, read by the list callbacks without re-rendering.
   const rowsRef = useRef(rows);
@@ -108,6 +154,30 @@ export function useTimelineReading({
   const inputAtRef = useRef(0);
   const followedTailRef = useRef('');
   const movedUpRef = useRef(false);
+  const anchorRef = useRef(null);
+  const restoringRef = useRef(false);
+  // The row a reopened browsing view is being brought to: { id, offset,
+  // index }. Rows can still arrive above it while the list opens (the page's
+  // own history catching up), which moves it by index, so it is re-sought on
+  // every change until the reader acts or the restore window ends.
+  const seekingRef = useRef(null);
+  const reseekRef = useRef(() => {});
+  // Bring the sought row back to the top unless it is already on screen. Only
+  // asked when the vendor has admitted every row it was handed, so the index
+  // it seeks is the index it holds.
+  reseekRef.current = () => {
+    const seeking = seekingRef.current;
+    const port = portRef.current;
+    if (!seeking || !port) return;
+    const index = rowsRef.current.findIndex((row) => String(row?.id || '') === seeking.id);
+    if (index < 0) return;
+    const range = rangeRef.current;
+    const at = index + firstRef.current;
+    if (seeking.index === index && range.known && at >= range.start && at <= range.end) return;
+    seeking.index = index;
+    port.seek?.({ index, align: 'start', offset: seeking.offset });
+  };
+  const anchorFrameRef = useRef(0);
   const lastTopRef = useRef(0);
   const scrollerCleanupRef = useRef(null);
   const formalRef = useRef({ ready: true, since: 0, timer: null });
@@ -227,6 +297,9 @@ export function useTimelineReading({
     if (status.attached !== true || status.messageCurrent !== true) return;
     if (status.hasOlder !== true) return;
     if (scheduler.token || scheduler.retryTimer || scheduler.definitive) return;
+    // Rows prepended while a reopened position is still being sought would
+    // move the row it seeks by index; the chain resumes once it has landed.
+    if (seekingRef.current) return;
     const formal = formalRef.current;
     if (!formal.ready) {
       if (Date.now() - formal.since < FORMAL_PENDING_LIMIT_MS) return;
@@ -255,10 +328,19 @@ export function useTimelineReading({
   // ---- list port -----------------------------------------------------------
 
   const list = useMemo(() => {
-    const onInput = () => { inputAtRef.current = Date.now(); };
+    const onInput = () => {
+      inputAtRef.current = Date.now();
+      // The reader took over: whatever is on screen now is theirs.
+      if (seekingRef.current) {
+        seekingRef.current = null;
+        evaluateRef.current();
+      }
+    };
     return Object.freeze({
       attach(port) {
         portRef.current = port;
+        // A reopened browsing view is brought to its row once the list exists.
+        reseekRef.current();
         return () => { if (portRef.current === port) portRef.current = null; };
       },
       bindScroller(node) {
@@ -272,6 +354,13 @@ export function useTimelineReading({
             movedUpRef.current = true;
           }
           lastTopRef.current = top;
+          // Browsing remembers the row at the top, once per frame.
+          if (modeRef.current === READING_MODE.browsing && !anchorFrameRef.current) {
+            anchorFrameRef.current = globalThis.requestAnimationFrame(() => {
+              anchorFrameRef.current = 0;
+              if (modeRef.current === READING_MODE.browsing) anchorRef.current = topAnchor(node) || anchorRef.current;
+            });
+          }
           if (seenTimerRef.current) globalThis.clearTimeout(seenTimerRef.current);
           seenTimerRef.current = globalThis.setTimeout(() => {
             seenTimerRef.current = null;
@@ -316,6 +405,13 @@ export function useTimelineReading({
         const next = value === true;
         atBottomRef.current = next;
         setAtBottomState(next);
+        // A list reopened on a browsing position first reports the bottom
+        // state of its unpositioned first frame; only a report after it has
+        // gone to that position says where the reader is.
+        if (restoringRef.current) {
+          if (next) return;
+          restoringRef.current = false;
+        }
         if (next) {
           movedUpRef.current = false;
           setMode(READING_MODE.following);
@@ -332,6 +428,7 @@ export function useTimelineReading({
           start: Number(range?.startIndex || 0),
           end: Number(range?.endIndex || 0),
         };
+        if (formalRef.current.ready) reseekRef.current();
         evaluateRef.current();
       },
       formalRangeStateChange(state) {
@@ -349,6 +446,7 @@ export function useTimelineReading({
           return;
         }
         formal.ready = true;
+        reseekRef.current();
         evaluateRef.current();
       },
     });
@@ -406,15 +504,36 @@ export function useTimelineReading({
 
   // ---- activation ------------------------------------------------------------
 
-  // A channel or view replacement is a new reading: open at the newest row,
-  // drop every scheduler fact of the previous one.
+  // A channel or view replacement is a new reading: open as the view was
+  // left (see `opening`), drop every scheduler fact of the previous one. On
+  // leaving, remember how it was being read.
   useLayoutEffect(() => {
     const scheduler = schedulerRef.current;
-    modeRef.current = READING_MODE.following;
-    setModeState(READING_MODE.following);
-    atBottomRef.current = true;
-    setAtBottomState(true);
-    movedUpRef.current = false;
+    const browsing = opening.mode === READING_MODE.browsing;
+    modeRef.current = opening.mode;
+    setModeState(opening.mode);
+    atBottomRef.current = !browsing;
+    setAtBottomState(!browsing);
+    movedUpRef.current = browsing;
+    restoringRef.current = browsing;
+    // If the reopened position is itself at the bottom, no "left the bottom"
+    // report ever ends the restore: settle it from the last report.
+    const restoreTimer = browsing ? globalThis.setTimeout(() => {
+      if (seekingRef.current) {
+        seekingRef.current = null;
+        evaluateRef.current();
+      }
+      if (!restoringRef.current) return;
+      restoringRef.current = false;
+      if (atBottomRef.current) {
+        movedUpRef.current = false;
+        setMode(READING_MODE.following);
+      }
+    }, RESTORE_SETTLE_MS) : null;
+    anchorRef.current = opening.anchor;
+    seekingRef.current = browsing && anchorRef.current?.id
+      ? { id: String(anchorRef.current.id), offset: Number(anchorRef.current.offset || 0), index: -1 }
+      : null;
     farRef.current = false;
     setFarFromBottomState(false);
     rangeRef.current = { known: false, start: 0, end: 0 };
@@ -427,13 +546,39 @@ export function useTimelineReading({
     scheduler.retryTimer = null;
     demandRef.current = IDLE_DEMAND;
     setDemandState(IDLE_DEMAND);
-    portRef.current?.toLatest('auto');
     return () => {
       if (scheduler.retryTimer) globalThis.clearTimeout(scheduler.retryTimer);
       scheduler.retryTimer = null;
       scheduler.token = null;
+      if (restoreTimer) globalThis.clearTimeout(restoreTimer);
+      restoringRef.current = false;
+      seekingRef.current = null;
+      if (anchorFrameRef.current) globalThis.cancelAnimationFrame(anchorFrameRef.current);
+      anchorFrameRef.current = 0;
+      const anchor = anchorRef.current;
+      readingPositions.set(positionKey, modeRef.current === READING_MODE.browsing && anchor?.id
+        ? Object.freeze({ mode: READING_MODE.browsing, id: String(anchor.id), offset: Number(anchor.offset || 0) })
+        : Object.freeze({ mode: READING_MODE.following }));
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activationID]);
+
+  // Following means the newest row stays in view. The vendor follows rows
+  // appended at the end on its own; rows inserted in the middle (a gap filled
+  // after a reconnect) or a replaced window keep its pixel offset instead, so
+  // those send it to the newest row. Older history prepended above is never
+  // a reason to move.
+  const changeKind = snapshot.changes?.kind || '';
+  const snapshotRevision = snapshot.revision;
+  useLayoutEffect(() => {
+    if (seekingRef.current) return;
+    if (modeRef.current !== READING_MODE.following) return;
+    if (changeKind !== 'mixed' && changeKind !== 'rebase') return;
+    // The reader is moving the list right now; that input, not this change,
+    // decides whether they are still following.
+    if (Date.now() - inputAtRef.current < INPUT_WINDOW_MS) return;
+    portRef.current?.toLatest('auto');
+  }, [changeKind, snapshotRevision]);
 
   useEffect(() => () => {
     scrollerCleanupRef.current?.();
@@ -546,6 +691,7 @@ export function useTimelineReading({
 
   return useMemo(() => Object.freeze({
     activationID,
+    opening: opening.location,
     mode,
     session: Object.freeze({ mode }),
     atBottom,
@@ -569,6 +715,6 @@ export function useTimelineReading({
     historyBoundary,
   }), [
     activationID, atBottom, availability, demand, farFromBottom, historyBoundary, historyStatus.error,
-    holdPointed, jumpToLatest, list, mode, retryHistoryDemand, toLatest, unseen,
+    holdPointed, jumpToLatest, list, mode, opening, retryHistoryDemand, toLatest, unseen,
   ]);
 }

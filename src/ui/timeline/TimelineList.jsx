@@ -88,6 +88,9 @@ function HistoryHeader({ context }) {
   </div>;
 }
 
+const OPEN_AT_LATEST = Object.freeze({ index: 'LAST', align: 'end' });
+const SEEK_FRAMES = 30;
+
 const VIRTUOSO_COMPONENTS = Object.freeze({
   Footer: WaitingObstructionFooter,
   Header: HistoryHeader,
@@ -102,6 +105,7 @@ export function TimelineList({
   historyStartBoundary,
 }) {
   const virtuosoRef = useRef(null);
+  const seekFrameRef = useRef(0);
   const { list } = reading;
   const rows = snapshot.rows;
   const firstItemIndex = Number(snapshot.firstItemIndex || 1);
@@ -117,12 +121,31 @@ export function TimelineList({
     followGrowth() {
       virtuosoRef.current?.autoscrollToBottom?.();
     },
+    // A reopened browsing position: the row the reader left at the top.
+    // The vendor's handle can still be unset on the list's first frames;
+    // the request waits for it rather than being dropped.
+    seek(location) {
+      globalThis.cancelAnimationFrame(seekFrameRef.current);
+      let frames = 0;
+      const attempt = () => {
+        seekFrameRef.current = 0;
+        const vendor = virtuosoRef.current;
+        if (vendor) {
+          vendor.scrollToIndex({ ...location, behavior: 'auto' });
+          return;
+        }
+        frames += 1;
+        if (frames < SEEK_FRAMES) seekFrameRef.current = globalThis.requestAnimationFrame(attempt);
+      };
+      attempt();
+    },
     // A reader's own action moved what they were pointing at (a collapse
     // shrinks the text above its button). The vendor scrolls by the offset.
     scrollBy(top) {
       virtuosoRef.current?.scrollBy?.({ top, behavior: 'auto' });
     },
   }), [list]);
+  useEffect(() => () => globalThis.cancelAnimationFrame(seekFrameRef.current), []);
 
   const bindScroller = useCallback((node) => list.bindScroller(node || null), [list]);
   const measurementKey = useCallback(
@@ -149,7 +172,9 @@ export function TimelineList({
     tabIndex={0}
     data={rows}
     firstItemIndex={firstItemIndex}
-    initialTopMostItemIndex={{ index: 'LAST', align: 'end' }}
+    // A following view opens at its newest row. A browsing view is brought
+    // back to its row by the reading owner (port.seek), not by this.
+    initialTopMostItemIndex={'opening' in reading ? reading.opening : OPEN_AT_LATEST}
     computeItemKey={(_index, row) => row.id}
     // The same row can render a different height without changing identity
     // (content revision, fold state, editing). The vendor re-measures a row
