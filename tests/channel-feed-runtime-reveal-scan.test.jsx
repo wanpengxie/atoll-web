@@ -25,7 +25,7 @@ function row(seq, sender) {
     },
   };
 }
-const other = { id: 'agent:other:1', kind: 'agent' };
+const other = { id: 'human:alice:1', kind: 'human' };
 const me = { id: 'human:root:1', kind: 'human' };
 
 function wireHarness() {

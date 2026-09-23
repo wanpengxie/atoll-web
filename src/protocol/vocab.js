@@ -23,6 +23,13 @@ export const TYPES = Object.freeze({
   agentSelect: 'agent.select',
   agentOptions: 'agent.options',
   agentContext: 'agent.context',
+  // agent 的 provider 自己开的一轮（后台任务完成后 agent 接着说话）：
+  // drivers/agents/base/providerrun.go。body 是 {task_summary?, text}。
+  agentProviderRun: 'agent.provider.run',
+  // agent 为自己的某次工具调用在后台跑的活（子 agent、后台命令）的一步：
+  // drivers/agents/base/subtask.go。parent_id 是那次调用所服务的请求。
+  // body 是 {call_id, task_id?, phase, kind?, title?, text?}。
+  agentTask: 'agent.task',
 
   // 人对人：humancell 的三个词。
   humanMessage: 'human.message',

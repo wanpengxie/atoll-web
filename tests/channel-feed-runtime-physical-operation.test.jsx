@@ -108,7 +108,7 @@ describe('Feed PhysicalOperation / WaiterLease boundary', () => {
       generation: 1,
     })).toBe(true);
     expect(snapshot.enqueue({
-      ...row(2, { sender: { id: 'agent:other:1', kind: 'agent' } }),
+      ...row(2, { sender: { id: 'human:alice:1', kind: 'human' } }),
       ref: requests[0].ref,
       generation: 1,
     })).toBe(true);
@@ -333,7 +333,7 @@ describe('Feed PhysicalOperation / WaiterLease boundary', () => {
       ref: requests[0].ref, generation: 1,
     })).toBe(true);
     expect(snapshot.enqueue({
-      ...row(2, { sender: { id: 'agent:other:1', kind: 'agent' } }),
+      ...row(2, { sender: { id: 'human:alice:1', kind: 'human' } }),
       ref: requests[0].ref, generation: 1,
     })).toBe(true);
     expect(snapshot.pageEnd({

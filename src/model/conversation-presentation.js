@@ -191,7 +191,7 @@ function candidateOf(entry, previous, next, preservedContinuation, contentVersio
     continuation: typeof preservedContinuation === 'boolean'
       ? preservedContinuation
       : continuationOf(previous, entry),
-    contentRevision: `${bounds.high}:${Math.max(0, Number(contentVersion) || 0)}`,
+    contentRevision: `${bounds.high}:${Math.max(0, Number(contentVersion) || 0)}${entry?.subTaskRevision ? `:${entry.subTaskRevision}` : ''}`,
     layoutClass: layoutClassOf(entry),
     settled: settledOf(entry),
     localState,
@@ -616,33 +616,31 @@ function directlyMine(envelope, selfID) {
   ));
 }
 
-// A scheduler fire is the sole agent-authored/self-addressed fact that seeds a
-// person-visible conversation without a human envelope. Keep the accepted
-// shape closed so ordinary agent self-traffic cannot enter the mine scope.
-function canonicalAgentTimerFire(envelope) {
-  const sender = envelope?.sender;
-  return envelope?.kind === 'event'
-    && typeof envelope.id === 'string'
-    && envelope.id.startsWith('timer:')
-    && !envelope.parent_id
-    && envelope.correlation_id === envelope.id
-    && sender?.kind === 'agent'
-    && Boolean(sender.id)
-    && Array.isArray(envelope.audience)
-    && envelope.audience.length === 1
-    && envelope.audience[0] === sender.id;
+// Members other than people also start conversations here: a scheduler fire,
+// a provider run reporting a finished background task, an agent's own call to
+// the system door, one agent asking another. A person watching the channel
+// must see that work the same way they see their own, so every root a member
+// started seeds the conversation just as a direct human fact does. Only a
+// root: a member's message under someone else's request belongs to that
+// request's conversation, and another person's conversation stays theirs.
+const MEMBER_SENDER_KINDS = new Set(['agent', 'tool', 'peer']);
+
+function memberInitiatedRoot(envelope) {
+  return MEMBER_SENDER_KINDS.has(envelope?.sender?.kind)
+    && Boolean(envelope.sender.id)
+    && !envelope.parent_id;
 }
 
 // Mine is a relation over the canonical ledger, not a sender/audience test on
-// one materialized entry. A direct human fact (or canonical timer fire) seeds
-// the conversation; one parent/correlation pass admits its related facts.
+// one materialized entry. A direct human fact (or a root a member started)
+// seeds the conversation; one parent/correlation pass admits its related facts.
 function relatedConversationEnvelopeIDs(state, selfID) {
   const rows = [...(state?.rows?.values?.() || [])];
   const seedIDs = new Set();
   const correlations = new Set();
   for (const envelope of rows) {
     if (selfOperation(envelope)
-      || (!directlyMine(envelope, selfID) && !canonicalAgentTimerFire(envelope))) continue;
+      || (!directlyMine(envelope, selfID) && !memberInitiatedRoot(envelope))) continue;
     if (envelope.id) seedIDs.add(envelope.id);
     const correlation = correlationOf(envelope);
     if (correlation) correlations.add(correlation);
@@ -660,6 +658,24 @@ function entryMatchesConversation(entry, related) {
   const envelopes = entryEnvelopes(entry);
   return envelopes.some((envelope) => !selfOperation(envelope))
     && envelopes.some((envelope) => envelope?.id && related.has(envelope.id));
+}
+
+// The one answer to "is this envelope part of the reader's conversation": the
+// mine view shows exactly the entries it admits, and unread asks the same
+// question to decide which read position governs a row. Two definitions let a
+// row be shown in the mine view yet judged against the all position, so
+// reading the mine view to the bottom could never clear it and scrolling back
+// up brought it back as new.
+export function conversationRelation(state, selfID) {
+  const related = relatedConversationEnvelopeIDs(state, selfID);
+  const byEnvelope = new Map();
+  for (const entry of state?.timeline || []) {
+    const inConversation = entryMatchesConversation(entry, related);
+    for (const envelope of entryEnvelopes(entry)) {
+      if (envelope?.id) byEnvelope.set(envelope.id, inConversation);
+    }
+  }
+  return (envelope) => byEnvelope.get(envelope?.id) ?? related.has(envelope?.id);
 }
 
 function entryMatchesActors(entry, actors) {
@@ -749,6 +765,49 @@ function localEchoEntries(localEchoes, selfID, landed, timelinePlaced) {
   });
 }
 
+// Background work an agent sets off (a sub agent, a background shell) reports
+// as agent.task events whose parent is the request the starting call served.
+// They belong to that request's card, not to the timeline: a busy sub agent
+// reports every few seconds, and each step as its own row would bury the
+// conversation. The card that holds the request — as its root or anywhere in
+// its thread — takes them; a step whose request is not on screen stays a row
+// of its own so nothing is lost.
+function attachSubTasks(items, state) {
+  const byRequest = new Map();
+  for (const envelope of state?.rows?.values?.() || []) {
+    if (envelope?.type !== TYPES.agentTask || !envelope.parent_id) continue;
+    const list = byRequest.get(envelope.parent_id) || [];
+    list.push(envelope);
+    byRequest.set(envelope.parent_id, list);
+  }
+  if (!byRequest.size) return items;
+  const holders = new Map();
+  items.forEach((entry, index) => {
+    if (entry?.kind !== 'turn') return;
+    const visit = (node) => {
+      if (node?.turn?.requestId && byRequest.has(node.turn.requestId)) holders.set(node.turn.requestId, index);
+      for (const child of node?.thread || []) visit(child);
+    };
+    visit(entry);
+  });
+  const attached = new Map();
+  for (const [requestID, index] of holders) {
+    const list = attached.get(index) || [];
+    list.push(...byRequest.get(requestID));
+    attached.set(index, list);
+  }
+  const out = [];
+  items.forEach((entry, index) => {
+    if (entry?.kind === 'standalone' && entry.envelope?.type === TYPES.agentTask
+      && holders.has(entry.envelope.parent_id)) return;
+    const steps = attached.get(index);
+    if (!steps) { out.push(entry); return; }
+    steps.sort((left, right) => (Number(left.ts) || 0) - (Number(right.ts) || 0));
+    out.push({ ...entry, subTasks: steps, subTaskRevision: steps.length });
+  });
+  return out;
+}
+
 // Semantic projection is exported from the Presentation owner. It consumes the
 // Replica's canonical timeline and does not retain or mutate another ledger.
 export function selectTimelineItems(state, {
@@ -783,8 +842,8 @@ export function selectTimelineItems(state, {
   for (const entry of filtered) {
     if (transient(entry)) latestTransient.set(`${entry.envelope?.sender?.id || ''}:${entry.envelope?.type || ''}`, entry);
   }
-  let items = filtered.filter((entry) => !transient(entry)
-    || latestTransient.get(`${entry.envelope?.sender?.id || ''}:${entry.envelope?.type || ''}`) === entry);
+  let items = attachSubTasks(filtered.filter((entry) => !transient(entry)
+    || latestTransient.get(`${entry.envelope?.sender?.id || ''}:${entry.envelope?.type || ''}`) === entry), state);
   if (showNarration && state?.narration?.length) {
     const narrationSeq = state.narration[0].seq;
     const narration = { kind: 'narration', seq: narrationSeq };

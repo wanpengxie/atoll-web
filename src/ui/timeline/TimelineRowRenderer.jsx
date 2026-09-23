@@ -9,6 +9,7 @@ import { DECISIONS, isSystemWord, TYPES } from '../../protocol/vocab.js';
 import { messageTimeLabel } from '../../util/time.js';
 import { MarkdownContent } from '../MarkdownContent.jsx';
 import { FoldableBody } from './FoldableBody.jsx';
+import { useMessageLayoutState } from './MessageLayoutState.jsx';
 import { lostReason, memberRestarts } from '../../model/request-lifecycle.js';
 
 const RESULT_META = new Set(['status', 'reason', 'error_code', 'detail', 'cancelled', 'closed_by']);
@@ -1089,7 +1090,7 @@ function supersededTurn(turn) {
 
 const LOST_LABEL = Object.freeze({ restart: '未完成 · Agent 已重启', expired: '未完成 · 已过期' });
 
-function AgentAnswer({ turn, names, fold, lost = '', onDownload, onPreview, onReply, onOpen, onOpenRow }) {
+function AgentAnswer({ turn, names, fold, lost = '', hasThreadChildren = false, onDownload, onPreview, onReply, onOpen, onOpenRow }) {
   const request = turn.request; const terminal = terminalContentEnvelope(turn);
   const stopped = isInterruptedTerminal(turn);
   const liveEnvelope = terminal || turn.provisional?.at(-1)?.envelope || null;
@@ -1110,7 +1111,7 @@ function AgentAnswer({ turn, names, fold, lost = '', onDownload, onPreview, onRe
   // nothing to show, the bubble would read as the bare word 已完成.
   if (supersededTurn(turn) && content.length === 0 && !stopped && !turn.terminalClosureOnly) return null;
   return <ReplyableMessageFrame envelope={answerEnvelope} turn={turn} onReply={terminal ? onReply : null} onOpen={onOpen}
-    className={`agent-turn-bubble ${turn.terminal || lost ? 'settled' : 'processing'}`} contentClassName="response-body"
+    className={`agent-turn-bubble ${turn.terminal || lost ? 'settled' : 'processing'}${hasThreadChildren ? ' has-thread-children' : ''}`} contentClassName="response-body"
     identity={<span className="actor-icon kind-agent">{String(nameOf(agentId, names) || 'A').slice(0, 1).toUpperCase()}</span>}
   >
     <header><strong>{nameOf(agentId, names)}</strong><small className="ai-label">AI</small>{liveEnvelope?.ts && <time>{messageTimeLabel(liveEnvelope.ts)}</time>}{turn.terminal && (stopped ? null : turn.status === 'failed' ? <span className="response-failed">处理失败</span> : <small>已完成</small>)}{!turn.terminal && lost && <span className="response-failed">{LOST_LABEL[lost] || LOST_LABEL.expired}</span>}</header>
@@ -1137,10 +1138,11 @@ function ThreadCalls({ root, thread, names }) {
   return <ContentFrame contained><button type="button" className={`turn-thread-toggle${failed ? ' has-failure' : ''}`} aria-expanded={open} onClick={() => setOpen((value) => !value)}><span className={running ? 'pulse' : 'pulse done'} /><span>{items.length} 次关联调用</span><small>{running ? `${running} 处理中` : failed ? `${failed} 失败` : '已完成'}</small><span aria-hidden="true">{open ? '⌃' : '⌄'}</span></button>{open && <ol className="turn-thread-list">{items.map((item) => <ThreadCall key={item.turn.requestId} item={item} names={names} />)}</ol>}</ContentFrame>;
 }
 
-function TurnCard({ turn, names, selfId, access, targetAuthority, fold, lost = '', approvalState, editing, onResolve, onCancel, onControl, onEdit, onDownload, onPreview, onReply, onCreateTask, onOpen }) {
+function TurnCard({ turn, subTasks, names, selfId, access, targetAuthority, fold, lost = '', approvalState, editing, onResolve, onCancel, onControl, onEdit, onDownload, onPreview, onReply, onCreateTask, onOpen }) {
   const request = turn.request; const actorId = request.audience?.[0] || '';
   if ([TYPES.humanAsk, TYPES.humanApprove].includes(request.type) && request.audience?.includes(selfId)) return <ContentFrame><ApprovalCard turn={turn} names={names} state={approvalState} onResolve={onResolve} /></ContentFrame>;
   const pending = !turn.terminal && !lost; const local = request.local_submission_state;
+  const tree = supersededTurn(turn) ? { items: [], members: [] } : agentTreeItems(turn, turn.thread, subTasks);
   const recipients = (request.audience || []).map((id) => nameOf(id, names)).join('、');
   // WorkspaceApp rejects a reply whose sender is the current user. Keep the
   // renderer aligned with that owner contract so a self-authored request does
@@ -1166,20 +1168,218 @@ function TurnCard({ turn, names, selfId, access, targetAuthority, fold, lost = '
       <header><strong>{nameOf(request.sender?.id, names)}</strong>{request.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{messageTimeLabel(request.ts)}</time>{recipients && <span className="recipient-label">发送给 {recipients}</span>}{local && <small>{local}</small>}</header>
       <div className="request-text"><EnvelopeBody envelope={request} fold={fold} onDownload={onDownload} onPreview={onPreview} contentKeyPrefix="request" /></div>{editing?.targetId === turn.requestId && <small className="message-editing-state">正在输入框中编辑</small>}
     </ReplyableMessageFrame>
-    <AgentAnswer turn={turn} names={names} fold={fold} lost={lost} onDownload={onDownload} onPreview={onPreview} onReply={onReply} onOpen={onOpenProcess}
+    <AgentAnswer turn={turn} names={names} fold={fold} lost={lost} hasThreadChildren={tree.items.length > 0} onDownload={onDownload} onPreview={onPreview} onReply={onReply} onOpen={onOpenProcess}
       onOpenRow={onOpen ? (row) => onOpen(turn, row.key) : undefined} />
+    <AgentThreadTree items={tree.items} names={names} />
     {/* A superseded turn produced nothing: no answer bubble, and no record of
         the calls it made on the way there either. Leaving the calls behind put
         a bare 「1 次关联调用」 tail under a message whose body was suppressed. */}
     {!(supersededTurn(turn) && !(turn.provisional?.length > 0))
-      && <ThreadCalls root={turn} thread={turn.thread} names={names} />}
+      && <ThreadCalls root={turn} thread={(turn.thread || []).filter((item) => !tree.members.includes(item))} names={names} />}
   </section>;
+}
+
+// Background work an agent set off for this request: one line per task —
+// state, what it is, how long it has run, and while it runs what it is doing
+// now. Opening a task shows what the sub agent said and what it came back
+// with. All of it is secondary to the conversation, so it is set small.
+function subTaskDuration(ms) {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  if (seconds < 60) return `${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} 分 ${seconds % 60} 秒`;
+  return `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`;
+}
+
+function groupSubTasks(steps) {
+  const tasks = new Map();
+  for (const envelope of steps) {
+    const body = argsOf(envelope) || {};
+    const key = String(body.call_id || envelope.id);
+    const task = tasks.get(key) || { key, sender: envelope.sender?.id, kind: '', title: '', phase: 'started', startedAt: 0, endedAt: 0, latest: '', messages: [], result: '' };
+    const ts = Number(envelope.ts) || 0;
+    if (!task.startedAt || (ts && ts < task.startedAt)) task.startedAt = ts;
+    if (body.kind) task.kind = body.kind;
+    if (body.title) task.title = body.title;
+    const text = String(body.text || '').trim();
+    if (body.phase === 'progress' && text) task.latest = text;
+    if (body.phase === 'message' && text) { task.messages.push(text); task.latest = text; }
+    if (body.phase === 'completed' || body.phase === 'failed') {
+      task.phase = body.phase;
+      task.endedAt = ts;
+      if (text) task.result = text;
+    }
+    tasks.set(key, task);
+  }
+  return [...tasks.values()];
+}
+
+const SUB_TASK_STATE = Object.freeze({ started: '进行中', completed: '已完成', failed: '失败' });
+
+// One background task as a leaf of the agent tree: state, what it is, how long
+// it ran, and while it runs what it is doing now; opening it shows what the sub
+// agent said and what it came back with. Secondary to the conversation, so small.
+function SubTaskLeaf({ task, names }) {
+  const elapsed = task.startedAt ? subTaskDuration((task.endedAt || Date.now()) - task.startedAt) : '';
+  const line = <>
+    <span className={`sub-task-state state-${task.phase}`}>{SUB_TASK_STATE[task.phase] || task.phase}</span>
+    <span className="sub-task-kind">{task.kind === 'shell' ? '后台命令' : '子 Agent'}</span>
+    <span className="sub-task-title">{task.title || '（未命名任务）'}</span>
+    {elapsed && <time>{task.endedAt ? `用时 ${elapsed}` : `已运行 ${elapsed}`}</time>}
+    {task.sender && <span className="sub-task-owner">{nameOf(task.sender, names)}</span>}
+    {task.phase === 'started' && task.latest && <span className="sub-task-latest">{task.latest.split('\n')[0].slice(0, 120)}</span>}
+  </>;
+  if (!task.messages.length && !task.result) return <div className="sub-task"><div className="sub-task-line">{line}</div></div>;
+  return <details className="sub-task">
+    <summary className="sub-task-line">{line}</summary>
+    {task.messages.length > 0 && <ol className="sub-task-messages">{task.messages.map((text, index) => <li key={index}><MarkdownContent contentKey={`sub-task:${task.key}:message:${index}`} text={text} /></li>)}</ol>}
+    {task.result && <div className="sub-task-result"><MarkdownContent contentKey={`sub-task:${task.key}:result`} text={task.result} /></div>}
+  </details>;
+}
+
+// The report a provider run was answering, as the leaf under what the agent
+// then said about it.
+function ProviderRunLeaf({ envelope }) {
+  const summary = String(argsOf(envelope)?.task_summary || '').trim();
+  if (!summary) return null;
+  const title = (summary.split('\n').find((line) => line.trim()) || '').replace(/^#+\s*/, '').replace(/[*_`]/g, '').trim();
+  return <details className="sub-task">
+    <summary className="sub-task-line"><span className="sub-task-state state-completed">后台任务已返回</span><span className="sub-task-title">{title.length > 80 ? `${title.slice(0, 80)}…` : title}</span></summary>
+    <div className="sub-task-result"><MarkdownContent contentKey={`provider-run:${envelope.id}:task`} text={summary} /></div>
+  </details>;
+}
+
+// Rails of a preorder tree: which vertical lines pass through, or end at, the
+// node at index. Restored from the pre-2026-09-19 AgentThreadMessages.
+function hasLaterThreadSibling(items, index, depth) {
+  for (let cursor = index + 1; cursor < items.length; cursor += 1) {
+    const nextDepth = items[cursor].depth;
+    if (nextDepth < depth) return false;
+    if (nextDepth === depth) return true;
+  }
+  return false;
+}
+function ancestorThreadIndex(items, index, depth) {
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const candidateDepth = items[cursor].depth;
+    if (candidateDepth === depth) return cursor;
+    if (candidateDepth < depth) return -1;
+  }
+  return -1;
+}
+function threadRails(items, index) {
+  const depth = items[index].depth;
+  const rails = [];
+  for (let level = 1; level <= depth; level += 1) {
+    const ownerIndex = level === depth ? index : ancestorThreadIndex(items, index, level);
+    if (ownerIndex < 0) continue;
+    const continues = hasLaterThreadSibling(items, ownerIndex, level);
+    if (level < depth && !continues) continue;
+    rails.push({ level, continues });
+  }
+  return rails;
+}
+
+function ThreadTree({ items, label, render }) {
+  if (!items.length) return null;
+  return <ol className="agent-message-thread" role="tree" aria-label={label}>
+    {items.map((item, index) => {
+      const hasChildren = items[index + 1]?.depth === item.depth + 1;
+      return <li key={item.key} className={`agent-thread-node${item.leaf ? ' sub-task-node' : ''}${item.status ? ` status-${item.status}` : ''}${hasChildren ? ' has-children' : ''}`} style={{ '--thread-depth': item.depth }} role="treeitem" aria-level={item.depth + 1}>
+        <span className="agent-thread-elbow" aria-hidden="true" />
+        {threadRails(items, index).map((rail) => <span key={rail.level} className={`agent-thread-rail ${rail.continues ? 'continues' : 'ends'}`} style={{ '--thread-rail-level': rail.level }} aria-hidden="true" />)}
+        {hasChildren && <span className="agent-thread-child-stem" aria-hidden="true" />}
+        <div className="agent-thread-response">{render(item)}</div>
+      </li>;
+    })}
+  </ol>;
+}
+
+// A call one member made to another inside this request — an agent asking an
+// agent, an agent calling a tool — as a compact message in the tree: who
+// answered, what they were asked, what they said. Collapsed to a few lines.
+function ThreadMessage({ turn, names, expanded, onToggle }) {
+  const request = turn.request;
+  const responder = turn.terminal?.sender?.id || request.audience?.[0] || '';
+  const responderKind = String(responder).split(':')[0] || 'agent';
+  const terminal = terminalContentEnvelope(turn);
+  const status = turn.terminal ? (turn.status === 'failed' ? '失败' : '') : '处理中';
+  const ts = turn.terminal?.ts || request.ts;
+  return <article className={`agent-thread-message agent-turn-bubble compact ${turn.terminal ? 'settled' : 'processing'}${expanded ? ' is-expanded' : ' is-collapsed'}`} tabIndex="0">
+    <div className="agent-thread-identity-row">
+      <span className={`actor-icon kind-${responderKind}`}>{String(nameOf(responder, names) || responderKind).slice(0, 1).toUpperCase()}</span>
+      <header><strong>{nameOf(responder, names)}</strong>{responderKind === 'agent' && <small className="ai-label">AI</small>}{ts && <time>{messageTimeLabel(ts)}</time>}{status && <small className={turn.status === 'failed' ? 'response-failed' : ''}>{status}</small>}</header>
+      <button type="button" className="agent-thread-collapse-toggle" aria-label={`${expanded ? '收起' : '展开'} ${nameOf(responder, names)} 的协作消息`} aria-expanded={expanded} onClick={onToggle}><span aria-hidden="true">⌄</span></button>
+    </div>
+    <div className="agent-thread-content" aria-hidden={!expanded} inert={!expanded ? true : undefined}>
+      <blockquote className="agent-request-quote">
+        <header><span>回复 <strong>{nameOf(request.sender?.id, names)}</strong></span><span aria-hidden="true">·</span><time>{messageTimeLabel(request.ts)}</time></header>
+        <div className="agent-request-quote-text"><MarkdownContent contentKey={`thread-request:${request.id}:body`} text={textOf(request) || request.type} /></div>
+      </blockquote>
+      {terminal
+        ? <div className="response-content"><StructuredResult requestType={request.type} payload={argsOf(terminal)} contentKey={`thread:${terminal.id || turn.requestId}:body`} /></div>
+        : turn.terminalClosureOnly ? <p className="terminal-result-unavailable">{terminalResultState(turn).error}</p> : null}
+      <ProgressTrail turn={turn} title={textOf(request)} />
+    </div>
+  </article>;
+}
+
+// The work set off inside one request, as one tree under the answer: every
+// call a member made (depth by who called whom) and, under the call's request,
+// the background tasks it started. Preorder, so the rails can be drawn.
+function agentTreeItems(root, thread, subTasks) {
+  const tasksByRequest = new Map();
+  for (const envelope of subTasks || []) {
+    const list = tasksByRequest.get(envelope.parent_id) || [];
+    list.push(envelope);
+    tasksByRequest.set(envelope.parent_id, list);
+  }
+  const members = (thread || []).filter((item) => item?.turn?.request?.sender?.kind && item.turn.request.sender.kind !== 'human');
+  const known = new Set(members.map((item) => item.turn.requestId));
+  const children = new Map();
+  for (const item of members) {
+    const parent = String(item.turn.request?.parent_id || '');
+    const key = known.has(parent) ? parent : root.requestId;
+    const list = children.get(key) || [];
+    list.push(item);
+    children.set(key, list);
+  }
+  const items = [];
+  const visit = (requestID, depth, seen) => {
+    for (const item of children.get(requestID) || []) {
+      if (seen.has(item.turn.requestId)) continue;
+      seen.add(item.turn.requestId);
+      items.push({ key: item.turn.requestId, depth, turn: item.turn, status: item.turn.status });
+      visit(item.turn.requestId, depth + 1, seen);
+    }
+    for (const task of groupSubTasks(tasksByRequest.get(requestID) || [])) {
+      items.push({ key: `task:${task.key}`, depth, leaf: true, task, status: task.phase });
+    }
+  };
+  visit(root.requestId, 1, new Set([root.requestId]));
+  return { items, members };
+}
+
+function AgentThreadTree({ items, names }) {
+  const [expanded, setExpanded] = useMessageLayoutState('agent-thread-expanded', []);
+  return <ThreadTree items={items} label="Agent 协作消息" render={(item) => (item.leaf
+    ? <SubTaskLeaf task={item.task} names={names} />
+    : <ThreadMessage turn={item.turn} names={names} expanded={expanded.includes(item.key)} onToggle={() => setExpanded((current) => {
+      const next = new Set(current);
+      if (next.has(item.key)) next.delete(item.key);
+      else next.add(item.key);
+      return [...next];
+    })} />)} />;
 }
 
 function Standalone({ envelope, names, selfId, continuation, fold, onDownload, onPreview, onReply, onCreateTask }) {
   const senderName = nameOf(envelope.sender?.id, names);
   return <ReplyableMessageFrame envelope={envelope} onReply={onReply} onCreateTask={onCreateTask} className={`standalone-row${continuation ? ' continuation' : ''}${envelope.sender?.id === selfId ? ' self' : ''}`} identity={continuation ? <time className="continuation-time" aria-label={`${senderName}，${messageTimeLabel(envelope.ts)}`}>{messageTimeLabel(envelope.ts)}</time> : actorIcon(envelope, names)}>
-    {!continuation && <header><strong>{senderName}</strong>{envelope.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{messageTimeLabel(envelope.ts)}</time></header>}<EnvelopeBody envelope={envelope} fold={fold} onDownload={onDownload} onPreview={onPreview} />
+    {!continuation && <header><strong>{senderName}</strong>{envelope.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{messageTimeLabel(envelope.ts)}</time></header>}{envelope.type === TYPES.agentTask
+      ? <ThreadTree items={groupSubTasks([envelope]).map((task) => ({ key: task.key, depth: 1, leaf: true, task, status: task.phase }))} label="后台任务" render={(item) => <SubTaskLeaf task={item.task} names={names} />} />
+      : <EnvelopeBody envelope={envelope} fold={fold} onDownload={onDownload} onPreview={onPreview} />}
+    {envelope.type === TYPES.agentProviderRun && argsOf(envelope)?.task_summary
+      && <ThreadTree items={[{ key: 'report', depth: 1, leaf: true, status: 'completed' }]} label="后台任务" render={() => <ProviderRunLeaf envelope={envelope} />} />}
   </ReplyableMessageFrame>;
 }
 function Narration({ rows, names }) {
@@ -1214,7 +1414,7 @@ export function useTimelineRowRenderer({ state, names, selfId, access = '', targ
     const rowFold = { ...fold, latest: row.id === latestRowID, automaticExpanded: browsingExpandedSlots.has(row.visualSlotID || row.id) };
     let content = null;
     if (entry?.kind === 'narration') content = <ContentFrame><Narration rows={state.narration} names={names} /></ContentFrame>;
-    else if (entry?.kind === 'turn') content = <TurnCard turn={{ ...entry.turn, thread: entry.thread || [] }} names={names} selfId={selfId} access={access} targetAuthority={targetAuthority} fold={rowFold} lost={lostReason(entry.turn, restarts)} approvalState={approvalStates?.[entry.turn.request.id]} editing={presentationEditing}
+    else if (entry?.kind === 'turn') content = <TurnCard turn={{ ...entry.turn, thread: entry.thread || [] }} subTasks={entry.subTasks} names={names} selfId={selfId} access={access} targetAuthority={targetAuthority} fold={rowFold} lost={lostReason(entry.turn, restarts)} approvalState={approvalStates?.[entry.turn.request.id]} editing={presentationEditing}
       onResolve={port?.onResolve ? (requestID, decision, payload) => port.onResolve(state.channelId, requestID, decision, payload) : undefined}
       onCancel={port?.onCancel ? (requestID) => port.onCancel(state.channelId, requestID) : undefined}
       onControl={port?.onTaskControl ? (turn, actorId, type, payload) => port.onTaskControl({

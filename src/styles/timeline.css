@@ -315,6 +315,24 @@
 .request-text p, .response-content p { margin: 2px 0 8px; white-space: pre-wrap; }
 .request-text p:last-child, .response-content p:last-child { margin-bottom: 0; }
 .request-text .message-detail, .standalone-row .message-detail { margin-top: 2px; color: var(--text-muted); font-size: 12px; }
+.agent-turn-bubble.has-thread-children { position: relative; }
+/* A sub agent is a leaf of the agent tree: one indent in, small and muted. */
+.sub-task-node .agent-thread-response { padding: 4px 8px 4px 4px; color: var(--text-muted); font-size: 12px; line-height: 1.55; }
+.sub-task-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; }
+details.sub-task > summary { cursor: pointer; list-style: none; }
+details.sub-task > summary::-webkit-details-marker { display: none; }
+details.sub-task > summary::after { color: var(--text-dim); content: '⌄'; }
+details.sub-task[open] > summary::after { content: '⌃'; }
+.sub-task-state.state-started { color: var(--warning); }
+.sub-task-state.state-failed { color: var(--danger); }
+.sub-task-title { color: var(--text); }
+.sub-task-latest { flex-basis: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sub-task-messages { margin: 4px 0; padding-left: 18px; }
+.sub-task-result { margin: 4px 0; padding-top: 4px; border-top: 1px dashed var(--line-control); }
+.sub-task-node .markdown-content :is(p, li, h1, h2, h3, h4, h5, h6, td, th, blockquote, pre, code) { font-size: 12px; line-height: 1.55; }
+.sub-task-node .markdown-content :is(h1, h2, h3, h4, h5, h6) { margin: 8px 0 4px; font-weight: 600; }
+/* Under a message of its own the tree hangs from the text, not the avatar. */
+.standalone-row .agent-message-thread { margin: 4px 0 2px; }
 .request-text ul, .request-text ol, .response-content ul, .response-content ol { margin: 5px 0 9px; padding-left: 22px; }
 .request-text li, .response-content li { margin: 3px 0; }
 .request-text h3, .response-content h3 { margin: 10px 0 5px; font-size: 14px; }
@@ -554,11 +572,10 @@
   .timeline-actor-filter button:hover { border-color: var(--line-control); opacity: 1; background: var(--surface-selected); }
 }
 .timeline-actor-filter button.is-on { border-color: var(--line-control); opacity: 1; background: var(--surface-selected); font-weight: 700; }
-.timeline-actor-filter button.activity-active, .timeline-actor-filter button.activity-settled { opacity: .78; }
+.timeline-actor-filter button.activity-active { opacity: .78; }
 .timeline-actor-filter button.is-stale { max-width: 13em; border-style: dashed; color: var(--text-muted); }
 .agent-activity-dot { width: 6px; height: 6px; flex: 0 0 auto; border-radius: 50%; background: var(--online); box-shadow: 0 0 5px color-mix(in srgb, var(--online), transparent 30%); }
 .activity-active .agent-activity-dot { animation: progress-live-pulse 1.5s ease-in-out infinite; }
-.activity-settled .agent-activity-dot { background: var(--danger); box-shadow: 0 0 4px color-mix(in srgb, var(--danger), transparent 45%); }
 .timeline-scope > button { display: flex; min-height: 32px; align-items: center; padding: 5px 11px; border: 1px solid var(--line-control-strong); border-radius: var(--pill); opacity: .6; background: var(--raised); color: var(--text); box-shadow: 0 4px 16px var(--shadow-2), 0 1px 3px var(--shadow); cursor: pointer; font-size: 11px; font-weight: 650; transition: opacity .12s; }
 .timeline-scope > button:hover, .timeline-scope > button:focus-visible { border-color: var(--line-control); opacity: 1; background: var(--surface-selected); }
 
