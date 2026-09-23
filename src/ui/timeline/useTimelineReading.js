@@ -58,6 +58,10 @@ function installedHighSeq(rows, headSeq) {
   return high;
 }
 
+// A reader-pointed element is held in place only until the reader acts again.
+const READER_INPUT = ['wheel', 'touchstart', 'pointerdown', 'keydown'];
+const HOLD_WINDOW_MS = 600;
+
 function historyErrorMessage(error) {
   return String(error?.detail || error?.message || error || '读取更早动态失败');
 }
@@ -343,6 +347,46 @@ export function useTimelineReading({
     setMode(READING_MODE.following);
     portRef.current?.toLatest('auto');
   }, [setMode]);
+  // The reader acted on something inside a row (collapsed it), and that
+  // action changes the height above what they pointed at. Stop following —
+  // the reader is on this row — and keep the pointed element where it was
+  // while the change lands: the DOM change itself (MutationObserver, before
+  // the next frame) and the layout passes that follow it (ResizeObserver)
+  // each let the vendor scroll by however far the element moved. It ends on
+  // the reader's own next input or after a short window. No lease: the next
+  // change after that is the vendor's as usual.
+  const holdPointed = useCallback((node, container = node?.parentElement) => {
+    if (!node?.isConnected || !container) return;
+    const before = node.getBoundingClientRect().top;
+    movedUpRef.current = true;
+    setMode(READING_MODE.browsing);
+    let stopped = false;
+    const correct = () => {
+      if (stopped || !node.isConnected) return;
+      const delta = node.getBoundingClientRect().top - before;
+      if (Math.abs(delta) > 1) portRef.current?.scrollBy?.(delta);
+    };
+    const mutation = typeof MutationObserver === 'function' ? new MutationObserver(correct) : null;
+    const resize = typeof ResizeObserver === 'function' ? new ResizeObserver(correct) : null;
+    mutation?.observe(container, { childList: true, subtree: true, attributes: true, characterData: true });
+    resize?.observe(container);
+    // The vendor answers the row's new size by re-laying the list (its own
+    // offsets, its own scroll corrections); those move the element too.
+    const itemList = container.closest('[data-testid="virtuoso-item-list"]');
+    if (itemList) mutation?.observe(itemList, { attributes: true, attributeFilter: ['style'] });
+    const scroller = container.closest('.timeline-message-list');
+    scroller?.addEventListener('scroll', correct, { passive: true });
+    const stop = () => {
+      if (stopped) return;
+      stopped = true;
+      mutation?.disconnect();
+      resize?.disconnect();
+      scroller?.removeEventListener('scroll', correct);
+      for (const type of READER_INPUT) scroller?.removeEventListener(type, stop, true);
+    };
+    for (const type of READER_INPUT) scroller?.addEventListener(type, stop, { capture: true, passive: true });
+    globalThis.setTimeout(stop, HOLD_WINDOW_MS);
+  }, [setMode]);
   const jumpToLatest = useCallback(() => {
     toLatest();
     void historyRef.current?.refreshLatest?.();
@@ -487,6 +531,7 @@ export function useTimelineReading({
     list,
     toLatest,
     jumpToLatest,
+    holdPointed,
     availability,
     availabilityError: String(historyStatus.error || ''),
     retryAvailability: () => {
@@ -498,6 +543,6 @@ export function useTimelineReading({
     historyBoundary,
   }), [
     activationID, atBottom, availability, demand, farFromBottom, historyBoundary, historyStatus.error,
-    jumpToLatest, list, mode, retryHistoryDemand, toLatest, unseen,
+    holdPointed, jumpToLatest, list, mode, retryHistoryDemand, toLatest, unseen,
   ]);
 }

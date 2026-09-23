@@ -163,6 +163,13 @@ export function ConversationSurface({
         : '已到频道最早一条动态',
     });
   }, [identityPending, viewport.availability, viewport.historyBoundary, viewport.historyDemand?.phase]);
+  // Collapsing a long message shrinks the text above its button: keep the
+  // button where the reader tapped it (see holdPointed).
+  const holdPointed = viewport.holdPointed;
+  const toggleFoldHeld = useCallback((id, folded, element) => {
+    if (!folded) holdPointed(element, element?.closest('.message-fold'));
+    toggleFold(id, folded);
+  }, [holdPointed, toggleFold]);
   const {
     rowRenderRevision,
     renderRow,
@@ -186,7 +193,7 @@ export function ConversationSurface({
     onCreateTask,
     onReply,
     startEditing,
-    toggleFold,
+    toggleFold: toggleFoldHeld,
   });
   const openFileReference = useCallback((reference) => {
     onPreviewResource?.(state.channelId, reference);

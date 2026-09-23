@@ -59,6 +59,10 @@ async function login(page) {
   await page.getByRole('button', { name: '进入 Atoll' }).click();
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
   await expect(page.locator('.timeline-message-list')).toBeVisible();
+  // The list mounts before a delayed first page lands, and the vendor then
+  // measures and places the latest row before showing any. The observed
+  // burst is about history browsing, so it starts from a shown surface.
+  await expect(page.locator('.timeline-message-list [data-presentation-row-id]:visible').first()).toBeVisible({ timeout: 15_000 });
 }
 
 async function moveToHistoryEdge(page) {

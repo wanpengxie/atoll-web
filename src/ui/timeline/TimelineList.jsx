@@ -16,8 +16,9 @@ import { MessageLayoutScope } from './MessageLayoutState.jsx';
 // still while older history is prepended — is the vendor's; this component
 // never writes scrollTop. It reports three facts to the reading owner (the
 // rendered range, whether the reader is at the bottom, and whether the
-// vendor's measured range is settled) and forwards two commands to the vendor
-// (follow output, go to the last row).
+// vendor's measured range is settled) and forwards three commands to the
+// vendor (follow output, go to the last row, scroll by an offset the reader's
+// own action caused).
 
 class RowErrorBoundary extends Component {
   constructor(props) {
@@ -115,6 +116,11 @@ export function TimelineList({
     // vendor re-follows only when it sees the growth at the bottom itself.
     followGrowth() {
       virtuosoRef.current?.autoscrollToBottom?.();
+    },
+    // A reader's own action moved what they were pointing at (a collapse
+    // shrinks the text above its button). The vendor scrolls by the offset.
+    scrollBy(top) {
+      virtuosoRef.current?.scrollBy?.({ top, behavior: 'auto' });
     },
   }), [list]);
 
