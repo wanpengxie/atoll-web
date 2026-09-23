@@ -674,6 +674,7 @@ export function WorkspaceLayout({
               {navigation.openResources && <button type="button" role="menuitem" onClick={() => runChannelMenuAction(navigation.openResources)}>高级资源工具</button>}
               {(navigation.openChannelCreate || navigation.openChannelAdministration) && <button type="button" role="menuitem" onClick={() => runChannelMenuAction(navigation.openChannelCreate || (() => navigation.openChannelAdministration('overview')))}>新建子频道</button>}
               <button type="button" role="menuitem" className="mobile-channel-menu-action" onClick={() => runChannelMenuAction(toggleFiles)}>{filesOpen ? '关闭文件' : '打开文件'}</button>
+              {readingHistoryAvailable && <button type="button" role="menuitem" className="mobile-channel-menu-action" onClick={() => runChannelMenuAction(navigation.openReadingHistory)}>最近阅读</button>}
               {navigation.openTerminal && <button type="button" role="menuitem" className="mobile-channel-menu-action" disabled={!channel || terminalTransitionPending} onClick={() => runChannelMenuAction(toggleTerminal)}>{navigation.terminalVisible ? '关闭终端' : '打开终端'}</button>}
               {navigation.channelRestart && <button
                 type="button"

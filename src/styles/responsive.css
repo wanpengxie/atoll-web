@@ -121,6 +121,8 @@
   .mobile-shell .header-action { min-width: 44px; min-height: 44px; padding: 2px 4px; border-radius: 5px; font-size: 10px; }
   .mobile-shell .mock-advance-action { display: none; }
   .mobile-shell .mobile-channel-menu-action { display: block; min-height: 44px; }
+  /* On a phone the edge tab would sit on top of the messages; 最近阅读 lives in the ••• menu. */
+  .mobile-shell .reading-history-edge-tab { display: none; }
   .mobile-shell .channel-view-tabs { grid-row: 1; grid-column: 2; min-height: 44px; align-items: center; gap: 0; padding: 0; border-bottom: 1px solid var(--line-subtle); }
   .mobile-shell .channel-view-tabs button { min-width: 44px; min-height: 44px; height: 44px; align-self: auto; border-bottom: 0; border-radius: 5px; font-size: 10px; }
   .mobile-shell .channel-view-tabs button.active { border-bottom-color: transparent; background: var(--surface-selected); }
@@ -198,3 +200,22 @@
   .mobile-shell .agent-wait-item.is-editing { height: auto; min-height: 44px; }
   .agent-wait-actions button { min-width: 44px; min-height: 44px; }
 }
+
+/* Panels and dialogs were drawn for a mouse: text buttons of 20–25px with
+   9–10px labels. A finger needs 44px; the labels grow with it. */
+@media (pointer: coarse), (any-pointer: coarse) {
+  .context-pane button:not(.code-block-copy):not(.context-backdrop),
+  .context-pane [role="tab"],
+  .context-pane select,
+  .task-create-modal button { min-height: 44px; }
+  .context-pane .managed-actor button,
+  .context-pane .device-row button,
+  .context-pane .text-button { min-width: 44px; padding-inline: 8px; font-size: 12px; }
+}
+/* On a phone a member row cannot fit its name and five actions on one line:
+   the name takes the first line, the actions the second. */
+.mobile-shell .managed-actor { display: flex; flex-wrap: wrap; align-items: center; column-gap: 2px; }
+.mobile-shell .managed-actor > div { flex: 1 0 100%; }
+.mobile-shell .managed-actor strong { font-size: 12px; }
+.mobile-shell .managed-actor small { font-size: 10px; }
+.mobile-shell .device-row > div:last-child { display: flex; flex-wrap: wrap; gap: 4px; }

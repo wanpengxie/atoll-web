@@ -38,7 +38,8 @@
 .select-menu-list button:disabled { opacity: .4; cursor: not-allowed; }
 
 /* UI primitives */
-.side-panel { min-width: 0; min-height: 0; display: grid; height: 100%; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; border-left: 1px solid var(--line-structural); background: var(--channel-rail); }
+/* One column the width of the panel: a long title or code line must not size it. */
+.side-panel { min-width: 0; min-height: 0; display: grid; height: 100%; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); overflow: hidden; border-left: 1px solid var(--line-structural); background: var(--channel-rail); }
 .side-panel-with-tabs { grid-template-rows: auto auto minmax(0, 1fr); }
 .side-panel-header { display: flex; min-height: 58px; align-items: center; justify-content: space-between; padding: 9px 14px; border-bottom: 1px solid var(--line-structural); }
 .side-panel-header h2 { margin: 0; color: var(--text); font: 700 14px var(--sans); }

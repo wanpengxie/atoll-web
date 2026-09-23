@@ -401,7 +401,10 @@ button.channel-file-row { font: inherit; }
 .channel-create-members > header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .channel-create-members > header small, .channel-create-member small { color: var(--text-muted); font-size: 10px; }
 .channel-create-member { min-width: 0; display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: var(--radius-control); background: var(--surface-muted); }
-.channel-create-member input { margin: 0; }
+/* The dialog's generic field rules (grid labels, full-width inputs) would
+   otherwise turn each row into a stacked field with a 100%-wide checkbox. */
+.task-create-modal .channel-create-member { display: flex; min-height: 44px; align-items: center; gap: 10px; color: var(--text); cursor: pointer; }
+.task-create-modal .channel-create-member input[type="checkbox"] { flex: 0 0 auto; width: 18px; height: 18px; min-height: 0; margin: 0; padding: 0; accent-color: var(--accent); }
 .channel-create-member > span { color: var(--success-text); }
 .channel-create-member > div { min-width: 0; display: grid; gap: 1px; }
 .channel-create-member small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -419,8 +422,9 @@ button.channel-file-row { font: inherit; }
   .work-item-status { grid-column: 2; grid-row: 2; }
   .modal-backdrop { padding: 0; place-items: stretch; }
   .task-create-modal { width: 100%; max-height: 100%; border: 0; border-radius: 0; }
-  .global-search-backdrop { padding: 0; }
-  .global-search { width: 100%; max-height: 100%; border: 0; border-radius: 0; }
+  /* A full page like every other phone surface, not a sheet over the timeline. */
+  .global-search-backdrop { padding: 0; place-items: stretch; }
+  .global-search { width: 100%; height: 100%; max-height: 100%; border: 0; border-radius: 0; }
 }
 
 /* 频道对本页的操作回执。绝对定位在右下角,半透明——它是旁白,不该挡住正在做的事,

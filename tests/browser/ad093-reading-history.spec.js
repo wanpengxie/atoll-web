@@ -13,19 +13,34 @@ async function login(page, request, seed) {
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
 }
 
-for (const [width, label] of [[1280, 'desktop'], [320, 'mobile']]) {
-  test(`AD-093 ${label} 从频道边缘打开最近阅读并返回原入口焦点`, async ({ page, request }) => {
-    await page.setViewportSize({ width, height: 720 });
-    await login(page, request, width === 1280 ? 3093 : 3094);
-    const opener = page.getByRole('button', { name: '打开最近阅读' });
-    await expect(opener).toBeVisible();
-    await opener.focus();
-    await opener.click();
+test('AD-093 desktop 从频道边缘打开最近阅读并返回原入口焦点', async ({ page, request }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await login(page, request, 3093);
+  const opener = page.getByRole('button', { name: '打开最近阅读' });
+  await expect(opener).toBeVisible();
+  await opener.focus();
+  await opener.click();
 
-    const panel = page.getByRole('complementary', { name: '最近阅读' });
-    await expect(panel).toBeVisible();
-    await expect(panel.getByRole('heading', { name: '最近阅读' })).toBeVisible();
-    await panel.getByRole('button', { name: '关闭最近阅读' }).click();
-    await expect(opener).toBeFocused();
-  });
-}
+  const panel = page.getByRole('complementary', { name: '最近阅读' });
+  await expect(panel).toBeVisible();
+  await expect(panel.getByRole('heading', { name: '最近阅读' })).toBeVisible();
+  await panel.getByRole('button', { name: '关闭最近阅读' }).click();
+  await expect(opener).toBeFocused();
+});
+
+// On a phone the edge tab would sit on the messages; 最近阅读 is in the ••• menu.
+test('AD-093 mobile 从频道操作菜单打开最近阅读并返回菜单入口焦点', async ({ page, request }) => {
+  await page.setViewportSize({ width: 320, height: 720 });
+  await login(page, request, 3094);
+  await expect(page.getByRole('button', { name: '打开最近阅读' })).toBeHidden();
+  const menu = page.getByRole('button', { name: '频道操作' });
+  await menu.click();
+  await page.getByRole('menuitem', { name: '最近阅读' }).click();
+
+  const panel = page.getByRole('complementary', { name: '最近阅读' });
+  await expect(panel).toBeVisible();
+  await expect(panel.getByRole('heading', { name: '最近阅读' })).toBeVisible();
+  await panel.getByRole('button', { name: '关闭最近阅读' }).click();
+  await expect(panel).toBeHidden();
+  await expect(menu).toBeFocused();
+});

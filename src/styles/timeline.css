@@ -246,7 +246,18 @@
 .progress-drawer-body .markdown-content > * { min-width: 0; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
 .progress-drawer-body .code-block-line { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; }
 .progress-drawer-body pre { margin: 0; white-space: pre-wrap; word-break: break-word; font: 12.5px/1.55 var(--mono, monospace); }
-.progress-tool-data { display: grid; gap: 10px; }
+.progress-tool-data { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+/* The tool input tree lays out by the width it is given, not the viewport:
+   a side panel on a desktop is as narrow as a phone. Below ~480px each key
+   sits above its value and nesting is shown by indent instead of columns. */
+.progress-json-shell, .structured-result-scroll { container-type: inline-size; }
+.progress-json-shell .structured-object dd { font: 12px/1.5 var(--mono); white-space: pre-wrap; }
+@container (max-width: 480px) {
+  .progress-json-shell .structured-object > div,
+  .structured-result-scroll .structured-object > div { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .progress-json-shell .structured-object dd .structured-object,
+  .structured-result-scroll .structured-object dd .structured-object { padding-left: 8px; border-left: 1px solid var(--line-subtle); }
+}
 .progress-json-shell { max-height: min(52vh, 460px); overflow: auto; padding: 9px 10px; border: 1px solid var(--line-subtle); border-radius: var(--radius-object); background: var(--surface-code); }
 .progress-json-tree { margin: 0; color: var(--text); font: 11.5px/1.55 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .progress-json-children { margin: 0 0 0 7px; padding: 0 0 0 12px; border-left: 1px solid var(--line-structural); list-style: none; }
@@ -611,11 +622,17 @@
 .process-record-line.is-state { color: var(--text-muted); cursor: default; }
 .process-record-line time { flex: 0 0 auto; color: var(--text-muted); font-size: 10px; }
 .process-record .progress-drawer-body { padding: 4px 10px 10px; border-top: 1px solid var(--line-subtle); }
-.turn-detail-page .side-panel-scroll { display: grid; align-content: start; gap: 12px; }
+.turn-detail-page .side-panel-scroll { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 12px; }
+.process-record-line > span { min-width: 0; overflow-wrap: anywhere; }
+.process-record-line.is-state > span { white-space: pre-wrap; }
 .turn-detail-ledger { color: var(--text-muted); font-size: 11px; }
 .turn-detail-ledger summary { cursor: pointer; }
 .turn-detail-ledger dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 10px; margin: 8px 0; }
 .turn-detail-ledger dt { color: var(--text-muted); }
 .turn-detail-ledger dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
-.turn-detail-process { display: grid; gap: 6px; margin: 0; padding-left: 16px; }
+.turn-detail-process { display: grid; gap: 6px; margin: 0; padding-left: 24px; }
+/* Ids are long: one fact per line, label then value, never two columns. */
+.turn-detail-process dl { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; margin: 4px 0 0; }
+.turn-detail-process dl > div { display: flex; min-width: 0; gap: 8px; }
+.turn-detail-process dl dt { flex: 0 0 auto; }
 .turn-detail-process small { margin-left: 6px; }

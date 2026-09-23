@@ -669,10 +669,17 @@ function abbreviateMobileToolText(value) {
   return `${value.slice(0, MOBILE_TOOL_OUTPUT.head)}\n…（手机上只保留了开头，此处省略 ${value.length - MOBILE_TOOL_OUTPUT.head} 字符）`;
 }
 
+// A fence longer than any backtick run inside keeps the text one code block.
+function fenced(text, language = '') {
+  const longest = Math.max(2, ...(String(text).match(/`+/g) || []).map((run) => run.length));
+  const fence = '`'.repeat(longest + 1);
+  return `${fence}${language}\n${text}\n${fence}`;
+}
+
 function mobileToolOutputText(output) {
   if (output == null) return '';
-  if (typeof output === 'string') return abbreviateMobileToolText(output);
-  if (typeof output !== 'object') return String(output);
+  if (typeof output === 'string') return output.trim() ? fenced(abbreviateMobileToolText(output), 'text') : '';
+  if (typeof output !== 'object') return fenced(String(output), 'text');
   let value = output;
   if (!Array.isArray(output)) {
     value = Object.fromEntries(Object.entries(output).map(([key, item]) => [
@@ -681,19 +688,15 @@ function mobileToolOutputText(output) {
     ]));
   }
   try {
-    const serialized = abbreviateMobileToolText(JSON.stringify(value, null, 2));
-    return `\`\`\`json\n${serialized}\n\`\`\``;
+    return fenced(abbreviateMobileToolText(JSON.stringify(value, null, 2)), 'json');
   } catch {
     return '';
   }
 }
 
-function toolPresentationBody(detail, toolData) {
-  if (!isMobileProfile()) return detail;
-  const output = mobileToolOutputText(toolData?.output);
-  if (!output) return detail;
-  if (!detail) return output;
-  return `${detail}\n\n${output}`;
+// Mobile shows tool output as bounded text rather than the full tree.
+function mobileToolOutput(toolData) {
+  return isMobileProfile() ? mobileToolOutputText(toolData?.output) : '';
 }
 
 // Tool input/output is a presentation-only projection. Select only these two
@@ -845,8 +848,9 @@ function progressRows(turn) {
     const detailValue = readProcessField(process, 'detail');
     const detail = typeof detailValue === 'string' ? detailValue : '';
     const toolData = toolDataFromProcess(process);
-    const body = toolPresentationBody(detail, toolData);
-    const mobileOutputShown = isMobileProfile() && hasToolData(toolData?.output);
+    const body = detail;
+    const output = mobileToolOutput(toolData);
+    const mobileOutputShown = Boolean(output);
     if (phase === 'started') {
       const row = {
         key: `tool:${callID}`,
@@ -856,6 +860,7 @@ function progressRows(turn) {
         ts: envelope.ts,
         kind: 'tool',
         toolData,
+        output,
         mobileOutputShown,
         stateOnly: !body.trim() && !hasToolData(toolData),
       };
@@ -871,7 +876,8 @@ function progressRows(turn) {
         started.body = endedBody;
         started.ts = envelope.ts || started.ts;
         started.toolData = mergedToolData;
-        started.mobileOutputShown = started.mobileOutputShown || mobileOutputShown;
+        started.output = output || started.output;
+        started.mobileOutputShown = Boolean(started.output);
         started.stateOnly = !String(endedBody || '').trim() && !hasToolData(mergedToolData);
       } else rows.push({
         key: `tool:${callID}`,
@@ -881,6 +887,7 @@ function progressRows(turn) {
         ts: envelope.ts,
         kind: 'tool',
         toolData,
+        output,
         mobileOutputShown,
         stateOnly: !body.trim() && !hasToolData(toolData),
       });
@@ -925,11 +932,13 @@ function ProcessRowDetail({ row }) {
   // Mobile already receives the bounded output markdown owned by this same
   // row projection. Do not duplicate that output in the structured tree.
   const toolData = rawToolData && row.mobileOutputShown ? toolInputOnly(rawToolData) : rawToolData;
+  const output = row.mobileOutputShown ? row.output : '';
   return <div className="progress-drawer-body">
     {row.kind === 'tool' ? <div className="progress-tool-data">
       {toolData && <div className="progress-json-shell" aria-label="工具输入输出"><StructuredTree value={toolData} /></div>}
+      {output && <div className="progress-tool-detail progress-tool-output"><strong>输出</strong><MarkdownContent contentKey={`progress-detail:${row.key}:output`} text={output} /></div>}
       {body && <div className="progress-tool-detail"><strong>执行说明</strong><MarkdownContent contentKey={`progress-detail:${row.key}:body`} text={body} /></div>}
-      {!toolData && !body && <p className="progress-empty">这次调用没有返回可展示的数据。</p>}
+      {!toolData && !body && !output && <p className="progress-empty">这次调用没有返回可展示的数据。</p>}
     </div> : body ? <MarkdownContent contentKey={`progress-detail:${row.key}:body`} text={body} /> : <p className="progress-empty">这次过程没有留下可展示的正文。</p>}
   </div>;
 }
@@ -945,7 +954,9 @@ export function ProcessRecords({ turn, selectedKey = '', onSelect }) {
   return <ol className="process-records">
     {rows.map((row) => {
       const selected = row.key === selectedKey;
-      const openable = !row.stateOnly;
+      // A stage note is its own line; opening it would only repeat it.
+      const openable = !row.stateOnly
+        && !(row.kind === 'stage' && String(row.body || '').trim() === String(row.line || '').trim());
       return <li key={row.key} ref={selected ? selectedRef : null} className={`process-record${selected ? ' is-selected' : ''}`}>
         {openable
           ? <button type="button" className="process-record-line" aria-expanded={selected} onClick={() => onSelect?.(selected ? '' : row.key)}>

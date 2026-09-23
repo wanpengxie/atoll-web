@@ -69,7 +69,9 @@ function placeTarget(node, anchor) {
   node.style.width = `${width}px`;
   const height = node.getBoundingClientRect().height;
   node.style.top = `${Math.max(frame.top + 8, anchorRect.top - 7 - height)}px`;
-  node.style.visibility = 'visible';
+  // Inherit, never force: when the conversation is hidden (a phone showing
+  // the terminal), the recipient pill must be hidden with it.
+  node.style.removeProperty('visibility');
 }
 
 function FloatingPortal({ anchorRef, className, matchWidth = false, children }) {
