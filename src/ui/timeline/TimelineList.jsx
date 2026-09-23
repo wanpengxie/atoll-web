@@ -10,6 +10,7 @@ import React, {
 } from 'react';
 import { Virtuoso } from 'react-virtuoso';
 import { MessageLayoutScope } from './MessageLayoutState.jsx';
+import { AT_BOTTOM_THRESHOLD_PX } from './useTimelineReading.js';
 
 // The list is a thin view over the vendored Virtuoso. Every position change —
 // following new rows, keeping place while a row grows, holding the reader
@@ -190,7 +191,7 @@ export function TimelineList({
     />}
     followOutput={list.followOutput}
     atBottomStateChange={list.atBottomStateChange}
-    atBottomThreshold={24}
+    atBottomThreshold={AT_BOTTOM_THRESHOLD_PX}
     rangeChanged={list.rangeChanged}
     totalListHeightChanged={list.totalListHeightChanged}
     defaultItemHeight={132}

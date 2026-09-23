@@ -46,6 +46,8 @@ const IDLE_DEMAND = Object.freeze({ phase: 'idle', error: '' });
 // Scrolling settles this long after the last scroll event; the rows on
 // screen then are what the reader has seen.
 const SEEN_SETTLE_MS = 200;
+// The list's own "at the bottom" tolerance (TimelineList atBottomThreshold).
+export const AT_BOTTOM_THRESHOLD_PX = 24;
 // A reopened browsing position has landed well within this.
 const RESTORE_SETTLE_MS = 1_000;
 
@@ -352,6 +354,12 @@ export function useTimelineReading({
           const top = node.scrollTop;
           if (top < lastTopRef.current - 1 && Date.now() - inputAtRef.current < INPUT_WINDOW_MS) {
             movedUpRef.current = true;
+            // The reader moved the list up and away from the newest row: that
+            // is browsing, whether or not the vendor's bottom state changes
+            // with it (it does not when the list was already off the bottom).
+            if (node.scrollHeight - node.clientHeight - top > AT_BOTTOM_THRESHOLD_PX) {
+              setMode(READING_MODE.browsing);
+            }
           }
           lastTopRef.current = top;
           // Browsing remembers the row at the top, once per frame.
@@ -417,6 +425,12 @@ export function useTimelineReading({
           setMode(READING_MODE.following);
         } else if (movedUpRef.current) {
           setMode(READING_MODE.browsing);
+        } else if (modeRef.current === READING_MODE.following
+          && Date.now() - inputAtRef.current >= INPUT_WINDOW_MS) {
+          // Following means the newest row is in view. The list left the
+          // bottom with no reader input behind it — a layout shift, not a
+          // reader — so it goes back rather than staying off the bottom.
+          portRef.current?.toLatest('auto');
         }
       },
       totalListHeightChanged() {
