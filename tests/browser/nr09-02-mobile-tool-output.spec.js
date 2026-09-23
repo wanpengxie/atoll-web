@@ -66,24 +66,22 @@ test(`NR09-02 mobile ${width}px bounds tool output and returns focus`, async ({ 
   await expect(row).toBeVisible();
   const detailTrigger = row.locator('button[title="查看完整内容"]');
   await detailTrigger.click();
-  const drawer = page.getByRole('dialog', { name: /过程详情/ });
-  await expect(drawer).toBeVisible();
-  await expect(drawer).toContainText(head);
-  await expect(drawer).toContainText('省略');
-  await expect(drawer).not.toContainText(tail);
-  const visible = await drawer.locator('.progress-drawer-body').textContent();
+  // The record opens in the one process panel, already expanded.
+  const panel = page.getByRole('complementary', { name: '回合详情' });
+  await expect(panel).toBeVisible();
+  const body = panel.locator('.process-record.is-selected .progress-drawer-body');
+  await expect(body).toContainText(head);
+  await expect(body).toContainText('省略');
+  await expect(body).not.toContainText(tail);
+  const visible = await body.textContent();
   expect(visible.length).toBeLessThan(4_700);
-  const geometry = await drawer.locator('.progress-drawer-body').evaluate((node) => ({
-    clientWidth: node.clientWidth,
-    scrollWidth: node.scrollWidth,
-    clientHeight: node.clientHeight,
-    scrollHeight: node.scrollHeight,
-  }));
-  expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth + 1);
-  expect(geometry.scrollHeight).toBeGreaterThan(geometry.clientHeight);
+  const bodyGeometry = await body.evaluate((node) => ({ clientWidth: node.clientWidth, scrollWidth: node.scrollWidth }));
+  expect(bodyGeometry.scrollWidth).toBeLessThanOrEqual(bodyGeometry.clientWidth + 1);
+  const panelBox = await panel.boundingBox();
+  expect(panelBox.x + panelBox.width).toBeLessThanOrEqual(width + 1);
 
-  await drawer.getByRole('button', { name: '关闭详情' }).click();
-  await expect(drawer).toHaveCount(0);
+  await panel.getByRole('button', { name: '关闭过程' }).click();
+  await expect(panel).toHaveCount(0);
   await expect.poll(() => detailTrigger.evaluate((node) => document.activeElement === node)).toBe(true);
 
   const nonToolHead = `NR09-02-NON-TOOL-${width}-HEAD-`;

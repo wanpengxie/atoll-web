@@ -38,7 +38,7 @@ test('NR10-01/04 public process detail and live timing', async ({ page, request 
   // The fixture's first tool observation carries typed input even before its
   // ended output arrives, so the public action advertises safe tool data. A
   // truly empty tool is covered by the owner unit contract.
-  await expect(turn.getByRole('button', { name: '查看过程' })).toHaveCount(2);
+  await expect(turn.getByRole('button', { name: '查看过程' })).toHaveCount(1);
   const before = await trail.locator('.progress-row-duration').textContent();
   await expect.poll(
     () => trail.locator('.progress-row-duration').textContent(),
@@ -68,16 +68,16 @@ test('NR10-01/04 public process detail and live timing', async ({ page, request 
   expect(response.ok()).toBe(true);
 
   await expect(trail.locator('.progress-row-line', { hasText: detailText })).toBeVisible();
-  await expect(turn.getByRole('button', { name: '查看过程' })).toHaveCount(2);
+  await expect(turn.getByRole('button', { name: '查看过程' })).toHaveCount(1);
   const stageDetailTrigger = trail.locator('button[title="查看完整内容"]').filter({ hasText: detailText });
   await stageDetailTrigger.click();
-  const drawer = page.getByRole('dialog', { name: /过程详情/ });
+  const drawer = page.getByRole('complementary', { name: '回合详情' });
   await expect(drawer).toBeVisible();
   await expect(drawer).toContainText(detailText);
   await expect(drawer.locator('pre')).toHaveCount(0);
   await expect(drawer).not.toContainText('nr10-wire-input');
   await expect(drawer).not.toContainText('nr10-wire-output');
-  await drawer.getByRole('button', { name: '关闭详情' }).click();
+  await drawer.getByRole('button', { name: '关闭过程' }).click();
   await expect(drawer).toHaveCount(0);
   await expect.poll(() => stageDetailTrigger.evaluate((node) => document.activeElement === node)).toBe(true);
 
@@ -124,7 +124,7 @@ test('NR10-01/04 public process detail and live timing', async ({ page, request 
   expect(liveToolEnd.ok()).toBe(true);
   await expect(liveToolRow.locator('button[title="查看完整内容"]')).toHaveCount(1);
   await liveToolRow.locator('button[title="查看完整内容"]').click();
-  const liveDrawer = page.getByRole('dialog', { name: /过程详情/ });
+  const liveDrawer = page.getByRole('complementary', { name: '回合详情' });
   await expect(liveDrawer).toContainText('同一调用的公开结果。');
   await expect(liveDrawer).toContainText('input');
   await expect(liveDrawer).toContainText('账本模型');
@@ -134,23 +134,11 @@ test('NR10-01/04 public process detail and live timing', async ({ page, request 
   await expect(liveDrawer).not.toContainText('nr10-live-output');
   const nested = liveDrawer.locator('details').first();
   await expect(nested).not.toHaveAttribute('open');
-  const drawerClose = liveDrawer.getByRole('button', { name: '关闭详情' });
-  const nestedSummary = nested.locator('summary');
-  await drawerClose.focus();
-  await drawerClose.press('Tab');
-  await expect.poll(() => nestedSummary.evaluate((node) => document.activeElement === node)).toBe(true);
-  await page.keyboard.press('Shift+Tab');
-  await expect.poll(() => drawerClose.evaluate((node) => document.activeElement === node)).toBe(true);
-  // At either edge the existing modal owner wraps without leaking focus to
-  // the page; this also proves native <summary> participates in FOCUSABLE.
-  await page.keyboard.press('Shift+Tab');
-  await expect.poll(() => nestedSummary.evaluate((node) => document.activeElement === node)).toBe(true);
-  await page.keyboard.press('Tab');
-  await expect.poll(() => drawerClose.evaluate((node) => document.activeElement === node)).toBe(true);
+  // The panel is a side panel, not a modal: no focus trap to walk.
   await nested.locator('summary').click();
   await expect(nested).toHaveAttribute('open', '');
   await expect(liveDrawer).toContainText('scope');
-  await liveDrawer.getByRole('button', { name: '关闭详情' }).click();
+  await liveDrawer.getByRole('button', { name: '关闭过程' }).click();
   await expect(liveDrawer).toHaveCount(0);
 });
 
@@ -211,9 +199,9 @@ test('NR10 nested drawer input does not take over the timeline Reading owner', a
   });
 
   await trigger.click();
-  const drawer = page.getByRole('dialog', { name: /过程详情/ });
+  const drawer = page.getByRole('complementary', { name: '回合详情' });
   await expect(drawer).toBeVisible();
-  const inputResult = await drawer.locator('.progress-drawer-body').evaluate((node) => {
+  const inputResult = await drawer.locator('.side-panel-scroll').evaluate((node) => {
     const wheel = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: -240 });
     node.dispatchEvent(wheel);
     const keydown = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Home' });
@@ -255,7 +243,7 @@ test('NR10 nested drawer input does not take over the timeline Reading owner', a
   }
   expect(after.writes).toEqual([]);
 
-  await drawer.getByRole('button', { name: '关闭详情' }).click();
+  await drawer.getByRole('button', { name: '关闭过程' }).click();
   await expect(drawer).toHaveCount(0);
   await expect.poll(() => trigger.evaluate((node) => document.activeElement === node)).toBe(true);
   await page.evaluate(() => {

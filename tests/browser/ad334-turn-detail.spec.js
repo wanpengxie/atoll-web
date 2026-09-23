@@ -33,8 +33,11 @@ test('AD334 turn detail exposes process identifiers without payload JSON', async
   const requestId = await turn.getAttribute('data-request-id');
   await turn.getByRole('button', { name: '查看过程' }).first().click();
 
-  const detail = page.getByRole('region', { name: '回合详情' });
+  // 查看过程 opens the one right-side process panel; process identifiers are
+  // in its 账本信息 section.
+  const detail = page.getByRole('complementary', { name: '回合详情' });
   await expect(detail).toBeVisible();
+  await detail.getByText('账本信息').click();
   await expect(detail).toContainText('调用编号');
   await expect(detail).toContainText(`${requestId}-tool`);
   await expect(detail.locator('pre')).toHaveCount(0);
