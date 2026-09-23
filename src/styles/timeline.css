@@ -565,8 +565,12 @@
 /* Empty feedback is a presentation overlay at every shell width. Keep the
    following Reading list's geometry independent of the explanatory copy;
    non-empty mobile scope controls retain their ordinary flow below. */
-.timeline-virtualized > .timeline-inner.timeline-empty-feedback-overlay { position: absolute; z-index: 3; top: 8px; right: 0; left: 0; width: 100%; height: 0; min-height: 0; padding: 0; pointer-events: none; }
+/* The scope row stays the same in-flow row whether or not the view has rows;
+   only the empty-state card floats over the (empty) list below it. The list
+   keeps one geometry, and the controls do not move when a filter empties it. */
+.timeline-virtualized > .timeline-inner.timeline-empty-feedback-overlay { padding: 0; }
 .timeline-empty-feedback-overlay .timeline-scope-bar { position: static; }
+.timeline-empty-feedback-overlay > .empty-ledger { position: absolute; z-index: 3; top: 100%; right: 0; left: 0; }
 
 /* 范围开关和成员筛选是对话栏顶部的一行普通内容：横排、靠右、占位置。它不悬浮在
    消息上，所以右侧打开文件、终端或预览时，它不会盖住任何东西。 */

@@ -146,6 +146,7 @@ export function useTimelineReading({
     const scheduler = schedulerRef.current;
     const token = {};
     scheduler.token = token;
+    const rowsBefore = rowsRef.current.length;
     if (demandRef.current.phase !== 'error') setDemand(Object.freeze({ phase: 'pending', error: '' }));
     // A request that never answers is abandoned, not waited on: aborting
     // releases this waiter, so the retry issues a fresh page instead of
@@ -163,10 +164,15 @@ export function useTimelineReading({
     });
     let request;
     try {
+      // Ask from the feed's own older frontier, not from the oldest row this
+      // view shows: a filtered view may show none of the rows already
+      // loaded, and asking from its bottom would fetch the same page again.
+      const frontier = Number(statusRef.current?.beforeSeq || 0);
       request = Promise.resolve(historyRef.current?.request?.({
         intent: HISTORY_INTENT.scrollHistory,
         urgency: HISTORY_URGENCY.interactive,
         signal: abort.signal,
+        ...(frontier > 0 ? { beforeSeq: frontier } : {}),
       }));
     } catch (error) {
       request = Promise.resolve({ kind: 'failed', error });
@@ -197,10 +203,15 @@ export function useTimelineReading({
       }
       scheduler.attempts = 0;
       setDemand(IDLE_DEMAND);
-      // A page with no visible row (a filtered view) changes no row, so no
-      // list callback will follow; the status change re-evaluates through the
-      // layout effect below. A page that did add rows is re-evaluated once
-      // the vendor has admitted them.
+      // A page that added rows to this view is re-evaluated once the vendor
+      // has admitted them. A page with no visible row (a filtered view)
+      // changes no row, so no list callback will follow — and the status
+      // change it caused may have been evaluated while this request still
+      // held the token. Re-evaluate here, after the render, so a filtered
+      // view keeps scanning until it shows something or reaches the start.
+      globalThis.setTimeout(() => {
+        if (scheduler.token === null && rowsRef.current.length === rowsBefore) evaluateRef.current();
+      }, 0);
     });
   }, [channelID, scheduleRetry, setDemand]);
 

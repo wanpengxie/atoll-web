@@ -304,8 +304,11 @@ export function ConversationSurface({
                 </div>
                 <div className="timeline-reading-stack" data-reading-mode={viewport.mode}>
                   <div className="timeline-reading-layer is-active">
+                    {/* One list per view: a scope or member filter replaces the
+                        whole item set, which Virtuoso cannot follow from a pixel
+                        offset. A new view opens at its latest row, like a channel. */}
                     <TimelineList
-                      key={state.channelId}
+                      key={messageListKey}
                       snapshot={projection.presentation}
                       reading={viewport}
                       rowRevision={rowRenderRevision}
