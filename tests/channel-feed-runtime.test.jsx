@@ -1022,11 +1022,13 @@ describe('ChannelFeedRuntime ownership', () => {
 
   it('proves a network tail and revokes it for higher heads, lifecycle fences and old generations', async () => {
     let requestNumber = 0;
+    const refs = [];
     const wireRef = { current: {
-      historyBefore: vi.fn(() => {
+      historyBefore: vi.fn((_channelId, _beforeSeq, _limit, detail) => {
         requestNumber += 1;
-        const accepted = Promise.resolve({ accepted: true, generation: requestNumber === 1 ? 1 : 2, channel_id: 'c0' });
+        const accepted = Promise.resolve({ accepted: true, generation: detail?.generation ?? (requestNumber === 1 ? 1 : 2), channel_id: 'c0' });
         accepted.ref = `history-matrix-${requestNumber}`;
+        refs.push(accepted.ref);
         return accepted;
       }),
       cancelHistory: vi.fn(async () => undefined),
@@ -1088,8 +1090,10 @@ describe('ChannelFeedRuntime ownership', () => {
 
     const forbidden = runtime.getSnapshot().loadHistory('c0');
     await new Promise((resolve) => setTimeout(resolve, 0));
+    // The same-world regrant above also refilled its tail, so this demand's
+    // page is the latest request rather than the second.
     expect(runtime.getSnapshot().pageEnd({
-      ref: 'history-matrix-2', channel_id: 'c0', generation: 2,
+      ref: refs.at(-1), channel_id: 'c0', generation: 2,
       error_code: 'forbidden', error_detail: 'forbidden',
     })).toBe(true);
     await forbidden;

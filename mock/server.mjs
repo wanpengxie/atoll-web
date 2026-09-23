@@ -1481,6 +1481,31 @@ export function createMockServer({
       later(completedAt + 20, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed', turn_index: 1, text: '已完成 10 个演示过程。', usage: usageOf(channelId, respondingAgent.id) } })));
       return;
     }
+    if (mode === 'progress-real') {
+      // 真实 agent 的工具调用形状：长命令、长路径、多行输出、代码。
+      const longPath = '/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web/src/ui/timeline/TimelineRowRenderer.jsx';
+      const output = Array.from({ length: 40 }, (_, i) => `${String(i + 1).padStart(4)}\t  const presentation_row_${i} = selectTimelineItems(state, { timelinePlaced, lifecycleOf, scope: 'all', actorFilter: null });`).join('\n');
+      const calls = [
+        { tool: 'Bash', input: { command: `cd /home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web && grep -rn "mobile-shell\\|compact-shell\\|data-context-type" src/app src/ui | head -20 && npx vitest run tests/unit --reporter=dot 2>&1 | tail -40`, description: 'Find shell modes and run the unit suite' }, output: `src/ui/features/WorkspaceFeatures.jsx:419:    data-context-type={type || 'context'}\n${output}` },
+        { tool: 'Read', input: { file_path: longPath, offset: 900, limit: 80 }, output },
+        { tool: 'Edit', input: { file_path: longPath, old_string: 'const tree = <dl className="structured-object">{entries.map(([key, item]) => <div key={key}><dt>{key}</dt><dd><StructuredTree value={item} depth={depth + 1} /></dd></div>)}</dl>;', new_string: 'const tree = <dl className="structured-object is-stacked">{entries.map(([key, item]) => <div key={key}><dt>{key}</dt><dd><StructuredTree value={item} depth={depth + 1} /></dd></div>)}</dl>;', replace_all: false }, output: 'The file has been updated successfully.' },
+        { tool: 'mcp__atoll__call_actor', input: { actor_id: 'agent:steward:1787570189039', type: 'agent.ask', payload: { text: '请检查移动端的过程面板布局，列出所有溢出的元素和被遮挡的按钮。', attachments: [{ resource_id: 'daemon://local-device/5473ce43-bd17-4e78-859e-08befae851d8/tmp/mobile-audit/12-turn-detail-row.png' }] }, wait: true }, output: { ok: true, result: { status: 'accepted', request_id: 'req-01JABCDEF0123456789XYZ', est_wait_ms: 15000, guidance: 'Collect with await_result' } } },
+        { tool: 'Grep', input: { pattern: 'structured-object|progress-json-shell|turn-detail-page', path: '/home/xiewanpeng/.atoll/device/daemons/local-device/channels/c0.dev/atoll-web/src/styles', output_mode: 'content', '-n': true }, output: 'runtime.css:23:.structured-object { display: grid; gap: 5px; margin: 0; }\nruntime.css:24:.structured-object > div { display: grid; grid-template-columns: minmax(90px, .35fr) 1fr; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--line-subtle); }' },
+      ];
+      // progress-real-long repeats the calls so one turn outgrows a history page.
+      const repeat = Math.max(1, Number(domain.behavior.tool_repeat || 1));
+      const spacing = repeat > 1 ? 20 : 300;
+      calls.splice(0, calls.length, ...Array.from({ length: repeat }, () => calls).flat());
+      calls.forEach((call, index) => {
+        const startedAt = 80 + index * spacing;
+        const callId = `${messageId}-real-${index + 1}`;
+        later(startedAt, () => append(channelId, envelope({ ...responseBase, id: `${callId}-started`, kind: 'response', type: payload.msg_type, payload: { status: 'processing', turn_index: 1, controls: PROCESSING_CONTROLS, process: { kind: 'tool', phase: 'started', tool_call_id: callId, tool: call.tool, input: call.input } } })));
+        later(startedAt + (repeat > 1 ? 10 : 150), () => append(channelId, envelope({ ...responseBase, id: `${callId}-ended`, kind: 'response', type: payload.msg_type, payload: { status: 'processing', turn_index: 1, controls: PROCESSING_CONTROLS, process: { kind: 'tool', phase: 'ended', tool_call_id: callId, tool: call.tool, outcome: 'completed', output: call.output } } })));
+      });
+      later(80 + calls.length * spacing + 40, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-stage`, kind: 'response', type: payload.msg_type, payload: { status: 'processing', turn_index: 1, controls: PROCESSING_CONTROLS, process: { kind: 'stage', stage: 'thinking', text: '对照截图检查：键值表在 390px 下只剩两百多像素给值，嵌套两层后长路径被挤成一列一个字。需要把窄屏下的键值改成上下排列，并让代码块横向滚动而不是撑破面板。' } } })));
+      if (!domain.behavior.hold_terminal) later(80 + calls.length * spacing + 200, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-terminal`, kind: 'response', type: payload.msg_type, payload: { status: 'completed', turn_index: 1, text: '检查完毕。\n\n| 页面 | 问题 |\n| --- | --- |\n| 过程面板 | 键值表太挤 |\n| 成员详情 | 按钮过小 |\n\n```bash\nnpx playwright test tests/browser/zz-mobile-audit.spec.js --reporter=list --workers=1 --timeout=120000\n```', usage: usageOf(channelId, respondingAgent.id) } })));
+      return;
+    }
     if (mode === 'agent-tree') {
       const rootCorrelation = messageId;
       const parentAgentId = respondingAgent.id;

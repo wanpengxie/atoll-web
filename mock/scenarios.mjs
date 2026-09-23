@@ -121,6 +121,8 @@ export const SCENARIOS = Object.freeze({
   'long-running-canonical': standard({ history: false, behavior: { capabilities: true, message: 'long-running', canonical_actor_ids: true } }),
   'long-running-history': standard({ behavior: { history_turns: 120, capabilities: true, message: 'long-running', canonical_actor_ids: true } }),
   'progress-demo': standard({ history: false, behavior: { capabilities: true, message: 'progress-demo' } }),
+  'progress-real': standard({ history: false, behavior: { capabilities: true, message: 'progress-real' } }),
+  'progress-real-long': standard({ history: false, behavior: { capabilities: true, message: 'progress-real', tool_repeat: 20 } }),
   'agent-tree': standard({ history: false, behavior: { capabilities: true, message: 'agent-tree' } }),
   'control-conflict': standard({ history: false, behavior: { capabilities: true, message: 'long-running' } }),
   'actor-lifecycle': standard({ history: false, behavior: { capabilities: true } }),

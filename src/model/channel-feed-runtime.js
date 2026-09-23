@@ -2089,6 +2089,70 @@ export function createChannelFeedRuntime(options = {}) {
     return adapters.finish(batch, payload);
   }
 
+  // Live resumes strictly after the attach head: the node anchors the lane
+  // there and never replays `since`. Rows that landed while this page was
+  // disconnected (a phone in the background) sit between what memory holds
+  // and that head, and nothing else will ever fetch them — older-history
+  // paging walks down from the oldest row. This fills that stretch newest
+  // first with a cursor of its own; the older-history frontier is untouched.
+  const TAIL_REFILL_MAX_PAGES = 16;
+  const tailRefills = new Map();
+  async function refillTail(channelId) {
+    const status = histories.get(channelId);
+    const head = historyNumeric(grants.get(channelId)?.head_seq);
+    // Live rows after the head may already be in; the stretch to fill ends at
+    // the newest row this page held at or below the head.
+    let floor = 0;
+    for (const seq of replica.state(channelId)?.rows?.keys() || []) if (seq <= head && seq > floor) floor = seq;
+    // Nothing held: the ordinary cold path already reads from the head.
+    if (!status?.attached || status.generation !== generation || !floor || head <= floor) return false;
+    if (tailRefills.get(channelId) === attachEpoch) return false;
+    tailRefills.set(channelId, attachEpoch);
+    const authority = Object.freeze({ principalEpoch, worldEpoch, generation, attachEpoch });
+    let beforeSeq = head + 1;
+    let lowest = 0;
+    try {
+      for (let page = 0; page < TAIL_REFILL_MAX_PAGES && beforeSeq > floor + 1; page += 1) {
+        const batch = { ...batchFor(channelId, { beforeSeq }), source: 'network', ref: '' };
+        const outcome = await executeBatch(batch, null);
+        if (outcome.kind !== 'page' || !authorityTupleCurrent(channelId, authority)) return false;
+        const rows = outcome.rows.filter((row) => historyNumeric(row?.seq) > floor);
+        if (rows.length) {
+          void cache.saveRows(rows).catch(cacheError);
+          applyRows(rows, {
+            source: 'history', persist: false, publishChange: false,
+            coverageRows: new Set(rows.map((row) => historyNumeric(row.seq))),
+          });
+          lowest = Math.min(...rows.map((row) => historyNumeric(row.seq)), lowest || Infinity);
+        }
+        const scanLow = historyNumeric(outcome.result?.scan_low_seq ?? outcome.result?.scanLowSeq);
+        const scanHigh = historyNumeric(outcome.result?.scan_high_seq ?? outcome.result?.scanHighSeq);
+        if (scanLow && scanHigh >= scanLow) {
+          status.controlCoverage = mergeReplicaCoverage(status.controlCoverage, { lowSeq: scanLow, highSeq: scanHigh });
+        }
+        refreshControlCurrent(channelId, status);
+        publish({ index: true });
+        const next = historyNumeric(outcome.result?.next_before_seq ?? outcome.result?.nextBeforeSeq);
+        if (outcome.result?.exhausted || !next || next >= beforeSeq) return true;
+        beforeSeq = next;
+      }
+      if (beforeSeq <= floor + 1 || !lowest) return true;
+      // Too far behind to join up: keep the fresh window and let older-history
+      // paging continue from its bottom, rather than leave a hole under it.
+      const keep = [...(replica.state(channelId)?.rows?.keys() || [])].filter((seq) => seq >= lowest).length;
+      replica.trim(channelId, keep);
+      status.beforeSeq = replica.visibleOldest(channelId) || lowest;
+      status.hasOlder = true;
+      status.coverage = replica.record(channelId)?.materializedCoverage || [];
+      publish({ index: true });
+      return true;
+    } catch (error) {
+      if (tailRefills.get(channelId) === attachEpoch) tailRefills.delete(channelId);
+      diagnostic('warn', 'history.tail_refill_failed', { channelId, error: String(error?.message || error) });
+      return false;
+    }
+  }
+
   async function refreshChannel(channelId) {
     if (destroyed) return false;
     const requestGeneration = generation;
@@ -2356,6 +2420,15 @@ export function createChannelFeedRuntime(options = {}) {
       void loadHistory(channelId, semanticDemand ? { ...request, semanticDemand } : request)
         .catch((error) => callback('onError', error));
     }
+    // Every channel this page already holds rows for gets its disconnected
+    // stretch back; the one being read first.
+    const refillOrder = [...nextChannelIDs].sort((left, right) => Number(right === focus) - Number(left === focus));
+    void (async () => {
+      for (const channelId of refillOrder) {
+        if (epoch !== attachEpoch) return;
+        await refillTail(channelId);
+      }
+    })();
     return { changed: true, meta: selectedMeta };
   }
 
