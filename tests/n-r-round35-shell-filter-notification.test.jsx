@@ -38,11 +38,11 @@ function channelNavigation(activeChannelId = 'c0') {
 }
 
 describe('N-R round 35 public shell/composer/notification contracts', () => {
-  it('projects related and other unread badges only from settled shell facts', () => {
+  it('projects one new-activity badge only from settled shell facts', () => {
     const nav = channelNavigation();
     nav.unread = {
-      c0: { related: 2, other: 3, pending: false, unknown: false },
-      c1: { related: 4, other: 5, pending: true, unknown: false },
+      c0: { count: 5, pending: false, unknown: false },
+      c1: { count: 9, pending: true, unknown: false },
     };
     const view = render(<WorkspaceLayout
       session={session()}
@@ -53,13 +53,12 @@ describe('N-R round 35 public shell/composer/notification contracts', () => {
     const channelItems = [...view.container.querySelectorAll('.channel-item')];
     const c0 = channelItems.find((item) => item.querySelector('.channel-name')?.textContent === 'c0');
     const c1 = channelItems.find((item) => item.querySelector('.channel-name')?.textContent === 'c1');
-    expect(c0?.querySelector('.unread-related')?.textContent).toBe('2');
-    expect(c0?.querySelector('.unread-total:not(.unread-pending)')?.textContent).toBe('3');
-    expect(c1?.querySelector('.unread-related')).toBeNull();
-    expect(c1?.querySelector('.unread-total:not(.unread-pending)')).toBeNull();
+    expect(c0?.querySelectorAll('.unread-badge')).toHaveLength(1);
+    expect(c0?.querySelector('.unread-badge')?.textContent).toBe('5');
+    expect(c1?.querySelector('.unread-badge')).toBeNull();
     expect(c1?.querySelector('.unread-pending')?.textContent).toBe('…');
 
-    nav.unread.c0 = { related: 2, other: 3, pending: false, unknown: true };
+    nav.unread.c0 = { count: 5, pending: false, unknown: true };
     view.rerender(<WorkspaceLayout
       session={session()}
       navigation={nav}
@@ -67,8 +66,7 @@ describe('N-R round 35 public shell/composer/notification contracts', () => {
     />);
     const updatedC0 = [...view.container.querySelectorAll('.channel-item')]
       .find((item) => item.querySelector('.channel-name')?.textContent === 'c0');
-    expect(updatedC0?.querySelector('.unread-related')).toBeNull();
-    expect(updatedC0?.querySelector('.unread-total:not(.unread-pending)')).toBeNull();
+    expect(updatedC0?.querySelector('.unread-badge')).toBeNull();
     expect(updatedC0?.querySelector('.unread-pending')?.textContent).toBe('?');
   });
 
@@ -201,7 +199,7 @@ describe('N-R round 35 public shell/composer/notification contracts', () => {
       };
       expect(feed.acknowledgeNotifications(lease)).toBe(1);
       feed.enqueue({ ...related('leave-2'), seq: 2 });
-      expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, other: 0, pending: false, unknown: false });
+      expect(feed.unreadFor(channelId, selfId)).toEqual({ count: 0, pending: false, unknown: false });
 
       expect(feed.acknowledgeNotifications({
         ...lease,
@@ -214,7 +212,7 @@ describe('N-R round 35 public shell/composer/notification contracts', () => {
         captured: { ...lease.captured, installedHighSeq: 1 },
       })).toBe(false);
       feed.enqueue({ ...related('leave-3'), seq: 3 });
-      expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 2, other: 0, pending: false, unknown: false });
+      expect(feed.unreadFor(channelId, selfId)).toEqual({ count: 2, pending: false, unknown: false });
     } finally {
       runtime.destroy();
     }

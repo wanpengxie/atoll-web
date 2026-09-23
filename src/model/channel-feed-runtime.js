@@ -4,7 +4,7 @@ import {
   mergeReplicaCoverage,
   replicaResumeSnapshot,
 } from './channel-replica.js';
-import { selectTimelineItems } from './conversation-presentation.js';
+import { conversationRelation, selectTimelineItems } from './conversation-presentation.js';
 import { argsOf, FINAL } from '../protocol/envelope.js';
 import { TYPES } from '../protocol/vocab.js';
 import { createHistoryPresentationAdmission } from './history-presentation-admission.js';
@@ -146,12 +146,11 @@ function historyViewSpecSnapshot(viewSpec = {}) {
 // The rail has one canonical root ledger.  Keep the two person-visible
 // projections explicit so a filtered/partial observation cannot silently turn
 // `other` into a total or clear a root it never presented.
-const EMPTY_UNREAD_ROOTS = Object.freeze({ related: new Set(), other: new Set() });
+const EMPTY_UNREAD_ROOTS = Object.freeze(new Set());
 
-function notificationProjection({ related = 0, other = 0, pending = false, unknown = false } = {}) {
+function notificationProjection({ count = 0, pending = false, unknown = false } = {}) {
   return Object.freeze({
-    related: historyNumeric(related),
-    other: historyNumeric(other),
+    count: historyNumeric(count),
     pending: pending === true,
     unknown: unknown === true,
   });
@@ -181,29 +180,6 @@ function samePerson(left, right) {
   if (left === right) return true;
   const principal = humanPrincipal(left);
   return Boolean(principal && principal === humanPrincipal(right));
-}
-
-function envelopeRelatesTo(envelope, selfID) {
-  return samePerson(envelope?.sender?.id, selfID)
-    || envelope?.audience?.some((audience) => samePerson(audience, selfID));
-}
-
-function notificationRelatesTo(state, envelope, selfID) {
-  if (envelopeRelatesTo(envelope, selfID)) return true;
-  for (const entry of state?.timeline || []) {
-    if (entry?.kind !== 'turn') continue;
-    const turns = [entry.turn, ...(entry.thread || []).map((item) => item.turn)].filter(Boolean);
-    const contains = turns.some((turn) => turn.request?.id === envelope?.id
-      || turn.terminal?.id === envelope?.id
-      || turn.provisional?.some((item) => item.envelope?.id === envelope?.id));
-    if (!contains) continue;
-    return turns.some((turn) => [
-      turn.request,
-      turn.terminal,
-      ...(turn.provisional || []).map((item) => item.envelope),
-    ].some((candidate) => envelopeRelatesTo(candidate, selfID)));
-  }
-  return false;
 }
 
 function notificationRootID(state, envelope) {
@@ -253,15 +229,13 @@ function isTerminalActivity(envelope) {
     && FINAL.has(argsOf(envelope)?.status);
 }
 
-// Where the reader has read to, per channel: the one notification state.
-//
-//   mine  — highest ledger seq seen in any view; unread rows related to the
-//           reader (sender or audience) are those above it
-//   all   — highest ledger seq seen in the unfiltered "all" view; unread rows
-//           not related to the reader are those above it
+// Where the reader has read to, per channel: the one notification state. One
+// position, the highest ledger seq the reader has had on screen in any view.
+// New activity is the reader's conversation above it (see unreadRoots); there
+// is no second position and no second kind of unread.
 //
 // A channel first seen on this device starts at its head: history is never
-// new. Both positions only move forward, so a late or repeated report is a
+// new. The position only moves forward, so a late or repeated report is a
 // no-op, never a corruption. Stored per principal and ledger world.
 function createReadPositions(storage = globalThis.localStorage) {
   const positions = new Map();
@@ -290,9 +264,9 @@ function createReadPositions(storage = globalThis.localStorage) {
     try {
       const value = JSON.parse(storage.getItem(keyFor(authority)) || '{}');
       for (const [channelId, entry] of Object.entries(value || {})) {
-        const mine = historyNumeric(entry?.mine);
-        const all = historyNumeric(entry?.all);
-        positions.set(channelId, { mine, all: Math.min(all, mine) });
+        // Positions stored before there was one kept {mine, all}; mine was
+        // the one every view advanced.
+        positions.set(channelId, historyNumeric(typeof entry === 'object' ? entry?.mine : entry));
       }
     } catch { positions.clear(); }
   };
@@ -316,13 +290,11 @@ function createReadPositions(storage = globalThis.localStorage) {
     },
     isReadAuthorityReady: () => Boolean(authority),
     has: (channelId) => positions.has(channelId),
-    readMine: (channelId) => positions.get(channelId)?.mine || 0,
-    readAll: (channelId) => positions.get(channelId)?.all || 0,
+    read: (channelId) => positions.get(channelId) || 0,
     // First sight on this device: everything up to the current head is past.
     baseline(channelId, headSeq) {
       if (!authority || positions.has(channelId)) return false;
-      const head = historyNumeric(headSeq);
-      positions.set(channelId, { mine: head, all: head });
+      positions.set(channelId, historyNumeric(headSeq));
       persist();
       return true;
     },
@@ -331,20 +303,16 @@ function createReadPositions(storage = globalThis.localStorage) {
     clampToHead(channelId, headSeq) {
       const current = positions.get(channelId);
       const head = historyNumeric(headSeq);
-      if (!current || (current.mine <= head && current.all <= head)) return false;
-      positions.set(channelId, { mine: Math.min(current.mine, head), all: Math.min(current.all, head) });
+      if (current == null || current <= head) return false;
+      positions.set(channelId, head);
       persist();
       return true;
     },
-    advance(channelId, seq, { all = false } = {}) {
+    advance(channelId, seq) {
       if (!authority) return false;
-      const value = historyNumeric(seq);
-      const current = positions.get(channelId) || { mine: 0, all: 0 };
-      const next = {
-        mine: Math.max(current.mine, value),
-        all: all ? Math.max(current.all, value) : current.all,
-      };
-      if (next.mine === current.mine && next.all === current.all) return false;
+      const current = positions.get(channelId) || 0;
+      const next = Math.max(current, historyNumeric(seq));
+      if (next === current) return false;
       positions.set(channelId, next);
       persist();
       return true;
@@ -511,8 +479,6 @@ export function createChannelFeedRuntime(options = {}) {
   let activityConnected = false;
   let activityRevision = 0;
   let timerRevision = 0;
-  let timerAcknowledgedRevision = 0;
-  let timerOverflow = null;
   let notificationAuthorityRevision = 0;
   let releaseRailDiagnostic = null;
 
@@ -529,21 +495,18 @@ export function createChannelFeedRuntime(options = {}) {
     if (!channelId || !requestId) return false;
     const key = `${channelId}\u0000${requestId}`;
     const current = activityEntries.get(key);
+    // Running is a state, not news: when the work ends the entry ends. What it
+    // produced reaches the reader as new activity through the read position,
+    // the one notification model — never through a second "finished" badge.
     if (isTerminalActivity(envelope)) {
-      if (!current || current.state === 'settled') return false;
-      const settledAt = eventTimestamp(envelope);
-      activityEntries.set(key, Object.freeze({
-        ...current, state: 'settled', updatedAt: settledAt, settledAt,
-        settledSeq: historyNumeric(row.seq),
-        outcome: String(argsOf(envelope)?.status || ''),
-      }));
+      if (!current) return false;
+      activityEntries.delete(key);
       activityRevision += 1;
       return true;
     }
     if (source !== 'live' || !activityConnected
       || historyNumeric(row.generation) !== generation
-      || !isRunningActivity(envelope)
-      || current?.state === 'settled') return false;
+      || !isRunningActivity(envelope)) return false;
     const agentId = String(envelope.sender?.id || '');
     if (!agentId) return false;
     const updatedAt = eventTimestamp(envelope);
@@ -552,13 +515,11 @@ export function createChannelFeedRuntime(options = {}) {
     activityEntries.set(key, Object.freeze({
       state: 'active', channelId, requestId, agentId, type: envelope.type, generation,
       startedAt: current?.startedAt || requestStartedAt,
-      updatedAt, settledAt: 0, outcome: '',
+      updatedAt,
     }));
     if (!current || current.agentId !== agentId || current.generation !== generation) activityRevision += 1;
     while (activityEntries.size > AGENT_ACTIVITY_LIMIT) {
-      const removable = [...activityEntries].find(([, entry]) => entry.state === 'settled') || activityEntries.entries().next().value;
-      if (!removable) break;
-      activityEntries.delete(removable[0]);
+      activityEntries.delete(activityEntries.keys().next().value);
     }
     return true;
   }
@@ -574,40 +535,25 @@ export function createChannelFeedRuntime(options = {}) {
       seq: historyNumeric(row.seq),
       firedAt: eventTimestamp(row.envelope),
     }));
-    if (timerEvents.length > TIMER_FIRING_LIMIT) {
-      const removed = timerEvents.splice(0, timerEvents.length - TIMER_FIRING_LIMIT);
-      const unacknowledged = removed.filter((event) => event.revision > timerAcknowledgedRevision);
-      if (unacknowledged.length) {
-        timerOverflow = Object.freeze({
-          count: Number(timerOverflow?.count || 0) + unacknowledged.length,
-          throughRevision: unacknowledged.at(-1).revision,
-        });
-      }
-    }
+    if (timerEvents.length > TIMER_FIRING_LIMIT) timerEvents.splice(0, timerEvents.length - TIMER_FIRING_LIMIT);
     return true;
   }
 
   function agentActivitySnapshot(channelId = '') {
     const byChannel = {};
     for (const entry of activityEntries.values()) {
-      const visibleActive = entry.state === 'active' && activityConnected && entry.generation === generation;
-      // A completion the reader has already read past is no longer news.
-      const settledUnread = entry.state === 'settled'
-        && !(entry.settledSeq > 0 && entry.settledSeq <= cursors.readMine(entry.channelId));
-      if ((!visibleActive && !settledUnread) || (channelId && entry.channelId !== channelId)) continue;
+      if (!activityConnected || entry.generation !== generation) continue;
+      if (channelId && entry.channelId !== channelId) continue;
       const channel = byChannel[entry.channelId] || { active: [], agents: {} };
       byChannel[entry.channelId] = channel;
-      const agent = channel.agents[entry.agentId] || { active: 0, settled: 0, state: '' };
+      const agent = channel.agents[entry.agentId] || { active: 0, state: 'active' };
       channel.agents[entry.agentId] = agent;
-      if (visibleActive) { channel.active.push(entry); agent.active += 1; }
-      else agent.settled += 1;
+      channel.active.push(entry);
+      agent.active += 1;
     }
     for (const channel of Object.values(byChannel)) {
       channel.active.sort((left, right) => right.updatedAt - left.updatedAt);
-      for (const agent of Object.values(channel.agents)) {
-        agent.state = agent.active ? 'active' : 'settled';
-        Object.freeze(agent);
-      }
+      for (const agent of Object.values(channel.agents)) Object.freeze(agent);
       Object.freeze(channel.active); Object.freeze(channel.agents); Object.freeze(channel);
     }
     return Object.freeze({
@@ -616,13 +562,10 @@ export function createChannelFeedRuntime(options = {}) {
     });
   }
 
+  // Which timers fired, for the task list to mark them fired. Not a
+  // notification: a timer's result reaches the reader as new activity.
   function timerFiringSnapshot() {
-    return Object.freeze({
-      revision: timerRevision,
-      acknowledgedRevision: timerAcknowledgedRevision,
-      overflow: timerOverflow,
-      events: Object.freeze(timerEvents.filter((event) => event.revision > timerAcknowledgedRevision)),
-    });
+    return Object.freeze({ revision: timerRevision, events: Object.freeze([...timerEvents]) });
   }
 
   const adapters = createHistorySourceAdapters({
@@ -906,17 +849,16 @@ export function createChannelFeedRuntime(options = {}) {
     return { pending, unknown };
   }
 
-  // Unread = notifiable rows from others above the reader's read position:
-  // rows related to the reader above `mine`, the rest above `all`. Rows at or
-  // below a position are history to this reader, however they were loaded.
+  // New activity, the one definition: rows of the reader's conversation —
+  // exactly what the mine view shows — written by someone else, notifiable,
+  // above the read position. Counted once per conversation root. Nothing
+  // outside the reader's conversation is ever new activity for the reader.
   function unreadRoots(channelId, selfID = '') {
     const state = replica.state(channelId);
-    const mine = cursors.readMine(channelId);
-    const all = cursors.readAll(channelId);
-    const low = Math.min(mine, all);
-    const related = new Set();
-    const other = new Set();
+    const low = cursors.read(channelId);
+    const roots = new Set();
     let unknown = false;
+    const inConversation = conversationRelation(state, selfID);
     for (const [seq, envelope] of state?.rows || []) {
       if (seq <= low || samePerson(envelope?.sender?.id, selfID)) continue;
       const disposition = notificationDisposition(state, envelope, selfID);
@@ -924,52 +866,46 @@ export function createChannelFeedRuntime(options = {}) {
         unknown = true;
         continue;
       }
-      if (!isRailNotifiableDisposition(disposition)) continue;
+      if (!isRailNotifiableDisposition(disposition) || !inConversation(envelope)) continue;
       const rootID = notificationRootID(state, envelope);
       if (!rootID) {
         unknown = true;
         continue;
       }
-      if (notificationRelatesTo(state, envelope, selfID)) {
-        if (seq > mine) related.add(String(rootID));
-      } else if (seq > all) other.add(String(rootID));
+      roots.add(String(rootID));
     }
-    // A root belongs to one projection; related wins.
-    for (const rootID of related) other.delete(rootID);
-    return { related, other, unknown, low, state };
+    return { roots, unknown, low, state };
   }
 
   function unreadFor(channelId, selfID = '') {
     if (!cursors.isReadAuthorityReady() || !selfID) {
       return notificationProjection({ pending: true, unknown: true });
     }
-    const roots = unreadRoots(channelId, selfID);
-    const context = notificationContextState(channelId, roots.state, roots.low, selfID);
+    const unread = unreadRoots(channelId, selfID);
+    const context = notificationContextState(channelId, unread.state, unread.low, selfID);
     return notificationProjection({
-      related: roots.related.size,
-      other: roots.other.size,
+      count: unread.roots.size,
       pending: context.pending,
-      unknown: context.unknown || roots.unknown,
+      unknown: context.unknown || unread.unknown,
     });
   }
 
   function unreadRootsFor(channelId, selfID = '') {
     if (!cursors.isReadAuthorityReady() || !selfID) return EMPTY_UNREAD_ROOTS;
-    const roots = unreadRoots(channelId, selfID);
-    return Object.freeze({ related: roots.related, other: roots.other });
+    return unreadRoots(channelId, selfID).roots;
   }
 
-  // The reader has seen `seq` in this channel. In the unfiltered "all" view
-  // everything up to it was on screen; in any other view only rows related to
-  // the reader were. Monotone: a stale or repeated report changes nothing.
+  // The reader has seen `seq` in this channel, in whichever view: every row of
+  // the reader's conversation up to it was on screen. Monotone: a stale or
+  // repeated report changes nothing.
   const liveFollowers = new Map();
   // The reading owner registers while it follows the newest row of a visible
   // channel; every row that then arrives live is on its way onto the screen.
-  function followLive(channelId, { all = false } = {}) {
+  function followLive(channelId) {
     const id = String(channelId || '');
     if (!id || destroyed) return () => {};
     const token = {};
-    liveFollowers.set(id, { all: all === true, token });
+    liveFollowers.set(id, { token });
     return () => { if (liveFollowers.get(id)?.token === token) liveFollowers.delete(id); };
   }
   function readFollowedArrivals(rows) {
@@ -984,17 +920,17 @@ export function createChannelFeedRuntime(options = {}) {
       const status = histories.get(channelId);
       if (!status?.attached || status.generation !== generation) continue;
       const bounded = Math.min(seq, historyNumeric(status.headSeq) || seq);
-      if (bounded > 0) cursors.advance(channelId, bounded, { all: liveFollowers.get(channelId).all });
+      if (bounded > 0) cursors.advance(channelId, bounded);
     }
   }
 
-  function markSeen(channelId, seq, { all = false } = {}) {
+  function markSeen(channelId, seq) {
     if (destroyed) return false;
     const status = histories.get(channelId);
     if (!status?.attached || status.generation !== generation) return false;
     const bounded = Math.min(historyNumeric(seq), historyNumeric(status.headSeq));
     if (!(bounded > 0)) return false;
-    const changed = cursors.advance(channelId, bounded, { all });
+    const changed = cursors.advance(channelId, bounded);
     if (changed) publish();
     return changed;
   }
@@ -1010,10 +946,9 @@ export function createChannelFeedRuntime(options = {}) {
       channels.push(Object.freeze({
         channelId,
         authorityReady: cursors.isReadAuthorityReady(),
-        readMine: cursors.readMine(channelId),
-        readAll: cursors.readAll(channelId),
+        read: cursors.read(channelId),
         headSeq: historyNumeric(histories.get(channelId)?.headSeq),
-        counts: { related: counts.related, other: counts.other, pending: counts.pending, unknown: counts.unknown },
+        counts: { count: counts.count, pending: counts.pending, unknown: counts.unknown },
       }));
     }
     return Object.freeze({ version: 2, channels: Object.freeze(channels) });
@@ -2226,8 +2161,8 @@ export function createChannelFeedRuntime(options = {}) {
       clearDeferredHistoryRequests();
       histories.clear(); grants.clear(); replica.reset(); cursors.clearReadAuthority();
      
-      activityEntries.clear(); timerEvents.splice(0); timerOverflow = null;
-      timerAcknowledgedRevision = timerRevision; activityConnected = false; activityRevision += 1;
+      activityEntries.clear(); timerEvents.splice(0);
+      activityConnected = false; activityRevision += 1;
     }
     principal = selectedPrincipal;
     localReplicaError = ''; localReplicaErrorCode = '';
@@ -2299,7 +2234,7 @@ export function createChannelFeedRuntime(options = {}) {
       if (!head) continue;
       const focused = channelId === focus && replica.visibleNewest(channelId) === 0;
       const notified = channelId !== focus && histories.has(channelId)
-        && cursors.readMine(channelId) < head;
+        && cursors.read(channelId) < head;
       if (focused || notified) reads.push(hydrate(channelId, head + 1));
     }
     await Promise.all(reads);
@@ -2341,8 +2276,6 @@ export function createChannelFeedRuntime(options = {}) {
      
       activityEntries.clear();
       timerEvents.splice(0);
-      timerAcknowledgedRevision = timerRevision;
-      timerOverflow = null;
       activityRevision += 1;
     }
     const replayAfterAttach = [];
@@ -2491,8 +2424,7 @@ export function createChannelFeedRuntime(options = {}) {
         serverBoot: world,
         channelId,
       }),
-      readMine: cursors.readMine(channelId),
-      readAll: cursors.readAll(channelId),
+      readPosition: cursors.read(channelId),
       oldestSeq: replica.visibleOldest(channelId),
       loaded: replica.visibleNewest(channelId) > 0,
       localReplicaReady,
@@ -2537,8 +2469,6 @@ export function createChannelFeedRuntime(options = {}) {
     activityEntries.clear();
    
     timerEvents.splice(0);
-    timerAcknowledgedRevision = timerRevision;
-    timerOverflow = null;
     activityConnected = false;
     activityRevision += 1;
     replica.reset(); publish({ index: true });
@@ -2604,27 +2534,6 @@ export function createChannelFeedRuntime(options = {}) {
     if (requestGeneration && generation && requestGeneration !== generation) return false;
     incompatible = true; disconnectHistory(generation); return true;
   }
-  function acknowledgeAgentActivity(channelId, agentId) {
-    if (destroyed) return false;
-    let changed = false;
-    for (const [key, entry] of activityEntries) {
-      if (entry.state !== 'settled' || entry.channelId !== channelId || entry.agentId !== agentId) continue;
-      activityEntries.delete(key);
-      changed = true;
-    }
-    if (changed) { activityRevision += 1; publish(); }
-    return changed;
-  }
-  function acknowledgeTimerFirings(throughRevision = timerRevision) {
-    if (destroyed) return false;
-    const next = Math.min(timerRevision, Math.max(timerAcknowledgedRevision, historyNumeric(throughRevision)));
-    if (next === timerAcknowledgedRevision) return false;
-    timerAcknowledgedRevision = next;
-    while (timerEvents[0]?.revision <= next) timerEvents.shift();
-    if (timerOverflow && timerOverflow.throughRevision <= next) timerOverflow = null;
-    publish();
-    return true;
-  }
   function attachAgentActivity(detail = {}) {
     if (destroyed) return false;
     const nextGeneration = historyNumeric(detail.generation);
@@ -2683,8 +2592,6 @@ export function createChannelFeedRuntime(options = {}) {
       loadHistory, requestBackgroundInterest, markSeen, followLive, unreadRootsFor,
       agentActivityFor: (channelId) => agentActivity.byChannel[channelId]
         || Object.freeze({ active: Object.freeze([]), agents: Object.freeze({}) }),
-      acknowledgeAgentActivity,
-      acknowledgeTimerFirings,
       coldEntryDiagnosticsFor: (channelId) => Object.freeze({
         feed: { localReplicaReady, localReplicaErrorCode },
         replica: { revision: replica.revision(channelId), rows: replica.state(channelId)?.rows.size || 0 },

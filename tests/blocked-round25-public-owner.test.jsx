@@ -454,17 +454,19 @@ describe('A-D round 25 public-owner evidence', () => {
     expect(feed.acknowledgeNotifications(notificationConfirmation(feed, 'c0', 3, {
       visibleRowIDs: ['visible-a', 'visible-b'],
     }))).toBe(1);
-    expect(feed.unreadFor('c0', SELF).related).toBe(1);
+    expect(feed.unreadFor('c0', SELF).count).toBe(1);
     runtime.destroy();
   });
 
-  it('[AD-291] preserves a weak all-message count beside the narrower @me count', async () => {
-    // 用户能力：与我相关 unread 和频道内任意新内容分别可见。
-    // 不变量：related 与 total 不能由同一 root set 代替；公开 owner：ChannelFeedRuntime.unreadFor。
+  it('[AD-291] counts one kind of new activity: the reader\'s conversation, never another person\'s', async () => {
+    // 用户能力：关于我的新动态只有一份模型、一个计数。
+    // 不变量：别人之间的对话永远不算我的新动态；agent 自己发起的工作算。
+    // 公开 owner：ChannelFeedRuntime.unreadFor。
     const { runtime, snapshot } = await readyRuntime({ boot: 'round25-count-boot' });
-    snapshot().enqueue(liveRow('c0', 1, requestEnvelope('other-only', { audience: ['human:other:1'] })));
-    expect(snapshot().unreadFor('c0', SELF).related).toBe(0);
-    expect(snapshot().unreadFor('c0', SELF).other).toBeGreaterThan(0);
+    snapshot().enqueue(liveRow('c0', 1, requestEnvelope('other-only', { sender: { id: 'human:other:1', kind: 'human' }, audience: ['human:third:1'] })));
+    expect(snapshot().unreadFor('c0', SELF).count).toBe(0);
+    snapshot().enqueue(liveRow('c0', 2, requestEnvelope('agent-own', { audience: ['agent:round22:peer'] })));
+    expect(snapshot().unreadFor('c0', SELF).count).toBe(1);
     runtime.destroy();
   });
 
@@ -483,13 +485,13 @@ describe('A-D round 25 public-owner evidence', () => {
       sender: agent, audience: [agent.id], type: 'agent.ask', status: 'processing', text: '',
     })));
     expect(snapshot().unreadFor('c0', SELF)).toEqual({
-      related: 0, other: 0, pending: false, unknown: false,
+      count: 0, pending: false, unknown: false,
     });
     snapshot().enqueue(liveRow('c0', 4, responseEnvelope('self-done', 'self-task', {
       sender: agent, audience: [agent.id], type: 'agent.ask', text: 'finished work',
     })));
     expect(snapshot().unreadFor('c0', SELF)).toEqual({
-      related: 0, other: 1, pending: false, unknown: false,
+      count: 1, pending: false, unknown: false,
     });
     runtime.destroy();
   });

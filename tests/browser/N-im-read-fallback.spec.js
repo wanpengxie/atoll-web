@@ -78,7 +78,6 @@ async function readCounts(page, channelName) {
     const number = (node) => (node ? Number(String(node.textContent).replace(/[^0-9]/g, '')) || (String(node.textContent).trim() ? -1 : 0) : 0);
     return {
       related: number(item?.querySelector('.unread-related')),
-      other: number(item?.querySelector('.unread-total:not(.unread-pending)')),
       pending: Boolean(item?.querySelector('.unread-pending')),
       jump: Number(String(document.querySelector('.timeline-jump-latest')?.textContent || '').replace(/[^0-9]/g, '')) || 0,
       gap: (() => {
@@ -108,7 +107,6 @@ async function startCapture(page, channelName) {
       state.frames.push({
         elapsedMs: Math.round(performance.now() - state.startedAt),
         badgeRelated: digits(item?.querySelector('.unread-related')),
-        badgeOther: digits(item?.querySelector('.unread-total:not(.unread-pending)')),
         badgePending: Boolean(item?.querySelector('.unread-pending')),
         jump: digits(document.querySelector('.timeline-jump-latest')),
         jumpShown: Boolean(document.querySelector('.timeline-jump-latest')),
@@ -299,7 +297,7 @@ test('N3 页面不可见时到达计入未读，恢复可见并在底部后清�
   await expect.poll(() => page.evaluate(() => document.visibilityState)).toBe('hidden');
 
   await arrive(request, 'c0', 3);
-  await expect.poll(() => readCounts(page, 'c0').then((counts) => counts.related + counts.other + counts.jump), { timeout: 15_000 }).toBeGreaterThan(0);
+  await expect.poll(() => readCounts(page, 'c0').then((counts) => counts.related + counts.jump), { timeout: 15_000 }).toBeGreaterThan(0);
   const whileHidden = await readCounts(page, 'c0');
 
   await page.evaluate(() => window.__N_SET_VISIBILITY__('visible'));
@@ -311,9 +309,8 @@ test('N3 页面不可见时到达计入未读，恢复可见并在底部后清�
   const afterVisible = await readCounts(page, 'c0');
 
   await attachJSON(testInfo, 'N3-hidden-page.json', { whileHidden, afterVisible });
-  expect(whileHidden.related + whileHidden.other + whileHidden.jump).toBeGreaterThan(0);
+  expect(whileHidden.related + whileHidden.jump).toBeGreaterThan(0);
   expect(afterVisible.related).toBe(0);
-  expect(afterVisible.other).toBe(0);
   expect(afterVisible.jump).toBe(0);
 });
 

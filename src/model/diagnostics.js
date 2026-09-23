@@ -133,16 +133,14 @@ export function registerRailDiagnosticProvider(provider) {
 function sanitizeRailDiagnostic(value) {
   const channels = Array.isArray(value?.channels) ? value.channels : [];
   return {
-    version: 2,
+    version: 3,
     channels: channels.slice(0, 200).map((channel) => ({
       channelId: String(channel?.channelId || '').slice(0, 256),
       authorityReady: channel?.authorityReady === true,
-      readMine: Math.max(0, Number(channel?.readMine || 0)),
-      readAll: Math.max(0, Number(channel?.readAll || 0)),
+      read: Math.max(0, Number(channel?.read || 0)),
       headSeq: Math.max(0, Number(channel?.headSeq || 0)),
       counts: {
-        related: Math.max(0, Number(channel?.counts?.related || 0)),
-        other: Math.max(0, Number(channel?.counts?.other || 0)),
+        count: Math.max(0, Number(channel?.counts?.count || 0)),
         pending: channel?.counts?.pending === true,
         unknown: channel?.counts?.unknown === true,
       },

@@ -102,7 +102,7 @@ describe('NR02 canonical notification frontier', () => {
     try {
       seedPair(feed, 'projection');
       expect(feed.unreadFor(CHANNEL, SELF)).toEqual({
-        related: 1, other: 1, pending: false, unknown: false,
+        count: 2, pending: false, unknown: false,
       });
     } finally {
       runtime.destroy();
@@ -122,7 +122,7 @@ describe('NR02 canonical notification frontier', () => {
       }))).toBe(1);
       expect(feed.historyFor(CHANNEL).notificationHighWater).toBe(1);
       expect(feed.unreadFor(CHANNEL, SELF)).toEqual({
-        related: 0, other: 1, pending: false, unknown: false,
+        count: 1, pending: false, unknown: false,
       });
     } finally {
       runtime.destroy();
@@ -201,7 +201,7 @@ describe('NR02 canonical notification frontier', () => {
       }))).toBe(1);
       expect(feed.historyFor(CHANNEL).notificationHighWater).toBe(1);
       expect(feed.unreadFor(CHANNEL, SELF)).toMatchObject({
-        related: 0, other: 0, pending: false, unknown: true,
+        count: 0, pending: false, unknown: true,
       });
     } finally {
       runtime.destroy();
@@ -219,7 +219,7 @@ describe('NR02 canonical notification frontier', () => {
       }))).toBe(false);
       expect(feed.historyFor(CHANNEL).notificationHighWater).toBe(0);
       expect(feed.unreadFor(CHANNEL, SELF)).toEqual({
-        related: 0, other: 1, pending: false, unknown: false,
+        count: 1, pending: false, unknown: false,
       });
 
       expect(feed.acknowledgeNotifications(receipt(feed, {
@@ -230,7 +230,7 @@ describe('NR02 canonical notification frontier', () => {
       }))).toBe(false);
       expect(feed.historyFor(CHANNEL).notificationHighWater).toBe(0);
       expect(feed.unreadFor(CHANNEL, SELF)).toEqual({
-        related: 1, other: 1, pending: false, unknown: false,
+        count: 2, pending: false, unknown: false,
       });
     } finally {
       runtime.destroy();
@@ -249,7 +249,7 @@ describe('NR02 canonical notification frontier', () => {
       }))).toBe(1);
       expect(feed.historyFor(CHANNEL).notificationHighWater).toBe(1);
       expect(feed.unreadFor(CHANNEL, SELF)).toEqual({
-        related: 0, other: 0, pending: false, unknown: false,
+        count: 0, pending: false, unknown: false,
       });
     } finally {
       runtime.destroy();

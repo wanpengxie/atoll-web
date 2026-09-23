@@ -1023,29 +1023,6 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     });
   }, [activeAccess, contentVisible, navigation.setTerminalVisible]);
 
-  const timerNotice = useMemo(() => {
-    const firings = feed.timerFirings;
-    const readableChannels = new Set(navigation.channels
-      .filter((channel) => canViewChannelContent(channel.access))
-      .map((channel) => channel.id));
-    const events = firings.events.filter((event) => readableChannels.has(event.channelId));
-    const canExposeOverflow = navigation.channels.every((channel) => canViewChannelContent(channel.access));
-    const overflowCount = canExposeOverflow ? Number(firings.overflow?.count || 0) : 0;
-    const count = events.length + overflowCount;
-    if (!count) return null;
-    const channelIds = [...new Set(events.map((event) => event.channelId).filter(Boolean))];
-    const labels = channelIds.map((channelId) => {
-      const channel = navigation.channels.find((row) => row.id === channelId);
-      return channel?.qualified_name || channel?.name || channelId;
-    });
-    return Object.freeze({
-      revision: Math.max(
-        ...events.map((event) => Number(event.revision || 0)),
-        canExposeOverflow ? Number(firings.overflow?.throughRevision || 0) : 0,
-      ),
-      message: `${count} 个定时任务已触发${labels.length ? ` · ${labels.join('、')}` : ''}`,
-    });
-  }, [feed.timerFirings, navigation.channels]);
   useEffect(() => {
     const events = feed.timerFirings?.events || EMPTY_ARRAY;
     const firedByKey = new Map();
@@ -1098,14 +1075,6 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       return changed ? Object.freeze(next) : current;
     });
   }, [feed.stateEntries, feed.timerFirings, feed.version]);
-  useEffect(() => {
-    if (timerNotice) setChannelNotice(timerNotice.message);
-  }, [timerNotice]);
-  useEffect(() => {
-    if (!timerNotice || channelNotice !== timerNotice.message) return;
-    feed.acknowledgeTimerFirings(timerNotice.revision);
-  }, [channelNotice, feed, timerNotice]);
-
   const viewSessions = useMemo(() => createViewSessionStore({ principalID: principalId }), [principalId]);
   const state = feed.stateFor(navigation.activeChannelId);
   const historyStatus = feed.historyFor(navigation.activeChannelId);
@@ -1406,7 +1375,6 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       // probe owner's manual selection or call selectAgent.
     },
     onComposerEditChange: setComposerEditPort,
-    onAcknowledgeAgentActivity: (agentId) => feed.acknowledgeAgentActivity(navigation.activeChannelId, agentId),
   };
   conversationPort.element = contentVisible && state && history
     ? <ConversationSurface {...conversationPort} />
@@ -2064,10 +2032,9 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
         channel.id,
         canViewChannelContent(channel.access)
           ? feed.unreadFor(channel.id, navigation.selfFor(channel.id))
-          : { related: 0, other: 0, pending: false, unknown: false },
+          : { count: 0, pending: false, unknown: false },
       ])),
       agentActivity: visibleAgentActivity,
-      acknowledgeAgentActivity: feed.acknowledgeAgentActivity,
       select: navigation.select,
       setActiveView: navigation.setActiveView,
       openTerminal: () => {

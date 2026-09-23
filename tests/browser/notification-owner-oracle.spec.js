@@ -84,8 +84,7 @@ async function startNoticeCapture(page, channelID) {
         mode: document.querySelector('.timeline')?.dataset.viewportMode || '',
         gap: gap == null ? null : Math.round(gap),
         tail: Boolean(bounds && gap != null && gap <= 2),
-        related: digits(item?.querySelector('.unread-related')),
-        other: digits(item?.querySelector('.unread-total:not(.unread-pending)')),
+        count: digits(item?.querySelector('.unread-badge')),
         pending: Boolean(item?.querySelector('.unread-pending')),
         jump: digits(document.querySelector('.timeline-jump-latest')),
       });
@@ -225,8 +224,7 @@ async function snapshot(page, channelID, phase, extra = {}) {
       const item = [...document.querySelectorAll('.channel-item')].find((node) => node.querySelector('.channel-name')?.textContent?.trim() === channelID);
       const digits = (node) => Number(String(node?.textContent || '').replace(/[^0-9]/g, '')) || 0;
       const railDOM = {
-        related: digits(item?.querySelector('.unread-related')),
-        other: digits(item?.querySelector('.unread-total:not(.unread-pending)')),
+        count: digits(item?.querySelector('.unread-badge')),
         pending: Boolean(item?.querySelector('.unread-pending')),
         jump: digits(document.querySelector('.timeline-jump-latest')),
       };
@@ -297,8 +295,7 @@ function railSummary(value, channelID) {
     readSeq: Number(channelValue?.readSeq || 0),
     notificationHighWater: Number(channelValue?.notificationHighWater || 0),
     counts: {
-      related: Number(channelValue?.counts?.related || 0),
-      other: Number(channelValue?.counts?.other || 0),
+      count: Number(channelValue?.counts?.count || 0),
       pending: channelValue?.counts?.pending === true,
       unknown: channelValue?.counts?.unknown === true,
     },
@@ -404,14 +401,13 @@ function firstDivergence({ scenario, channelID, traces, actions, expected = {} }
     };
   }
   if (expected.railCounts && (
-    rail.dom.related !== expected.railCounts.related
-      || rail.dom.other !== expected.railCounts.other
+    rail.dom.count !== expected.railCounts.count
       || (expected.railCounts.jump != null && rail.dom.jump !== expected.railCounts.jump)
   )) {
     return {
       stage: 'rail',
       phase,
-      reason: `rail DOM counts related=${rail.dom.related}, other=${rail.dom.other}, jump=${rail.dom.jump}`,
+      reason: `rail DOM count=${rail.dom.count}, jump=${rail.dom.jump}`,
       expectedRailCounts: expected.railCounts,
       cursor,
       replica,
@@ -420,7 +416,7 @@ function firstDivergence({ scenario, channelID, traces, actions, expected = {} }
     };
   }
   if (expected.transientRailNotice && (final.extra?.frames || []).some((frame) => (
-    frame.tail && (frame.related > 0 || frame.other > 0 || frame.pending || frame.jump > 0)
+    frame.tail && (frame.count > 0 || frame.pending || frame.jump > 0)
   ))) {
     return {
       stage: 'rail',
@@ -494,7 +490,7 @@ test.describe('notification owner chain oracle', () => {
     await page.waitForTimeout(700);
     const frames = await stopNoticeCapture(page);
     await trace(page, 'c0.project', traces, 'following-arrival', { frames });
-    await finish(testInfo, 'N2', 'c0.project', traces, actions, { phase: 'following-arrival', transientRailNotice: true, railCounts: { related: 0, other: 0, jump: 0 } });
+    await finish(testInfo, 'N2', 'c0.project', traces, actions, { phase: 'following-arrival', transientRailNotice: true, railCounts: { count: 0, jump: 0 } });
   });
 
   test('N4 filtered input to outside-scope rail chain', async ({ page, request }, testInfo) => {

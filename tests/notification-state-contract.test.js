@@ -145,7 +145,7 @@ describe('notification confirmation contract', () => {
     expect(feed.acknowledgeNotifications(confirmation)).toBe(1);
     expect(feed.historyFor(channelId).notificationHighWater).toBe(1);
     expect(feed.markRead(channelId, { ...confirmation, physicalSeq: 1 })).toBe(1);
-    expect(feed.unreadFor(channelId, selfId)).toMatchObject({ related: 1, other: 0, pending: false, unknown: false });
+    expect(feed.unreadFor(channelId, selfId)).toMatchObject({ count: 1, pending: false, unknown: false });
     expect(feed.acknowledgeNotifications(confirmation)).toBe(1);
   });
 
@@ -161,10 +161,10 @@ describe('notification confirmation contract', () => {
     feed.enqueue({ ...relatedRequest(channelId, 'active-channel-root', selfId), seq: 1 });
     feed.enqueue({ ...otherChannelRequest(otherChannelId, 'other-channel-root', selfId), seq: 1 });
     expect(feed.unreadFor(channelId, selfId)).toEqual({
-      related: 1, other: 0, pending: false, unknown: false,
+      count: 1, pending: false, unknown: false,
     });
     expect(feed.unreadFor(otherChannelId, selfId)).toEqual({
-      related: 1, other: 0, pending: false, unknown: false,
+      count: 1, pending: false, unknown: false,
     });
 
     const status = feed.historyFor(channelId);
@@ -177,18 +177,18 @@ describe('notification confirmation contract', () => {
     });
     expect(feed.acknowledgeNotifications(notCaughtUp)).toBe(false);
     expect(feed.unreadFor(channelId, selfId)).toEqual({
-      related: 1, other: 0, pending: false, unknown: false,
+      count: 1, pending: false, unknown: false,
     });
     expect(feed.unreadFor(otherChannelId, selfId)).toEqual({
-      related: 1, other: 0, pending: false, unknown: false,
+      count: 1, pending: false, unknown: false,
     });
 
     expect(feed.acknowledgeNotifications(confirmationFor(channelId, status, 1))).toBe(1);
     expect(feed.unreadFor(channelId, selfId)).toEqual({
-      related: 0, other: 0, pending: false, unknown: false,
+      count: 0, pending: false, unknown: false,
     });
     expect(feed.unreadFor(otherChannelId, selfId)).toEqual({
-      related: 1, other: 0, pending: false, unknown: false,
+      count: 1, pending: false, unknown: false,
     });
   });
 
@@ -201,7 +201,7 @@ describe('notification confirmation contract', () => {
     const receipt = confirmationFor(channelId, first, 1);
     expect(feed.acknowledgeNotifications(receipt)).toBe(1);
     feed.enqueue({ ...relatedRequest(channelId, 'approval-2', selfId), seq: 2 });
-    expect(feed.unreadFor(channelId, selfId)).toMatchObject({ related: 0, other: 0, pending: false, unknown: false });
+    expect(feed.unreadFor(channelId, selfId)).toMatchObject({ count: 0, pending: false, unknown: false });
     expect(feed.acknowledgeNotifications({
       ...receipt,
       caughtUp: false,
@@ -211,7 +211,7 @@ describe('notification confirmation contract', () => {
       captured: { ...receipt.captured, installedHighSeq: 1 },
       cause: '',
     })).toBe(false);
-    expect(feed.unreadFor(channelId, selfId)).toMatchObject({ related: 1, other: 0, pending: false, unknown: false });
+    expect(feed.unreadFor(channelId, selfId)).toMatchObject({ count: 1, pending: false, unknown: false });
   });
 
   // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
@@ -249,7 +249,7 @@ describe('notification confirmation contract', () => {
       captured: { ...receipt.captured, installedHighSeq: 1 },
     })).toBe(false);
     feed.enqueue({ ...relatedRequest(channelId, 'promotion-approval-2', selfId), seq: 2 });
-    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, other: 0, pending: false, unknown: false });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ count: 0, pending: false, unknown: false });
 
     // A physical-tail loss is the actual revocation boundary; later arrivals
     // must be counted from the durable high-water again.
@@ -264,7 +264,7 @@ describe('notification confirmation contract', () => {
       captured: { ...receipt.captured, installedHighSeq: 1 },
     })).toBe(false);
     feed.enqueue({ ...relatedRequest(channelId, 'promotion-approval-3', selfId), seq: 3 });
-    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 2, other: 0, pending: false, unknown: false });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ count: 2, pending: false, unknown: false });
   });
 
   // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
@@ -291,7 +291,7 @@ describe('notification confirmation contract', () => {
     };
     expect(feed.acknowledgeNotifications(hidden)).toBe(false);
     feed.enqueue({ ...relatedRequest(channelId, 'same-epoch-approval-2', selfId), seq: 2 });
-    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 1, other: 0, pending: false, unknown: false });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ count: 1, pending: false, unknown: false });
 
     // A positive callback captured before the hidden cleanup has the same
     // input epoch and must not resurrect the short lease.
@@ -303,7 +303,7 @@ describe('notification confirmation contract', () => {
     })).toBe(false);
     feed.enqueue({ ...relatedRequest(channelId, 'same-epoch-approval-3', selfId), seq: 3 });
     expect(feed.historyFor(channelId).notificationHighWater).toBe(1);
-    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 2, other: 0, pending: false, unknown: false });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ count: 2, pending: false, unknown: false });
 
     // A new DOM observation from the same owner must carry a strictly newer
     // input epoch before it can reinstall the following lease.
@@ -313,7 +313,7 @@ describe('notification confirmation contract', () => {
       captured: { ...receipt.captured, installedHighSeq: 3 },
       boundary: 3,
     })).toBe(3);
-    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, other: 0, pending: false, unknown: false });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ count: 0, pending: false, unknown: false });
   });
 
   // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
@@ -344,7 +344,7 @@ describe('notification confirmation contract', () => {
     })).toBe(false);
 
     feed.enqueue({ ...relatedRequest(channelId, 'revoke-approval-2', selfId), seq: 2 });
-    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 1, other: 0, pending: false, unknown: false });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ count: 1, pending: false, unknown: false });
 
     // A positive receipt issued before the input must not re-install the
     // lease and hide the row that arrived after the user took control.
@@ -355,7 +355,7 @@ describe('notification confirmation contract', () => {
       boundary: 2,
     })).toBe(false);
     expect(feed.historyFor(channelId).notificationHighWater).toBe(1);
-    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 1, other: 0, pending: false, unknown: false });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ count: 1, pending: false, unknown: false });
 
     // Reaching the tail again in a strictly newer input epoch is current
     // evidence and may re-install the lease; the revoke epoch itself remains
@@ -366,7 +366,7 @@ describe('notification confirmation contract', () => {
       captured: { ...receipt.captured, installedHighSeq: 2 },
       boundary: 2,
     })).toBe(2);
-    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, other: 0, pending: false, unknown: false });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ count: 0, pending: false, unknown: false });
   });
 
   // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
@@ -393,7 +393,7 @@ describe('notification confirmation contract', () => {
     };
     expect(feed.acknowledgeNotifications(hidden)).toBe(false);
     feed.enqueue({ ...relatedRequest(channelId, 'reselect-approval-2', selfId), seq: 2 });
-    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 1, other: 0, pending: false, unknown: false });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ count: 1, pending: false, unknown: false });
 
     const secondStatus = feed.historyFor(channelId);
     const second = confirmationFor(channelId, secondStatus, 2, {
@@ -422,7 +422,7 @@ describe('notification confirmation contract', () => {
       captured: { ...second.captured, installedHighSeq: 2 },
     })).toBe(false);
     feed.enqueue({ ...relatedRequest(channelId, 'reselect-approval-3', selfId), seq: 3 });
-    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 1, other: 0, pending: false, unknown: false });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ count: 1, pending: false, unknown: false });
 
     // Nor may a delayed positive from the retired activation re-install the
     // old lease and consume the new row.
@@ -433,7 +433,7 @@ describe('notification confirmation contract', () => {
       boundary: 3,
     })).toBe(false);
     expect(feed.historyFor(channelId).notificationHighWater).toBe(2);
-    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 1, other: 0, pending: false, unknown: false });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ count: 1, pending: false, unknown: false });
 
     const current = {
       ...second,
@@ -442,7 +442,7 @@ describe('notification confirmation contract', () => {
       boundary: 3,
     };
     expect(feed.acknowledgeNotifications(current)).toBe(3);
-    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, other: 0, pending: false, unknown: false });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ count: 0, pending: false, unknown: false });
   });
 
   // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
@@ -476,7 +476,7 @@ describe('notification confirmation contract', () => {
     expect(feed.acknowledgeNotifications(confirmationFor(channelId, freshStatus, 1, {
       inputEpoch: 0,
     }))).toBe(1);
-    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, other: 0, pending: false, unknown: false });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ count: 0, pending: false, unknown: false });
   });
 
   // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
@@ -493,7 +493,7 @@ describe('notification confirmation contract', () => {
     // that observation by its authority revision; otherwise reload/reconnect
     // can hide the retained row as `following_presented`.
     feed.enqueue({ ...relatedRequest(channelId, 'regrant-approval-2', selfId), seq: 2 });
-    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, other: 0, pending: false, unknown: false });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ count: 0, pending: false, unknown: false });
     const oldRevision = first.authorityRevision;
 
     await feed.setHistoryGrants(
@@ -502,7 +502,7 @@ describe('notification confirmation contract', () => {
     );
     const regrantStatus = feed.historyFor(channelId);
     expect(regrantStatus.notificationAuthorityRevision).toBeGreaterThan(oldRevision);
-    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 1, other: 0, pending: false, unknown: false });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ count: 1, pending: false, unknown: false });
     expect(railDiagnosticSnapshot(channelId).channels[0].rows).toEqual(
       expect.arrayContaining([expect.objectContaining({ seq: 2, ackReason: 'counted_related' })]),
     );
@@ -537,7 +537,7 @@ describe('notification confirmation contract', () => {
     expect(reattachedFeed.acknowledgeNotifications(confirmationFor(channelId, freshStatus, 3, {
       inputEpoch: 0,
     }))).toBe(3);
-    expect(reattachedFeed.unreadFor(channelId, selfId)).toEqual({ related: 0, other: 0, pending: false, unknown: false });
+    expect(reattachedFeed.unreadFor(channelId, selfId)).toEqual({ count: 0, pending: false, unknown: false });
   });
 
   // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
@@ -565,7 +565,7 @@ describe('notification confirmation contract', () => {
     );
     const secondFeed = second.getSnapshot();
     secondFeed.enqueue({ ...relatedRequest(channelId, 'approval-1', selfId), seq: 1 });
-    expect(secondFeed.unreadFor(channelId, selfId)).toMatchObject({ related: 0, other: 0, pending: false, unknown: false });
+    expect(secondFeed.unreadFor(channelId, selfId)).toMatchObject({ count: 0, pending: false, unknown: false });
   });
 
   // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
@@ -591,7 +591,7 @@ describe('notification confirmation contract', () => {
     expect(feed.historyFor(inactive).loaded).toBe(false);
     expect(feed.historyFor(inactive).notificationHighWater).toBe(0);
     expect(feed.unreadFor(inactive, selfId)).toMatchObject({
-      related: 0, other: 0, pending: false, unknown: true,
+      count: 0, pending: false, unknown: true,
     });
 
     // Once a post-grant live tail is actually materialized, the same Feed
@@ -599,17 +599,17 @@ describe('notification confirmation contract', () => {
     feed.enqueue({ ...relatedRequest(inactive, 'inactive-live-approval', selfId), seq: 4 });
     expect(feed.historyFor(inactive).notificationHighWater).toBe(3);
     expect(feed.unreadFor(inactive, selfId)).toEqual({
-      related: 1, other: 0, pending: false, unknown: false,
+      count: 1, pending: false, unknown: false,
     });
 
     // Zero head remains an explicit empty context, while an actually
     // materialized live row keeps the normal known projection.
     expect(feed.unreadFor(focus, selfId)).toEqual({
-      related: 0, other: 0, pending: false, unknown: false,
+      count: 0, pending: false, unknown: false,
     });
     feed.enqueue({ ...relatedRequest(loaded, 'materialized-approval', selfId), seq: 1 });
     expect(feed.unreadFor(loaded, selfId)).toEqual({
-      related: 1, other: 0, pending: false, unknown: false,
+      count: 1, pending: false, unknown: false,
     });
     runtime.destroy();
   });
@@ -678,14 +678,14 @@ describe('notification confirmation contract', () => {
     await expect(pending).resolves.toMatchObject({ kind: 'satisfied', released: 2 });
     expect(feed.historyFor(channelId)).toMatchObject({ lastSource: 'network', headSeq: 2 });
     expect(feed.historyFor(channelId).notificationHighWater).toBe(0);
-    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 1, other: 0, pending: false, unknown: false });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ count: 1, pending: false, unknown: false });
 
     const status = feed.historyFor(channelId);
     expect(feed.acknowledgeNotifications(
       confirmationFor(channelId, status, 2, { cause: 'tail-backlog' }),
     )).toBe(2);
     expect(feed.historyFor(channelId).notificationHighWater).toBe(2);
-    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, other: 0, pending: false, unknown: false });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ count: 0, pending: false, unknown: false });
     runtime.destroy();
   });
 
@@ -759,14 +759,14 @@ describe('notification confirmation contract', () => {
     expect([...feed.stateFor(channelId).rows.keys()]).toEqual([1, 2]);
     expect(feed.historyFor(channelId)).toMatchObject({ headSeq: 2, loaded: true });
     expect(feed.historyFor(channelId).notificationHighWater).toBe(0);
-    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 1, other: 0, pending: false, unknown: false });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ count: 1, pending: false, unknown: false });
 
     const status = feed.historyFor(channelId);
     expect(feed.acknowledgeNotifications(
       confirmationFor(channelId, status, 2, { cause: 'tail-backlog' }),
     )).toBe(2);
     expect(feed.historyFor(channelId).notificationHighWater).toBe(2);
-    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, other: 0, pending: false, unknown: false });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ count: 0, pending: false, unknown: false });
     restored.destroy();
   });
 
@@ -826,13 +826,13 @@ describe('notification confirmation contract', () => {
         payload: { body: { text: 'late request' } },
       },
     })).toBe(true);
-    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 1, other: 0, pending: false, unknown: false });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ count: 1, pending: false, unknown: false });
 
     // Once the parent is installed, the same canonical boundary is now
     // closed and may be acknowledged explicitly.
     const closedStatus = feed.historyFor(channelId);
     expect(feed.acknowledgeNotifications(confirmationFor(channelId, closedStatus, 2))).toBe(2);
-    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, other: 0, pending: false, unknown: false });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ count: 0, pending: false, unknown: false });
   });
 
   // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.
@@ -887,7 +887,7 @@ describe('notification confirmation contract', () => {
       },
     })).toBe(true);
     expect(feed.historyFor(channelId).notificationHighWater).toBe(2);
-    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, other: 0, pending: false, unknown: true });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ count: 0, pending: false, unknown: true });
 
     expect(feed.enqueue({
       channel_id: channelId,
@@ -900,7 +900,7 @@ describe('notification confirmation contract', () => {
       },
     })).toBe(true);
     expect(feed.historyFor(channelId).notificationHighWater).toBe(2);
-    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 1, other: 0, pending: false, unknown: true });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ count: 1, pending: false, unknown: true });
 
     expect(feed.enqueue({
       channel_id: channelId,
@@ -916,7 +916,7 @@ describe('notification confirmation contract', () => {
     // independent C obligation closes; neither parent may retroactively
     // expand the old following observation.
     expect(feed.historyFor(channelId).notificationHighWater).toBe(2);
-    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 2, other: 0, pending: false, unknown: false });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ count: 2, pending: false, unknown: false });
 
     // Reload removes only the ephemeral following lease; durable high-water
     // remains at A and the now-closed B obligation is still visible.
@@ -934,7 +934,7 @@ describe('notification confirmation contract', () => {
     // the restored notification projection.
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(restoredFeed.historyFor(channelId).notificationHighWater).toBe(2);
-    expect(restoredFeed.unreadFor(channelId, selfId)).toEqual({ related: 2, other: 0, pending: false, unknown: false });
+    expect(restoredFeed.unreadFor(channelId, selfId)).toEqual({ count: 2, pending: false, unknown: false });
     restored.destroy();
   });
 });
@@ -975,14 +975,14 @@ describe('notification presentation facts', () => {
       },
     });
     expect(feed.unreadFor(channelId, selfId)).toEqual({
-      related: 0, other: 0, pending: false, unknown: false,
+      count: 0, pending: false, unknown: false,
     });
 
     // A normal conversation request in the same ledger remains a notification
     // root; this guards against silencing the rail with a broad type filter.
     feed.enqueue({ ...relatedRequest(channelId, 'readable-request', selfId), seq: 3 });
     expect(feed.unreadFor(channelId, selfId)).toEqual({
-      related: 1, other: 0, pending: false, unknown: false,
+      count: 1, pending: false, unknown: false,
     });
   });
 
@@ -1001,7 +1001,7 @@ describe('notification presentation facts', () => {
     expect(feed.enqueue({ channel_id: channelId, seq: 1, source: 'live', envelope: terminal })).toBe(true);
     // Until Replica materializes the exact parent context, a terminal-first
     // response is unresolved lifecycle provenance, not a user notification.
-    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 0, other: 0, pending: false, unknown: true });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ count: 0, pending: false, unknown: true });
 
     expect(feed.enqueue({
       channel_id: channelId,
@@ -1016,7 +1016,7 @@ describe('notification presentation facts', () => {
         payload: { body: { text: 'late parent request' } },
       },
     })).toBe(true);
-    expect(feed.unreadFor(channelId, selfId)).toEqual({ related: 1, other: 0, pending: false, unknown: false });
+    expect(feed.unreadFor(channelId, selfId)).toEqual({ count: 1, pending: false, unknown: false });
   });
 
   // Old notification contract (receipts/leases/identities); see read-position-unread.test.jsx.

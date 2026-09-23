@@ -679,8 +679,6 @@ describe('ChannelFeedRuntime ownership', () => {
     expect(snapshot.focusHistory('c0')).toBe(false);
     expect(snapshot.reconcileIdentity('c0')).toBe(false);
     expect(snapshot.markSeen('c0', 1)).toBe(false);
-    expect(snapshot.acknowledgeAgentActivity('c0', 'agent:destroyed:1')).toBe(false);
-    expect(snapshot.acknowledgeTimerFirings()).toBe(false);
     expect(snapshot.agentActivityPort.attach({ generation: 1 })).toBe(false);
     expect(snapshot.agentActivityPort.disconnect()).toBe(false);
     expect(snapshot.notificationAuthorityPort.reset()).toBe(false);

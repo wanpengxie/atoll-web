@@ -81,7 +81,6 @@ test('TC0207 F7 mobile channel drawer keeps Agent activity visible, bounded, and
   // The reader is on this channel at its newest row, so the completion is
   // read as it lands: no running marker and no lingering "done" marker.
   await expect(steward).not.toHaveClass(/activity-active/);
-  await expect(steward).not.toHaveClass(/activity-settled/);
   await steward.click();
   await expect(steward).toHaveAttribute('aria-pressed', 'true');
   await expect(steward.locator('.agent-activity-dot')).toHaveCount(0);

@@ -75,51 +75,41 @@ test('rail follows presented lifecycle roots and persists only unacknowledged ex
   const home = channel(page, 'c0');
   const project = channel(page, 'c0.project');
   const related = project.locator('.unread-related');
-  const other = project.locator('.unread-total:not(.unread-pending)');
   await expect(related).toHaveCount(0);
-  await expect(other).toHaveCount(0);
 
   // Keep a real scrollable presentation so the current filter's visible-row
   // acknowledgement is exercised through the production viewport adapter.
   await lifecycle(request, 'tail', { count: 24 });
   await expect(related).toHaveCount(0);
-  await expect(other).toHaveCount(0);
 
   // Browser operation streams are ledger facts, not person-visible messages.
   await lifecycle(request, 'ui');
   await expect(related).toHaveCount(0);
-  await expect(other).toHaveCount(0);
 
   // An agent-owned task has no human conversation edge while it is waiting.
   await lifecycle(request, 'request');
   await lifecycle(request, 'queued');
   await expect(related).toHaveCount(0);
-  await expect(other).toHaveCount(0);
 
   // Processing installs/updates a row in the all-ledger view, but it is still
   // lifecycle state rather than a new message notification. Later progress
   // remains quiet as well.
   await lifecycle(request, 'processing');
   await expect(related).toHaveCount(0);
-  await expect(other).toHaveCount(0);
   await lifecycle(request, 'progress');
-  await expect(other).toHaveCount(0);
 
   await project.click();
   await expect(page.locator('main h1')).toHaveText('c0.project');
-  await expect(other).toHaveCount(0);
   const scope = page.locator('.timeline-scope > button');
   await expect(scope).toHaveText('与我相关');
   await scope.click();
   await expect(scope).toHaveText('全部');
   await expect(page.locator('[data-presentation-row-id="c0.project-notification-agent-task"]')).toBeVisible();
-  await expect(other).toHaveCount(0);
 
   // A later terminal response is the user-facing content notification. It
   // remains unread across reload until that exact row is physically visible.
   await home.click();
   await lifecycle(request, 'progress');
-  await expect(other).toHaveCount(0);
   await lifecycle(request, 'final');
   // The current rail exposes one personal unread badge; the retired total
   // badge is reserved for pending/unknown state and never carries counts.
@@ -141,18 +131,16 @@ test('rail follows presented lifecycle roots and persists only unacknowledged ex
   await restoredFinal.scrollIntoViewIfNeeded();
   await expect(restoredFinal).toBeVisible();
   await expect(related).toHaveCount(0);
-  await expect(other).toHaveCount(0);
   await page.reload();
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
   await expect(related).toHaveCount(0);
-  await expect(other).toHaveCount(0);
   const evidencePath = testInfo.outputPath('notification-processing-evidence.json');
   await writeFile(evidencePath, `${JSON.stringify({
     contract: 'public-dom',
-    quietLifecycle: { related: 0, other: 0 },
-    terminalAfterReload: { related: 1, other: 0 },
-    afterExactPresentation: { related: 0, other: 0 },
-    afterAcknowledgementReload: { related: 0, other: 0 },
+    quietLifecycle: { count: 0 },
+    terminalAfterReload: { count: 1 },
+    afterExactPresentation: { count: 0 },
+    afterAcknowledgementReload: { count: 0 },
   }, null, 2)}\n`, 'utf8');
   await testInfo.attach('notification-processing-evidence.json', {
     path: evidencePath,

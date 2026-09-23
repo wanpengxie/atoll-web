@@ -632,16 +632,11 @@ export function useTimelineReading({
   // ---- read position and unread -------------------------------------------
 
   // The feed keeps, per channel, how far the reader has read (see
-  // channel-feed-runtime markSeen / unreadRoots). This owner only reports what
-  // was on screen; the unfiltered "all" view also clears rows not related to
-  // the reader, any other view only related ones.
-  const allView = String(historyViewSpec?.scope || '') === 'all'
-    && Number(historyViewSpec?.actorFilter?.size || 0) === 0;
-  const seenOptionsRef = useRef({ all: allView });
-  seenOptionsRef.current = { all: allView };
+  // channel-feed-runtime markSeen / unreadRoots): one position, whichever view
+  // reported it. This owner only reports what was on screen.
   const reportSeen = useCallback((seq) => {
     if (!(seq > 0) || !surfaceVisibleRef.current || !pageVisible()) return;
-    historyRef.current?.markSeen?.(seq, seenOptionsRef.current);
+    historyRef.current?.markSeen?.(seq);
   }, []);
   const reportOnScreenRef = useRef(() => {});
   reportOnScreenRef.current = (node) => {
@@ -671,13 +666,13 @@ export function useTimelineReading({
   const canFollowLive = typeof history?.followLive === 'function';
   useLayoutEffect(() => {
     if (mode !== READING_MODE.following || !surfaceVisible || !documentVisible || !canFollowLive) return undefined;
-    return historyRef.current?.followLive?.({ all: allView }) || undefined;
-  }, [activationID, allView, canFollowLive, documentVisible, mode, surfaceVisible]);
+    return historyRef.current?.followLive?.() || undefined;
+  }, [activationID, canFollowLive, documentVisible, mode, surfaceVisible]);
   // At the bottom of a visible page the reader has seen the newest row.
   useLayoutEffect(() => {
     if (mode !== READING_MODE.following || !atBottom || !surfaceVisible || !documentVisible) return;
     reportSeen(highSeq);
-  }, [allView, atBottom, documentVisible, highSeq, mode, reportSeen, surfaceVisible]);
+  }, [atBottom, documentVisible, highSeq, mode, reportSeen, surfaceVisible]);
 
   // "N 条新动态": unread rows of this view, shown while not at the bottom.
   // Unread is defined by the feed's read position, so history loaded above
@@ -688,7 +683,7 @@ export function useTimelineReading({
     let count = 0;
     for (const row of rows) {
       const id = String(row?.id || '');
-      if (unreadRoots.related?.has(id) || unreadRoots.other?.has(id)) count += 1;
+      if (unreadRoots.has?.(id)) count += 1;
     }
     return count;
   }, [mode, rows, unreadRoots]);

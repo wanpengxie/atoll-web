@@ -120,7 +120,7 @@ describe('A-D round 30 public cursor fixture recovery', () => {
     enqueue(snapshot(), 3, terminal('round30-conflict', 'round30-root', '晚到冲突', 'failed'));
 
     expect(snapshot().unreadFor('c0', SELF)).toEqual({
-      related: 1, other: 0, pending: false, unknown: false,
+      count: 1, pending: false, unknown: false,
     });
   });
 
@@ -147,7 +147,7 @@ describe('A-D round 30 public cursor fixture recovery', () => {
       notificationConfirmation(snapshot(), 100),
     )).toBe(100);
     expect(snapshot().unreadFor('c0', SELF)).toEqual({
-      related: 2, other: 0, pending: false, unknown: false,
+      count: 2, pending: false, unknown: false,
     });
   });
 });

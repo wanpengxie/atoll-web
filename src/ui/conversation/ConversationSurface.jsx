@@ -33,7 +33,6 @@ export function ConversationSurface({
   waitingRosterAuthority = null,
   selfId: liveSelfId = '',
   agentActivity = null,
-  onAcknowledgeAgentActivity,
   pending = [],
   awaiting = [],
   approvalStates = {},
@@ -265,13 +264,8 @@ export function ConversationSurface({
                             aria-pressed={on}
                             title={activityState === 'active'
                               ? `${actorName} 正在运行`
-                              : activityState === 'settled'
-                                ? `${actorName} 已完成，点击确认`
-                                : on ? `取消只看 ${actorName}` : `只看我与 ${actorName} 的往来`}
-                            onClick={() => {
-                              if (activityState === 'settled') onAcknowledgeAgentActivity?.(actor.id);
-                              toggleActorFilter(actor.id);
-                            }}
+                              : on ? `取消只看 ${actorName}` : `只看我与 ${actorName} 的往来`}
+                            onClick={() => toggleActorFilter(actor.id)}
                           >{activityState && <i className="agent-activity-dot" aria-hidden="true" />}{actorName}</button>;
                         })}
                         {staleActorFilters.map((actorID) => <button

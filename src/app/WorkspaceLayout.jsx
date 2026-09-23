@@ -145,8 +145,7 @@ function unreadProjection(value) {
     return Number.isSafeInteger(number) && number >= 0 ? number : 0;
   };
   return {
-    related: count(value?.related),
-    other: count(value?.other),
+    count: count(value?.count),
     pending: value?.pending === true,
     unknown: value?.unknown === true,
   };
@@ -275,7 +274,6 @@ function WorkspaceRail({ session, navigation, onClose, closeButtonRef, railRef, 
     {rows.map((channel) => {
       const activity = navigation.agentActivity?.byChannel?.[channel.id] || {};
       const active = activity.active || [];
-      const settled = Object.entries(activity.agents || {}).filter(([, value]) => value.state === 'settled');
       const unread = unreadProjection(navigation.unread?.[channel.id]);
       const unreadPending = unread.pending || unread.unknown;
       const label = accessLabel(channel.access);
@@ -296,12 +294,10 @@ function WorkspaceRail({ session, navigation, onClose, closeButtonRef, railRef, 
             {active.slice(0, 2).map((entry) => <span className="channel-agent-timer" key={entry.requestId}><i /><b>{actorShortName(entry.agentId)}</b><time>{activityDuration(entry.startedAt, now)}</time></span>)}
             {active.length > 2 && <span className="channel-agent-more" title={`另有 ${active.length - 2} 项正在运行`}>+{active.length - 2}</span>}
           </span>}
-          {settled.length > 0 && <span className="channel-agent-more" aria-label={`${settled.length} 项 Agent 已完成`}>✓ {settled.length}</span>}
         </span>
         <span className="channel-trailing">
           {label && <span className={`channel-access-label label-${channel.access}`}>{label}</span>}
-          {!unreadPending && unread.related > 0 && <span className="unread-badge unread-related" aria-label={`${unread.related} 条与我相关的未读消息`} title="与我相关的未读消息">{unread.related > 99 ? '99+' : unread.related}</span>}
-          {!unreadPending && unread.other > 0 && <span className="unread-badge unread-total" aria-label={`${unread.other} 条其他未读消息`} title="其他未读消息">{unread.other > 99 ? '99+' : unread.other}</span>}
+          {!unreadPending && unread.count > 0 && <span className="unread-badge unread-related" aria-label={`${unread.count} 条新动态`} title="新动态">{unread.count > 99 ? '99+' : unread.count}</span>}
           {unreadPending && <span className="unread-total unread-pending" aria-label={unread.unknown ? '未读状态待同步' : '正在恢复未读状态'} title={unread.unknown ? '未读状态待同步' : '正在恢复未读状态'}>{unread.unknown ? '?' : '…'}</span>}
         </span>
       </button>;

@@ -1,7 +1,7 @@
 // 恢复对应：tests/agent-activity.test.js（master，已删除）。
 // 旧结构 createAgentActivityTracker（src/model/agent-activity.js，独立模块）已被吸收进
 // src/model/channel-feed-runtime.js 内部状态机（observeAgentActivity/attachAgentActivity/
-// disconnectAgentActivity/acknowledgeAgentActivity + agentActivitySnapshot），经
+// disconnectAgentActivity + agentActivitySnapshot），经
 // runtime.getSnapshot().agentActivity / setHistoryGrants / disconnectHistory 暴露。
 // 注意：owner().enqueue() 的返回值只表示"信封是否被 Replica 接受"，不表示"是否生成了 Agent
 // 活动"——这与旧 tracker.observe() 的返回值语义不同，本文件断言一律看 agentActivity 快照本身。
@@ -70,11 +70,9 @@ describe('connection-scoped Agent activity（ChannelFeedRuntime）', () => {
       expect.objectContaining({ requestId: 'req-1', agentId: 'agent:codex:1', startedAt: 1_000 }),
     ]);
 
+    // Running is a state, not news: the terminal ends it. What the work
+    // produced is new activity through the read position, not a badge here.
     owner().enqueue(terminalRow({ seq: 4, ts: 4_000 }));
-    const settled = runtime.getSnapshot().agentActivity.byChannel.c0;
-    expect(settled.active).toEqual([]);
-    expect(settled.agents['agent:codex:1']).toEqual({ active: 0, settled: 1, state: 'settled' });
-    expect(runtime.getSnapshot().acknowledgeAgentActivity('c0', 'agent:codex:1')).toBe(true);
     expect(runtime.getSnapshot().agentActivity.byChannel).toEqual({});
     runtime.destroy();
   });
@@ -103,16 +101,17 @@ describe('connection-scoped Agent activity（ChannelFeedRuntime）', () => {
     runtime.getSnapshot().disconnectHistory();
     await runtime.getSnapshot().setHistoryGrants([], { generation: 2, boot: 'boot-a' });
     owner().enqueue(terminalRow({ seq: 2, generation: 2, status: 'failed', ts: 2_000, source: 'history' }));
-    // 用户能力：同 boot 重连后，历史 terminal 可以结算断线前保留的工作；
-    // 不变量：boot 改变会清空它，history-only processing 不能重新制造活性。
+    // 用户能力：同 boot 重连后，历史 terminal 可以结束断线前保留的工作；
+    // 不变量：结束即消失（运行是状态不是通知），boot 改变会清空，
+    // history-only processing 不能重新制造活性。
     // 公开 owner：只通过 ChannelFeedRuntime 的 agentActivity 快照观察结果。
-    const settled = runtime.getSnapshot().agentActivity.byChannel.c0;
-    expect(settled).toBeDefined();
-    expect(settled.agents['agent:codex:1'].state).toBe('settled');
+    expect(runtime.getSnapshot().agentActivity.byChannel).toEqual({});
+    owner().enqueue(processingRow({ seq: 3, generation: 2, ts: 2_500, source: 'history' }));
+    expect(runtime.getSnapshot().agentActivity.byChannel).toEqual({});
 
     await runtime.getSnapshot().setHistoryGrants([], { generation: 3, boot: 'boot-b' });
     expect(runtime.getSnapshot().agentActivity.byChannel).toEqual({});
-    owner().enqueue(processingRow({ seq: 3, generation: 3, ts: 3_000, source: 'history' }));
+    owner().enqueue(processingRow({ seq: 4, generation: 3, ts: 3_000, source: 'history' }));
     expect(runtime.getSnapshot().agentActivity.byChannel).toEqual({});
     runtime.destroy();
   });
@@ -130,8 +129,7 @@ describe('connection-scoped Agent activity（ChannelFeedRuntime）', () => {
     expect(runtime.getSnapshot().agentActivity.byChannel).toEqual({});
 
     owner().enqueue(terminalRow({ seq: 2, generation: 2, status: 'failed', ts: 2_000, source: 'history' }));
-    expect(runtime.getSnapshot().agentActivity.byChannel.c0.agents['agent:codex:1'])
-      .toEqual({ active: 0, settled: 1, state: 'settled' });
+    expect(runtime.getSnapshot().agentActivity.byChannel).toEqual({});
 
     await runtime.getSnapshot().setHistoryGrants([{ channel_id: 'c0', head_seq: 3 }], {
       generation: 3, boot: 'boot-b', focus: 'c0',
@@ -167,10 +165,10 @@ describe('connection-scoped Agent activity（ChannelFeedRuntime）', () => {
     owner().enqueue(processingRow({ seq: 2, ts: 2_000 }));
     const stillOneAgent = runtime.getSnapshot().agentActivity.byChannel.c0;
     expect(stillOneAgent.active).toHaveLength(1);
-    expect(stillOneAgent.agents['agent:codex:1']).toEqual({ active: 1, settled: 0, state: 'active' });
+    expect(stillOneAgent.agents['agent:codex:1']).toEqual({ active: 1, state: 'active' });
 
     owner().enqueue(terminalRow({ seq: 3, ts: 3_000 }));
-    expect(runtime.getSnapshot().agentActivity.byChannel.c0.agents['agent:codex:1'].state).toBe('settled');
+    expect(runtime.getSnapshot().agentActivity.byChannel).toEqual({});
     runtime.destroy();
   });
 });
