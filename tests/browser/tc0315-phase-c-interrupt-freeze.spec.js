@@ -47,5 +47,7 @@ test('TC-0315 C-BR-04 interrupt freezes only the Agent turn and direct send resu
   await editor.fill('直接发消息恢复');
   await page.getByRole('button', { name: /发送/ }).click();
   await expect(page.getByText('直接发消息恢复', { exact: true })).toBeVisible();
-  await expect(waiting).not.toContainText('已暂停');
+  // The direct send resumes the queue; once it drains the Waiting region is
+  // gone, so the check is page-wide: nothing anywhere reads 已暂停.
+  await expect(page.getByText('已暂停')).toHaveCount(0);
 });

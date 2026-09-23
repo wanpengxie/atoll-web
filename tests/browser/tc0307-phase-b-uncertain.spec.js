@@ -121,9 +121,12 @@ test('TC-0307 B-BR-07a converges one stable-origin send through public uncertain
     sent.slice(1).map(() => sent[0].payload.payload.origin),
   );
 
+  // A request that landed while the socket was down reaches the page through
+  // the reconnect refill (history), since live resumes after the attach head;
+  // one that landed on an open socket arrives live. Either way exactly once.
   const landed = received.filter((frame) => (
     frame.frame_type === 'feed'
-      && frame.payload?.source === 'live'
+      && ['live', 'history'].includes(frame.payload?.source)
       && frame.payload?.envelope?.id === sent[0].payload.id
   ));
   expect(landed, JSON.stringify({ sent, landed })).toHaveLength(1);

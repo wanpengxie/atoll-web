@@ -776,7 +776,9 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
   useEffect(() => {
     if (!channels.length) return;
     if (!activeChannelId || !channels.some((row) => row.id === activeChannelId)) {
-      if (activeChannelId && accessRef.current?.state?.(activeChannelId)?.existence === 'retired') onNotice(`${activeChannelId} 已退役，已切换到其他可用频道。`);
+      const retiredNotice = activeChannelId && accessRef.current?.state?.(activeChannelId)?.existence === 'retired'
+        ? `${activeChannelId} 已退役，已切换到其他可用频道。`
+        : '';
       const requested = channels.find((row) => row.id === initialRef.current.channelId);
       const next = requested || channels.find((row) => row.access === 'member_active') || channels[0];
       if (!next) return;
@@ -791,6 +793,9 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
       commitFocus(nextFocus);
       writeRoute(next.id, nextView, true, nextFocus);
       if (activeChannelId) onSelect(next.id);
+      // After the switch: selecting a channel clears the previous channel's
+      // notices, and this one is about the switch itself.
+      if (retiredNotice) onNotice(retiredNotice);
     }
   }, [accessRef, activeChannelId, channels, commitActiveChannel, commitActiveView, commitFocus, onNotice, onSelect]);
 

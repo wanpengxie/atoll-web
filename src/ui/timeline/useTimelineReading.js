@@ -488,6 +488,13 @@ export function useTimelineReading({
   const generation = Number(historyStatus.generation || 0);
   const headSeq = Number(historyStatus.headSeq || 0);
   const highSeq = installedHighSeq(rows, headSeq);
+  // Following on a visible page: live arrivals are read as they land, in the
+  // feed's own publish, so a new row is never counted unread for a frame.
+  const canFollowLive = typeof history?.followLive === 'function';
+  useLayoutEffect(() => {
+    if (mode !== READING_MODE.following || !surfaceVisible || !documentVisible || !canFollowLive) return undefined;
+    return historyRef.current?.followLive?.({ all: allView }) || undefined;
+  }, [activationID, allView, canFollowLive, documentVisible, mode, surfaceVisible]);
   // At the bottom of a visible page the reader has seen the newest row.
   useLayoutEffect(() => {
     if (mode !== READING_MODE.following || !atBottom || !surfaceVisible || !documentVisible) return;

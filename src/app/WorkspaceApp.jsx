@@ -1114,6 +1114,8 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     request: (request) => feedCommands.loadHistory(navigation.activeChannelId, request),
     // The reader saw this seq in the active channel (monotone; see markSeen).
     markSeen: (seq, options) => feed.markSeen(navigation.activeChannelId, seq, options),
+    // While following, what arrives live is read as it lands (see followLive).
+    followLive: (options) => feed.followLive?.(navigation.activeChannelId, options) || (() => {}),
     unreadRoots: feed.unreadRootsFor?.(navigation.activeChannelId, selfId),
     refreshLatest: () => feedCommands.refreshChannel(navigation.activeChannelId),
     retryLocalReplica: () => feedCommands.retryLocalReplica({ focus: navigation.activeChannelId }),

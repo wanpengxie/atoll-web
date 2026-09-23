@@ -859,6 +859,10 @@ export function createChannelFeedRuntime(options = {}) {
       }
       if (accessChanged) callback('onAccessChanged');
       if (directoryInvalidatedEnvelope) callback('onDirectoryInvalidated', directoryInvalidatedEnvelope);
+      // A reader following a channel on a visible page sees what arrives in
+      // it: read it in the same publish, so it is never counted unread for
+      // the frame before the reader's own report lands.
+      if (source === 'live' && liveFollowers.size) readFollowedArrivals(accepted);
       if (publishChange) publish({ index: true });
       if (source === 'live') {
         for (const row of accepted) diagnostic('debug', 'feed.live_applied', { channelId: row.channel_id, seq: historyNumeric(row.seq), msgType: String(row.envelope?.msg_type || row.envelope?.type || ''), sender: String(row.envelope?.sender?.id || '') });
@@ -958,6 +962,32 @@ export function createChannelFeedRuntime(options = {}) {
   // The reader has seen `seq` in this channel. In the unfiltered "all" view
   // everything up to it was on screen; in any other view only rows related to
   // the reader were. Monotone: a stale or repeated report changes nothing.
+  const liveFollowers = new Map();
+  // The reading owner registers while it follows the newest row of a visible
+  // channel; every row that then arrives live is on its way onto the screen.
+  function followLive(channelId, { all = false } = {}) {
+    const id = String(channelId || '');
+    if (!id || destroyed) return () => {};
+    const token = {};
+    liveFollowers.set(id, { all: all === true, token });
+    return () => { if (liveFollowers.get(id)?.token === token) liveFollowers.delete(id); };
+  }
+  function readFollowedArrivals(rows) {
+    if (globalThis.document?.visibilityState === 'hidden') return;
+    const high = new Map();
+    for (const row of rows) {
+      const channelId = String(row?.channel_id || '');
+      if (!liveFollowers.has(channelId)) continue;
+      high.set(channelId, Math.max(high.get(channelId) || 0, historyNumeric(row.seq)));
+    }
+    for (const [channelId, seq] of high) {
+      const status = histories.get(channelId);
+      if (!status?.attached || status.generation !== generation) continue;
+      const bounded = Math.min(seq, historyNumeric(status.headSeq) || seq);
+      if (bounded > 0) cursors.advance(channelId, bounded, { all: liveFollowers.get(channelId).all });
+    }
+  }
+
   function markSeen(channelId, seq, { all = false } = {}) {
     if (destroyed) return false;
     const status = histories.get(channelId);
@@ -2650,7 +2680,7 @@ export function createChannelFeedRuntime(options = {}) {
         publish();
         return true;
       },
-      loadHistory, requestBackgroundInterest, markSeen, unreadRootsFor,
+      loadHistory, requestBackgroundInterest, markSeen, followLive, unreadRootsFor,
       agentActivityFor: (channelId) => agentActivity.byChannel[channelId]
         || Object.freeze({ active: Object.freeze([]), agents: Object.freeze({}) }),
       acknowledgeAgentActivity,

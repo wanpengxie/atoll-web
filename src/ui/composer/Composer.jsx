@@ -365,6 +365,21 @@ export const Composer = memo(function Composer({ model, commands, className = ''
   // Everything the plugin needs that changes between renders. The plugin is
   // built once per editor and reads through this, so a mode never depends on
   // the draft and typing never has to keep it in step.
+  // An open menu follows what it lists: a member admitted (or a command that
+  // became available) while the menu is open appears without another
+  // keystroke. Unchanged rows keep the same mode, so this never re-renders
+  // on its own.
+  useEffect(() => {
+    setOpenMode((previous) => {
+      if (!previous) return previous;
+      const view = previous.name === MENTION_MODE
+        ? { rows: mentionRowsFor(previous.query, model.mentionCandidates), reason: '' }
+        : commandRowsFor(previous.query, model.controls.commands, model.commandDefinitions);
+      const ids = (rows) => (rows || []).map((row) => row?.id ?? row?.name ?? row?.command ?? '').join('\u0000');
+      if (ids(view.rows) === ids(previous.rows) && (view.reason || '') === (previous.reason || '')) return previous;
+      return { ...previous, ...view };
+    });
+  }, [model.mentionCandidates, model.controls.commands, model.commandDefinitions]);
   suggestionPortRef.current = {
     allow: (name, range) => !editMode && dismissedRef.current[name] !== range.from,
     items: (name, query) => (name === MENTION_MODE

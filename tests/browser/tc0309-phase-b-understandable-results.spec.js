@@ -68,8 +68,13 @@ test('TC-0309 B-BR-09 renders structured, empty-success, failed, and redacted re
   await clearProductCache(page);
   await page.reload();
   await expect(page.getByText('OPEN', { exact: true })).toBeVisible();
-  await send(page, `tc0309-empty-${Date.now()}`);
-  await expect(page.locator('.completion-ack')).toContainText('已完成');
+  const emptyMarker = `tc0309-empty-${Date.now()}`;
+  await send(page, emptyMarker);
+  // An Agent turn that completes with no body says so in its header; the
+  // body adds nothing (a separate "✓ 已完成" line is for structured results).
+  const emptyTurn = page.locator('.agent-conversation-turn').filter({ hasText: emptyMarker }).first();
+  await expect(emptyTurn.locator('.agent-turn-bubble header')).toContainText('已完成');
+  await expect(emptyTurn.locator('.failure-result, .wire-error')).toHaveCount(0);
 
   await reset(request, 'message-failed', 3093);
   await clearProductCache(page);
