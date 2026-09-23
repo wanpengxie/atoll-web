@@ -44,9 +44,14 @@ test('TC-0342 ordinary browsing touch stays on the active reading surface', asyn
 
   // Reading upward with the wheel: a few ordinary notches leave the tail.
   await list.hover();
-  for (let notch = 0; notch < 6 && (await surface()).mode !== 'browsing'; notch += 1) {
+  // Until browsing holds: a follow the vendor armed before the first notch
+  // may still pull the list back once, so settle and re-check.
+  for (let notch = 0; notch < 10; notch += 1) {
     await page.mouse.wheel(0, -260);
-    await page.waitForTimeout(120);
+    await page.waitForTimeout(150);
+    if ((await surface()).mode !== 'browsing') continue;
+    await page.waitForTimeout(400);
+    if ((await surface()).mode === 'browsing') break;
   }
   const afterWheel = await surface();
   expect(afterWheel.mode).toBe('browsing');

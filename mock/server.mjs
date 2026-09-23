@@ -466,7 +466,8 @@ export function createMockServer({
   seed = process.env.ATOLL_MOCK_SEED,
 } = {}) {
   let domain = createMockDomain(loadScenario(scenario, seed));
-  let nodeUpdate = { current_version: 'v0.06', latest_version: 'v0.07', available: true, status: 'idle' };
+  const initialNodeUpdate = () => ({ current_version: 'v0.06', latest_version: 'v0.07', available: true, status: 'idle' });
+  let nodeUpdate = initialNodeUpdate();
   const sessions = new Map();
   // 服务器世代号：进程重启或账本 reset 都是"新世界"，随 attach 回执告知前端，
   // 前端据此整体作废本地缓存——手测者恒不该被要求手清 cookie/localStorage。
@@ -2541,6 +2542,9 @@ export function createMockServer({
         closedRequests.clear();
         agentHolds.clear();
         agentSelections.clear();
+        // A reset is a fresh node too: an upgrade a previous spec ran must not
+        // leak into the next one's shell.
+        nodeUpdate = initialNodeUpdate();
         agentSelectSlots.clear();
         bootId = randomUUID();
         submittedFrames.clear();

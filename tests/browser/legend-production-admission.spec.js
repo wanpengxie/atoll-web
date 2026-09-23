@@ -16,7 +16,12 @@ test('production list keeps a browsing anchor when a mounted row below it grows'
   await login(page);
   const list = page.locator('.timeline-message-list');
   await list.hover();
-  await page.mouse.wheel(0, -1_800);
+  // Leaving the tail is ordinary reading up: a few notches, until browsing holds.
+  for (let notch = 0; notch < 6; notch += 1) {
+    await page.mouse.wheel(0, -600);
+    await page.waitForTimeout(250);
+    if (await page.locator('.timeline').getAttribute('data-viewport-mode') === 'browsing') break;
+  }
   await expect(page.locator('.timeline')).toHaveAttribute('data-viewport-mode', 'browsing');
   // Virtuoso keeps measured rows mounted outside the viewport with
   // `visibility:hidden`; `.first()` therefore selects an off-screen shell and
