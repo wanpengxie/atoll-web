@@ -68,31 +68,30 @@ export function mergeReplicaCoverage(ranges = [], addition = null) {
   return merged;
 }
 
-function rootRequestId(envelope, requests) {
-  if (envelope?.kind === 'request') {
-    const correlation = String(envelope.correlation_id || '');
-    if (correlation && correlation !== envelope.id && requests.has(correlation)) return correlation;
-    let parent = String(envelope.parent_id || '');
-    const visited = new Set();
-    while (parent && requests.has(parent) && !visited.has(parent)) {
-      visited.add(parent);
-      const request = requests.get(parent);
-      const next = String(request.parent_id || request.correlation_id || '');
-      if (!next || next === parent || !requests.has(next)) return parent;
-      parent = next;
-    }
-    return envelope.id;
-  }
-  let parent = String(envelope?.parent_id || envelope?.correlation_id || '');
+// A request sits under another request only when its parent_id names that
+// request: an agent calling another actor while it serves a turn. correlation
+// is not the test — a person replying to an answer shares the answer's
+// correlation, and so does every sibling request in it; only parent_id says
+// which request called which (legacy fold.js: "判据用 parent_id 而不是
+// correlation_id"). A reply's parent_id names the answer, a response, so the
+// reply is a root of its own.
+function climbRequestParents(start, requests) {
+  let root = '';
+  let parent = start;
   const visited = new Set();
   while (parent && requests.has(parent) && !visited.has(parent)) {
     visited.add(parent);
-    const request = requests.get(parent);
-    const next = String(request.parent_id || request.correlation_id || '');
-    if (!next || next === parent || !requests.has(next)) return parent;
-    parent = next;
+    root = parent;
+    parent = String(requests.get(parent).parent_id || '');
   }
-  return '';
+  return root;
+}
+
+function rootRequestId(envelope, requests) {
+  if (envelope?.kind === 'request') {
+    return climbRequestParents(String(envelope.parent_id || ''), requests) || envelope.id;
+  }
+  return climbRequestParents(String(envelope?.parent_id || envelope?.correlation_id || ''), requests);
 }
 
 const TERMINAL_RETAINED_FIELDS = Object.freeze([
@@ -232,7 +231,7 @@ function reconcileTimelineEntry(previous, next) {
 }
 
 function requestParentID(request) {
-  const parentID = String(request?.parent_id || request?.correlation_id || '');
+  const parentID = String(request?.parent_id || '');
   return parentID && parentID !== String(request?.id || '') ? parentID : '';
 }
 
@@ -503,17 +502,12 @@ function insertBySeq(list, item) {
   return list;
 }
 
-// The ids a request's root walk can traverse. `rootRequestId` prefers a known
-// correlation and otherwise climbs parents, so admitting either id can move
-// this request; both are indexed as incoming edges.
+// The id a request's root walk can traverse: `rootRequestId` climbs parent_id
+// only, so admitting that id is the one edge that can move this request.
 function requestPointers(request) {
   const id = String(request?.id || '');
-  const correlation = String(request?.correlation_id || '');
   const parent = String(request?.parent_id || '');
-  const pointers = [];
-  if (correlation && correlation !== id) pointers.push(correlation);
-  if (parent && parent !== id && parent !== correlation) pointers.push(parent);
-  return pointers;
+  return parent && parent !== id ? [parent] : [];
 }
 
 function publishFoldIndex(state, requests, requestSeqs, responses) {

@@ -134,4 +134,30 @@ describe('ChannelReplica → ConversationPresentation', () => {
     const all = selectTimelineItems(state, { scope: CONVERSATION_SCOPE.all, selfId: HUMAN_ID });
     expect(all.items[0].thread.map((entry) => entry.turn.requestId)).toEqual(['nested-ui-request']);
   });
+
+  it('a person replying to an answer is its own turn, not a call nested under the old one', () => {
+    // cvmax 2026-09-23 #42195: a reply shares the answered turn's correlation
+    // and its parent_id names the answer (a response). It was filed as a
+    // "关联调用" child of the old turn and vanished from the timeline.
+    const replica = createChannelReplicaStore();
+    const first = request({ id: 'first-ask' });
+    commit(replica, 1, first);
+    commit(replica, 2, response({ id: 'first-answer', parentId: first.id, body: { status: 'completed', text: 'answer' } }));
+    commit(replica, 3, request({ id: 'reply', parentId: 'first-answer', correlationId: first.id }));
+    commit(replica, 4, response({ id: 'reply-queued', parentId: 'reply', correlationId: first.id, body: { status: 'queued' } }));
+    commit(replica, 6, request({ id: 'later-ask' }));
+    commit(replica, 7, response({
+      id: 'reply-merged', parentId: 'reply', correlationId: first.id,
+      body: { status: 'completed', merged_into: 'later-ask' },
+    }));
+    commit(replica, 5, request({ id: 'agent-call', sender: AGENT_ID, audience: ['tool:x:1'], parentId: first.id, correlationId: first.id }));
+
+    const state = replica.state(CHANNEL_ID);
+    const all = selectTimelineItems(state, { scope: CONVERSATION_SCOPE.all, selfId: HUMAN_ID });
+    const roots = all.items.filter((item) => item.turn).map((item) => item.turn.requestId);
+    expect(roots).toContain('reply');
+    const firstTurn = all.items.find((item) => item.turn?.requestId === first.id);
+    // An agent's own call made while serving the turn is still its child.
+    expect(firstTurn.thread.map((entry) => entry.turn.requestId)).toEqual(['agent-call']);
+  });
 });
