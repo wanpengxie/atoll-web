@@ -13,8 +13,8 @@ const installProbe = () => {
       super((entries, observer) => {
         const before = entries.map(shape);
         callback(entries, observer);
-        const after = entries.map((entry) => Math.round(entry.target.getBoundingClientRect().height));
-        const moved = before.filter((entry, index) => entry.height && after[index] !== entry.height);
+        const after = entries.map((entry) => { const cs = getComputedStyle(entry.target); return Math.round(entry.target.getBoundingClientRect().height - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom) - parseFloat(cs.borderTopWidth) - parseFloat(cs.borderBottomWidth)); });
+        const moved = before.filter((entry, index) => entry.height && after[index] !== entry.height).map((entry) => ({ ...entry, afterHeight: after[before.indexOf(entry)] }));
         if (moved.length) window.__roProbe.unsettled.push({ stage: window.__roProbe.stage, moved });
         window.__roProbe.deliveries += 1;
       });
