@@ -160,4 +160,33 @@ describe('ChannelReplica → ConversationPresentation', () => {
     // An agent's own call made while serving the turn is still its child.
     expect(firstTurn.thread.map((entry) => entry.turn.requestId)).toEqual(['agent-call']);
   });
+
+  it('an edit of a waiting message stays in Waiting as its successor; it is not a new timeline message', () => {
+    // c0.dev 2026-09-23 #138126: editing a queued ask sends agent.replace,
+    // which is admitted queued in the target's place while the target closes
+    // with replaced_by. The replace was drawn as a new conversation row.
+    const replica = createChannelReplicaStore();
+    const target = request({ id: 'waiting-ask' });
+    commit(replica, 1, target);
+    commit(replica, 2, response({ id: 'waiting-ask-queued', parentId: target.id, body: { status: 'queued' } }));
+    const replace = {
+      ...request({ id: 'edit', type: 'agent.replace' }),
+      payload: { body: { target: target.id, old_text: 'before', new_text: 'after', expected_hold_id: 'hold-1' } },
+    };
+    commit(replica, 3, replace);
+    commit(replica, 4, response({ id: 'edit-queued', parentId: replace.id, type: 'agent.replace', body: { status: 'queued' } }));
+    commit(replica, 5, response({ id: 'waiting-ask-closed', parentId: target.id, body: { status: 'completed', replaced_by: replace.id } }));
+
+    const visible = (state) => selectTimelineItems(state, { scope: CONVERSATION_SCOPE.mine, selfId: HUMAN_ID })
+      .items.filter((item) => item.turn).map((item) => item.turn.requestId);
+    expect(visible(replica.state(CHANNEL_ID))).toEqual([]);
+
+    commit(replica, 6, request({ id: 'later-ask' }));
+    commit(replica, 7, response({
+      id: 'edit-merged', parentId: replace.id, type: 'agent.replace',
+      body: { status: 'completed', merged_into: 'later-ask' },
+    }));
+    expect(visible(replica.state(CHANNEL_ID))).toContain(replace.id);
+  });
 });
+

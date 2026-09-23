@@ -562,7 +562,9 @@ const HIDDEN_CONVERSATION_TYPES = new Set([
   TYPES.agentFork,
   TYPES.describe,
 ]);
-const WAITING_TURN_TYPES = new Set([TYPES.agentAsk, TYPES.agentQueue]);
+// A queued replace is its target's successor in Waiting, not a new timeline
+// message (legacy agent-control.js CONTENT_TYPES carried it for this reason).
+const WAITING_TURN_TYPES = new Set([TYPES.agentAsk, TYPES.agentQueue, TYPES.agentReplace]);
 const SELF_OPERATION_TYPES = new Set(['terminal.command', 'terminal.session']);
 
 // Waiting owns a request exactly while its lifecycle is waiting, and while it

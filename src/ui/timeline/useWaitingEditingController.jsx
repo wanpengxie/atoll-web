@@ -733,8 +733,11 @@ export function useWaitingEditingController({
   // Sends that are not Agent requests echo in the timeline until they land;
   // so does an Agent request this page placed there because its receiver was
   // idle when it was sent.
+  // An edit in flight replaces a row that is in Waiting; it never echoes as
+  // a new timeline message.
   const timelineLocalEchoes = useMemo(
-    () => (pending || []).filter((row) => (!WAITING_MESSAGE_TYPES.has(row?.frame?.msg_type)
+    () => (pending || []).filter((row) => row?.frame?.msg_type !== TYPES.agentReplace
+      && (!WAITING_MESSAGE_TYPES.has(row?.frame?.msg_type)
       || (timelinePlaced.has(row.messageId)
         && (!row.channelId || row.channelId === state?.channelId)
         && WAITING_SUBMISSION_STATES.has(row.state)))

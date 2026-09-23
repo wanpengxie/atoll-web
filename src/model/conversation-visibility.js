@@ -1,7 +1,10 @@
 import { argsOf } from '../protocol/envelope.js';
 import { TYPES } from '../protocol/vocab.js';
 
-const AGENT_MESSAGE_TYPES = new Set([TYPES.agentAsk, TYPES.agentQueue]);
+// A replace is admitted as the new row in its target's place (the target
+// closes with replaced_by and the replace carries new_text on), so it waits
+// and moves to the timeline exactly as the message it replaced would.
+const AGENT_MESSAGE_TYPES = new Set([TYPES.agentAsk, TYPES.agentQueue, TYPES.agentReplace]);
 
 function isAgentMessageType(type) {
   return AGENT_MESSAGE_TYPES.has(type);
