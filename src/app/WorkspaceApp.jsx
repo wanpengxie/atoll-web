@@ -207,6 +207,23 @@ function governanceTerminalError(payload, fallback = '治理命令未完成') {
   return error;
 }
 
+// system actor 自己答的词（member.get / member.set …）用 sys.Reply 把回复平铺在
+// status 旁边；失败是 {status:'failed', error_code, detail}。这两个函数只把这一种
+// 形状读成值或错误，不做 registrar {value} 那一套。
+function systemReplyValue(payload) {
+  const { status: _status, ...value } = payload || {};
+  return value;
+}
+
+function systemReplyError(payload) {
+  const code = String(payload?.error_code || payload?.reason || 'failed').trim();
+  const detail = String(payload?.detail || payload?.error || '').trim();
+  const error = new Error(detail ? `${code}：${detail}` : code);
+  error.code = code;
+  error.detail = detail;
+  return error;
+}
+
 function timelineTurns(timeline = []) {
   const rows = [];
   const visit = (entry) => {
@@ -665,6 +682,15 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       epoch,
     });
   }, [sendSystemCommand, waitForGovernanceTerminal]);
+  // 发一个 system 词并等它的终态回到账本，拿回平铺的回复。和模板列表同一条
+  // 追踪路径：请求编号 → 账本上的终态；恒不另起一条旁路。
+  const requestSystemReply = useCallback(async (channelId, msgType, payload) => {
+    const epoch = governanceEpochRef.current;
+    const requestId = governanceRequestId(await sendSystemCommand(channelId, msgType, payload));
+    if (epoch !== governanceEpochRef.current) throw governanceWorldResetError();
+    if (!requestId) throw new TypeError('系统请求没有返回可追踪的请求编号');
+    return waitForGovernanceTerminal({ channelId, requestId, msgType, kind: 'reply', epoch });
+  }, [sendSystemCommand, waitForGovernanceTerminal]);
   const sendGovernanceCommand = useCallback(async (channelId, msgType, payload) => {
     const epoch = governanceEpochRef.current;
     const result = await sendSystemCommand(channelId, msgType, payload);
@@ -726,7 +752,12 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
         continue;
       }
       if (payload.status !== 'completed') {
-        finishFailure(governanceTerminalError(payload));
+        finishFailure(record.kind === 'reply' ? systemReplyError(payload) : governanceTerminalError(payload));
+        continue;
+      }
+      if (record.kind === 'reply') {
+        governanceRequestsRef.current.delete(requestId);
+        record.resolve?.(systemReplyValue(payload));
         continue;
       }
       const value = payload.value;
@@ -1400,8 +1431,12 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       .map((channel) => [channel.id, roster.rosters.get(channel.id) || EMPTY_ARRAY]),
   ), [roster.rosters, searchableChannels]);
   const panelKind = typeof panel === 'string' ? panel : panel?.kind || '';
-  const selectedActor = panelKind === 'actor' ? panel.actor : null;
   const selectedActorChannelId = panelKind === 'actor' ? panel.channelId : navigation.activeChannelId;
+  // 面板打开时记下的是那一刻的行；两层状态会变（改完配置、名册刷新），所以详情
+  // 读名册里同一个 id 的当前行，名册里没有了才退回打开时那一行。
+  const selectedActor = panelKind === 'actor'
+    ? (roster.rosters.get(selectedActorChannelId) || EMPTY_ARRAY).find((row) => row.id === panel.actor?.id) || panel.actor
+    : null;
   const selectedActorCapability = selectedActor
     ? probes.capabilitiesFor(selectedActorChannelId).get(selectedActor.id)
     : null;
@@ -1567,6 +1602,15 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     detailError: selectedActorCapability?.error?.detail || selectedActorCapability?.error?.code || '',
     disabled: !canWrite,
     commands: {
+      // 成员的 class / 配置 / 两层状态：按需读，一次真人点击发一条 member.get。
+      readMember: (actor) => requestSystemReply(selectedActorChannelId, TYPES.member.get, { member: String(actor?.id || '') }),
+      // config 是顶层补丁；class 为空就不发。dry_run 只算不写。
+      setMember: ({ actor, klass = '', config = null, dryRun = false }) => requestSystemReply(selectedActorChannelId, TYPES.member.set, {
+        member: String(actor?.id || ''),
+        ...(klass ? { class: klass } : {}),
+        ...(config && Object.keys(config).length ? { config } : {}),
+        ...(dryRun ? { dry_run: true } : {}),
+      }),
       refresh: () => roster.refresh(navigation.activeChannelId, true),
       select: (actor) => setPanel({ kind: 'actor', actor, channelId: navigation.activeChannelId }),
       describe: (actor) => probes.requestCapability(actor.id, selectedActorChannelId),

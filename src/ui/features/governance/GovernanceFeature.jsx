@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { actorDisplayName } from '../../../model/actor-display.js';
 import { isManageableDeclaration, isVisibleActor } from '../../../model/actor-visibility.js';
+import { memberLayerIssue } from '../../../model/member-config.js';
 import { TERMINAL_RESULT_UNAVAILABLE } from '../../../model/terminal-result.js';
 import { InlineConfirmation } from '../../primitives/InlineConfirmation.jsx';
 import { PanelCard } from '../../primitives/PanelCard.jsx';
@@ -250,13 +251,15 @@ function ChannelMembers({ channel, port }) {
     <OperationState operation={action.operation || directOperation} />
     <PanelCard title="当前成员与 Actor" action={<button type="button" className="text-button" onClick={() => commandPort.refresh?.('members')}>刷新</button>}>
       {roster.map((row) => {
-        const [runtimeState, runtimeLabel] = actorRuntime(row);
+        // 没就绪的成员说出是哪一层、为什么；就绪的行保持原样。
+        const issue = memberLayerIssue(row);
+        const [runtimeState, runtimeLabel] = issue ? [`layer-${issue.state}`, issue.label] : actorRuntime(row);
         const ownerActor = row.principal && row.principal === channel?.owner_principal;
         const canRestart = typeof restartCommand === 'function' && row.kind !== 'human' && !ownerActor;
         const canBind = typeof bindCommand === 'function' && row.bound === false;
         const canUnbind = typeof unbindCommand === 'function' && row.bound === true;
         return <div className="managed-actor" key={row.id}>
-          <div><strong>{actorDisplayName(row)}{row.id === port.selfId && <em>我</em>}</strong><small>{row.kind || 'actor'}{row.principal ? ` · principal ${row.principal}` : ''} · {row.id}</small></div>
+          <div><strong>{actorDisplayName(row)}{row.id === port.selfId && <em>我</em>}</strong><small>{row.kind || 'actor'}{row.principal ? ` · principal ${row.principal}` : ''} · {row.id}</small>{issue && <small className={`member-layer-issue layer-${issue.state}`} title={issue.text}>{issue.text}</small>}</div>
           <span className={`actor-runtime ${runtimeState}`}>{runtimeLabel}</span>
           <button type="button" disabled={typeof commandPort.selectActor !== 'function'} onClick={() => commandPort.selectActor?.(row)} aria-label={`查看 ${actorDisplayName(row)}`}>查看</button>
           {canBind || canUnbind ? <button type="button" disabled={port.disabled || directOperation?.state === 'pending'} onClick={() => runDirectCommand(row.bound ? '解绑' : '绑定', row.bound ? unbindCommand : bindCommand, row)}>{row.bound ? '解绑' : '绑定'}</button> : <button type="button" disabled title="当前治理端口未提供绑定命令">绑定</button>}

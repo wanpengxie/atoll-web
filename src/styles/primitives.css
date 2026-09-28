@@ -91,3 +91,9 @@
 .convergence > div small { color: var(--text-dim); font: 8px var(--mono); }
 .convergence > div.done span, .convergence > div.done small { color: var(--online); }
 .ready-message { margin: 8px 0 0; color: var(--online); font-size: 10px; }
+.actor-runtime.layer-stuck, .actor-runtime.layer-unreachable { color: var(--danger); }
+.actor-runtime.layer-retrying, .actor-runtime.layer-initializing, .actor-runtime.layer-connecting { color: var(--warning-text); }
+.managed-actor small.member-layer-issue { color: var(--danger); white-space: normal; overflow-wrap: anywhere; }
+.managed-actor small.member-layer-issue.layer-retrying,
+.managed-actor small.member-layer-issue.layer-initializing,
+.managed-actor small.member-layer-issue.layer-connecting { color: var(--warning-text); }

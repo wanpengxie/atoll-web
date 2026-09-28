@@ -470,3 +470,29 @@ button.channel-file-row { font: inherit; }
   .finder-list-header > span:nth-child(3) { grid-column: 2; }
   .finder-list-header > span:nth-child(5) { grid-column: 3; }
 }
+
+/* 成员详情：两层状态与配置。 */
+.member-layers { display: grid; gap: 6px; margin: 0; }
+.member-layer { display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 8px; font-size: 11px; }
+.member-layer dt { color: var(--text-dim); }
+.member-layer dd { min-width: 0; display: grid; gap: 2px; margin: 0; }
+.member-layer strong { color: var(--online); font-size: 11px; }
+.member-layer.layer-stuck strong, .member-layer.layer-unreachable strong { color: var(--danger); }
+.member-layer.layer-retrying strong, .member-layer.layer-initializing strong, .member-layer.layer-connecting strong { color: var(--warning-text); }
+.member-layer-reason { color: var(--text); font: 10px/1.45 var(--mono); overflow-wrap: anywhere; }
+.member-layer dd small { color: var(--text-dim); font-size: 9px; }
+.member-config .member-config-facts { margin: 4px 0 10px; }
+.member-config-json, .member-config-patch pre, .member-config-preview pre { max-height: 260px; overflow: auto; margin: 0 0 10px; padding: 9px; border-radius: var(--radius-control); background: var(--surface-code); font: 9px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word; }
+.member-config-editor { margin-top: 6px; }
+.member-config-editor .field-error { margin: -4px 0 0; }
+.member-config-global { display: flex; gap: 6px; }
+.member-config-global select { min-width: 0; flex: 1 1 auto; padding: 6px 7px; border: 1px solid var(--line-control); border-radius: 6px; background: white; font: 10px var(--mono); }
+.member-config-global button { flex: 0 0 auto; padding: 6px 8px; border: 1px solid var(--line-control); border-radius: 6px; background: var(--surface-control); cursor: pointer; font-size: 9px; }
+.member-config-missing { color: var(--warning-text) !important; }
+.member-config-patch summary { color: var(--text-muted); cursor: pointer; font-size: 10px; }
+.member-config-patch pre { margin-top: 6px; }
+.member-config-preview { display: grid; gap: 4px; padding: 9px; border-radius: var(--radius-control); background: var(--success-bg); font-size: 10px; }
+.member-config-preview strong { color: var(--online); }
+.member-config-preview pre { margin: 0; background: white; }
+.member-config > .field-hint { margin: 8px 0 0; color: var(--text-dim); font-size: 9px; line-height: 1.5; }
+.member-config .field-hint code, .member-config-editor .field-hint code { font: 9px var(--mono); }

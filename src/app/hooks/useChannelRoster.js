@@ -1,5 +1,6 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { actorDisplayName } from '../../model/actor-display.js';
+import { memberLayerFromMeasure } from '../../model/member-config.js';
 import { argsOf } from '../../protocol/envelope.js';
 import { TYPES } from '../../protocol/vocab.js';
 
@@ -9,6 +10,9 @@ function projectActor(item) {
   const measure = (name) => item?.actual?.measures?.find((row) => row.name === name);
   const bound = measure('bound');
   const device = measure('device_online');
+  // 两层状态：没有证词的层不出现在行上（不是"没就绪"，是"不知道"）。
+  const standard = memberLayerFromMeasure(measure('standard'));
+  const business = memberLayerFromMeasure(measure('business'));
   return {
     id,
     kind: declared.kind || '',
@@ -18,6 +22,8 @@ function projectActor(item) {
     principal: declared.principal || '',
     bound: bound?.unknown ? null : Boolean(bound?.value),
     deviceOnline: device?.unknown ? null : Boolean(device?.value),
+    ...(standard ? { standard } : {}),
+    ...(business ? { business } : {}),
   };
 }
 
@@ -334,7 +340,7 @@ export function useChannelRoster({
     if (committedOwnerRef.current !== owner) return;
     const invalidating = [TYPES.narration.memberCreated, TYPES.narration.memberDeleted].includes(envelope?.type)
       || (envelope?.kind === 'response'
-        && [TYPES.member.create, TYPES.member.admit, TYPES.member.remove, TYPES.member.restart].includes(envelope.type)
+        && [TYPES.member.create, TYPES.member.admit, TYPES.member.remove, TYPES.member.restart, TYPES.member.set].includes(envelope.type)
         && argsOf(envelope)?.status === 'completed');
     if (!invalidating) return;
     const timers = storeRef.current.refreshTimers;
