@@ -58,7 +58,7 @@ test('320px workspace remains a single returnable surface', async ({ page, reque
   await page.getByRole('button', { name: '空间管理', exact: true }).click();
   const space = page.getByRole('complementary', { name: '空间管理' });
   await expect(space).toBeVisible();
-  await expect(space.getByRole('tab')).toHaveCount(4);
+  await expect(space.getByRole('tab')).toHaveCount(5);
 });
 
 test('@成员 menu stays within the input area at 320px', async ({ page, request }) => {

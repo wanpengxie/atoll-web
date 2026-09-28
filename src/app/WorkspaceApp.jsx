@@ -38,6 +38,13 @@ import { argsOf } from '../protocol/envelope.js';
 import { ERROR_CODES } from '../protocol/frame.js';
 import { isCanonicalAgentTimerFire } from '../model/notification-policy.js';
 import { isManageableDeclaration, isVisibleActor } from '../model/actor-visibility.js';
+import {
+  createGlobalKey,
+  deleteGlobalKey,
+  GLOBAL_PREFIX,
+  listGlobalKeys,
+  overwriteGlobalKey,
+} from '../model/global-keys.js';
 import { SYSTEM_ACTOR_ID, TYPES } from '../protocol/vocab.js';
 import { Auth } from '../ui/Auth.jsx';
 import { VersionIncompatible } from '../ui/VersionIncompatible.jsx';
@@ -639,6 +646,23 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       payload,
     });
   }, [submission.send, wire.accessRef]);
+  // 全局 key 的读写经某个频道的资源面：global/ 前缀在每个频道都指向同一份空间
+  // 存储，判权只看"是不是这个频道的成员"。这里只放行 global/ 前缀——它不是一个
+  // 通用的资源旁路，频道自己的文件/KV 仍然只走附件 owner。
+  const globalResource = useCallback((channelId, payload = {}) => {
+    const target = String(payload.resource_id || payload.query?.prefix || '');
+    if (!target.startsWith(GLOBAL_PREFIX)) return Promise.reject(new TypeError('这里只读写 global/ 命名空间'));
+    if (!channelId) return Promise.reject(new TypeError('请先进入一个频道'));
+    const channelAccess = wire.accessRef.current?.state?.(channelId);
+    if (channelAccess?.relationship !== 'member'
+      || channelAccess.existence === 'retired'
+      || channelAccess.unavailable) {
+      return Promise.reject(new TypeError('当前身份不是该频道的成员，不能经它读写全局 key'));
+    }
+    const command = wire.wireRef.current?.resource;
+    if (typeof command !== 'function') return Promise.reject(unavailableError('resource'));
+    return command({ ...payload, channel_id: channelId });
+  }, [wire.accessRef, wire.wireRef]);
   const refreshDirectoryFacts = useCallback(() => {
     const refresh = accessActionsRef.current.refresh;
     if (typeof refresh !== 'function') return Promise.reject(unavailableError('directory.refresh'));
@@ -1447,6 +1471,24 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     channelTemplates: null,
     support: {},
   };
+  const globalKeysChannelId = memberVisible ? navigation.activeChannelId : '';
+  const globalKeysPort = useMemo(() => {
+    const send = (payload) => globalResource(globalKeysChannelId, payload);
+    const available = Boolean(globalKeysChannelId) && wire.state === 'open';
+    return Object.freeze({
+      available,
+      channelId: globalKeysChannelId,
+      reason: !globalKeysChannelId
+        ? '全局 key 经频道的资源面读写；请先进入一个你是成员的频道。'
+        : wire.state !== 'open' ? '连接恢复后才能读写全局 key。' : '',
+      commands: Object.freeze({
+        list: () => listGlobalKeys(send),
+        create: (name, value) => createGlobalKey(send, name, value),
+        write: (name, value) => overwriteGlobalKey(send, name, value),
+        remove: (name) => deleteGlobalKey(send, name),
+      }),
+    });
+  }, [globalKeysChannelId, globalResource, wire.state]);
   const filesPort = {
     devices: attachments.devices,
     deviceId: attachments.deviceId,
@@ -1601,6 +1643,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     detailBusy: Boolean(selectedActorCapability?.loading),
     detailError: selectedActorCapability?.error?.detail || selectedActorCapability?.error?.code || '',
     disabled: !canWrite,
+    globalKeys: globalKeysPort,
     commands: {
       // 成员的 class / 配置 / 两层状态：按需读，一次真人点击发一条 member.get。
       readMember: (actor) => requestSystemReply(selectedActorChannelId, TYPES.member.get, { member: String(actor?.id || '') }),
@@ -1784,6 +1827,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
         ...device,
         attached: attachments.devices.some((row) => row.id === device.id),
       })),
+      globalKeys: globalKeysPort,
       commands: {
         submit: () => Promise.reject(unavailableError('governance.space')),
       },

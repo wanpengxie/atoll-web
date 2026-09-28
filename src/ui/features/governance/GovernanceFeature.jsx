@@ -8,6 +8,7 @@ import { PanelCard } from '../../primitives/PanelCard.jsx';
 import { SelectMenu } from '../../primitives/SelectMenu.jsx';
 import { SidePanel } from '../../primitives/SidePanel.jsx';
 import { useModalFocus } from '../../primitives/useModalFocus.js';
+import { GlobalKeysPanel } from './GlobalKeysPanel.jsx';
 
 function errorMessage(error) {
   return error?.message || String(error);
@@ -715,13 +716,16 @@ function SpaceDevices({ channel, port }) {
 export function SpaceAdministrationPanel({ channel, port = {}, onClose }) {
   const [tab, setTab] = useState('actor_templates');
   const action = useCommand(port.commands, 'space');
-  const tabs = [{ id: 'actor_templates', label: 'Actor 模板' }, { id: 'channel_templates', label: '频道模板' }, { id: 'configuration', label: '频道配置' }, { id: 'devices', label: '设备' }];
+  const tabs = [{ id: 'actor_templates', label: 'Actor 模板' }, { id: 'channel_templates', label: '频道模板' }, { id: 'configuration', label: '频道配置' }, { id: 'devices', label: '设备' }, { id: 'global_keys', label: '全局 key' }];
+  // 全局 key 走资源面，不走空间治理结果投影；那条"不支持"的说明只属于其余几页。
+  const governanceTab = tab !== 'global_keys';
   return <SidePanel className="space-administration" ariaLabel="空间管理" eyebrow="SPACE CONTROL" title="空间管理" tabs={tabs} activeTab={tab} onTabChange={setTab} onClose={onClose}>
-    {port.unsupported && <p className="governance-error" role="status">{port.unsupported}</p>}
-    {port.operation && <p className={`operation-state state-${port.operation.state || 'pending'}`} role="status">{port.operation.message || '空间命令已提交'}</p>}
+    {governanceTab && port.unsupported && <p className="governance-error" role="status">{port.unsupported}</p>}
+    {governanceTab && port.operation && <p className={`operation-state state-${port.operation.state || 'pending'}`} role="status">{port.operation.message || '空间命令已提交'}</p>}
     {tab === 'actor_templates' && <SpaceTemplates kind={tab} port={port} />}
     {tab === 'channel_templates' && <SpaceTemplates kind={tab} port={port} />}
     {tab === 'configuration' && <><JsonEditor title="频道资料与声明覆盖" value={port.configuration || { channelId: channel?.id, profile: {}, overlays: [] }} disabled={port.disabled} actions={[{ id: 'save_configuration', label: '保存配置', primary: true }, { id: 'refresh_configuration', label: '刷新' }]} onSubmit={(name, payload) => action.submit(name, { channelId: channel?.id, ...payload })} />{action.error && <p className="governance-error" role="alert">{action.error}</p>}</>}
     {tab === 'devices' && <SpaceDevices channel={channel} port={port} />}
+    {tab === 'global_keys' && <GlobalKeysPanel port={port.globalKeys} />}
   </SidePanel>;
 }
