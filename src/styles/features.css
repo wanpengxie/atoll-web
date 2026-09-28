@@ -488,6 +488,10 @@ button.channel-file-row { font: inherit; }
 .schema-error { color: var(--danger); font-size: 10px; }
 .task-create-modal .schema-field-head > label { display: block; color: var(--text); font-size: 12px; }
 
+.ui-form-origin { margin: 0; color: var(--text-muted); font-size: 11px; line-height: 1.5; }
+.ui-form-secrets { display: grid; gap: 4px; margin: 0; padding: 9px 11px; border: 1px solid var(--line-warning); border-radius: var(--radius-control); background: var(--warning-bg); color: var(--warning-text-strong); font-size: 10px; line-height: 1.5; list-style: none; }
+.ui-form-secrets code { font: 10px var(--mono); overflow-wrap: anywhere; }
+
 /* 空间管理 → 全局 key：只列名字，值恒不显示。 */
 .global-keys code, .global-key-add code { font: 9px var(--mono); }
 .global-key-row { display: grid; gap: 8px; padding: 9px 0; border-top: 1px solid var(--line-subtle); }

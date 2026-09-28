@@ -17,6 +17,7 @@ import {
 import { useChannelRoster } from './hooks/useChannelRoster.js';
 import { useAgentProbes } from './hooks/useAgentProbes.js';
 import { useAttachmentTransactions } from './hooks/useAttachmentTransactions.js';
+import { useUiWords } from './hooks/useUiWords.js';
 import { createChannelFeedRuntime } from '../model/channel-feed-runtime.js';
 import { createViewSessionStore } from '../model/view-session.js';
 import { HISTORY_INTENT } from '../model/history-demand.js';
@@ -41,9 +42,11 @@ import { isManageableDeclaration, isVisibleActor } from '../model/actor-visibili
 import {
   createGlobalKey,
   deleteGlobalKey,
+  globalNameOf,
   GLOBAL_PREFIX,
   listGlobalKeys,
   overwriteGlobalKey,
+  writeGlobalValue,
 } from '../model/global-keys.js';
 import { SYSTEM_ACTOR_ID, TYPES } from '../protocol/vocab.js';
 import { Auth } from '../ui/Auth.jsx';
@@ -51,6 +54,7 @@ import { VersionIncompatible } from '../ui/VersionIncompatible.jsx';
 import { ConversationSurface } from '../ui/conversation/ConversationSurface.jsx';
 import { Composer, useComposerCommands } from '../ui/composer/index.js';
 import { TaskCreationDialog } from '../ui/features/tasks/TasksFeature.jsx';
+import { UiFormModal } from '../ui/UiFormModal.jsx';
 import {
   WorkspaceFeatures,
   WorkspaceFeatureOverlays,
@@ -1489,6 +1493,21 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       }),
     });
   }, [globalKeysChannelId, globalResource, wire.state]);
+  const uiWords = useUiWords({
+    stateEntries: feed.stateEntries,
+    version: feed.version,
+    selfFor: navigation.selfFor,
+    wireRef: wire.wireRef,
+    wireState: wire.state,
+    onNotice: setChannelNotice,
+  });
+  const currentUiForm = uiWords.current;
+  const submitUiForm = useCallback((form, values) => uiWords.submit(
+    form,
+    values,
+    // 密钥写进请求所在频道的资源面：请求就是在那里点名这块屏的。
+    (resourceId, value) => writeGlobalValue((payload) => globalResource(form.channelId, payload), globalNameOf(resourceId), value),
+  ), [globalResource, uiWords.submit]);
   const filesPort = {
     devices: attachments.devices,
     deviceId: attachments.deviceId,
@@ -2068,6 +2087,14 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     {taskCreateSource && canWrite && <TaskCreationDialog
       port={tasksPort}
       onClose={() => setTaskCreateSource(undefined)}
+    />}
+    {currentUiForm && <UiFormModal
+      key={currentUiForm.id}
+      form={currentUiForm}
+      requesterName={(roster.rosters.get(currentUiForm.channelId) || EMPTY_ARRAY).find((row) => row.id === currentUiForm.requester)?.name || currentUiForm.requester}
+      channelName={navigation.channels.find((row) => row.id === currentUiForm.channelId)?.qualified_name || currentUiForm.channelId}
+      onSubmit={submitUiForm}
+      onCancel={uiWords.cancel}
     />}
   </>;
 
