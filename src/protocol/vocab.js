@@ -43,6 +43,12 @@ export const TYPES = Object.freeze({
   uiState: 'ui.state',
   uiNavigate: 'ui.navigate',
   uiOpen: 'ui.open',
+  // 请这块屏弹一张按 JSON Schema 画的表单。secret 字段的值由客户端自己写进
+  // global/<name>，回复里只有掩码——值恒不进账本。
+  uiForm: 'ui.form',
+  // 列出这个人此刻连着的屏。由服务端的 human cell 从会话目录直接答，不问任何
+  // 一块屏，所以它不在 CLIENT_UI_WORDS 里。
+  uiSessionList: 'ui.session.list',
 
   // 平台叙事事件（kind=event，visibility=system）。
   narration: Object.freeze({
@@ -59,6 +65,9 @@ export const TYPES = Object.freeze({
     get: 'system.member.get',
     remove: 'system.member.delete',
     restart: 'system.member.restart',
+    // 改一个成员的 class / 配置。config 是顶层补丁：给出的键整键替换，值为
+    // null 的键回到 class 默认值；dry_run 只算不写。
+    set: 'system.member.set',
     // 破窗恢复：给频道内所有干活的成员（agent/tool）换一届任期。不删任何东西。
     restartAll: 'system.member.restart_all',
   }),
@@ -109,6 +118,15 @@ export const TYPES = Object.freeze({
 
   describe: 'actor.describe',
 });
+
+// 由**客户端**受理的 ui.* 词（platform/subjectgate IsUIWord）。客户端按请求里点名的
+// session 判断是不是这块屏；ui.session.list 由服务端答，不在其中。
+export const CLIENT_UI_WORDS = Object.freeze([
+  TYPES.uiState,
+  TYPES.uiNavigate,
+  TYPES.uiOpen,
+  TYPES.uiForm,
+]);
 
 // platform/internal/humancell 只认这两个 resolve 决定词。
 export const DECISIONS = Object.freeze({ approve: 'approve', reject: 'reject' });

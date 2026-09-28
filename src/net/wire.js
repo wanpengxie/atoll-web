@@ -466,6 +466,11 @@ export function createWire({
   releaseWake = wake ? wake(wakeNow) : null;
 
   return {
+    // 这条连接此刻的名字（attach 回执铸的）。ui.* 请求按它点名这块屏；还没
+    // attach 时是 null，调用方据此不做"是不是点我"的判断。
+    session() {
+      return sessionID ? { id: sessionID, ...(sessionLabel ? { label: sessionLabel } : {}) } : null;
+    },
     prepareSubmit(payload) {
       return stampOrigin(payload);
     },
