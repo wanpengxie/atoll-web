@@ -6,7 +6,7 @@ export const CONTRACT_VERSION = 'mock-v5';
 export const PAYLOAD_FIELDS = Object.freeze({
   attach: ['since', 'focus', 'history_protocol', 'generation', 'label'],
   submit: ['channel_id', 'id', 'msg_type', 'kind', 'payload', 'audience', 'visibility', 'parent_id', 'expires_at_ms'],
-  resolve: ['channel_id', 'req_id', 'text', 'decision', 'note'],
+  resolve: ['channel_id', 'req_id', 'text', 'decision', 'note', 'result', 'error'],
   cancel: ['channel_id', 'req_id'],
   after: ['channel_id', 'duration_ms', 'msg_type', 'payload'],
   cancel_timer: ['channel_id', 'timer_id'],

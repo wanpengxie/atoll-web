@@ -1,5 +1,34 @@
+import { createHash } from 'node:crypto';
+
 const ROOT_ID = 'root';
 const STAMP = 1_723_974_400_000;
+
+// 全局 key：空间范围的 kv 命名空间，任何频道的资源面都认 global/ 前缀并落到同一份。
+const GLOBAL_PREFIX = 'global/';
+const GLOBAL_NAME = /^[a-z0-9_-]{1,64}$/;
+const GLOBAL_REFERENCE = '$global.';
+
+// 成员可用的 class：它造出什么 kind 的成员、默认配置、以及它拒绝什么配置。
+// member.set 换 class 不许换 kind；配置被 class 拒绝时业务层卡住。
+const MOCK_CLASSES = Object.freeze({
+  codex: { kind: 'agent', defaults: { model: 'gpt-5.6-sol', effort: 'medium' } },
+  'codex-agent': { kind: 'agent', defaults: { model: 'gpt-5.4', effort: 'light' } },
+  claude: { kind: 'agent', defaults: { model: 'claude-opus', effort: 'medium' } },
+  'deepseek-agent': {
+    kind: 'agent',
+    defaults: { model: 'deepseek-chat', base_url: 'https://api.deepseek.com', temperature: 0.7 },
+    refuse: (config) => {
+      if (config.temperature != null && (typeof config.temperature !== 'number' || config.temperature < 0 || config.temperature > 2)) return 'temperature must be a number between 0 and 2';
+      if (config.model != null && !['deepseek-chat', 'deepseek-reasoner'].includes(config.model)) return `unknown model ${JSON.stringify(config.model)}; deepseek-agent accepts deepseek-chat or deepseek-reasoner`;
+      return '';
+    },
+  },
+  'mcp-tool': {
+    kind: 'tool',
+    defaults: { endpoint: 'http://127.0.0.1:9000/mcp' },
+    refuse: (config) => (config.endpoint != null && typeof config.endpoint !== 'string' ? 'endpoint must be a string' : ''),
+  },
+});
 
 export function measure(name, value, observedAt) {
   return { name, value, unknown: false, observed_at: observedAt, since: null };
@@ -13,7 +42,42 @@ export function observation(subject, kind, items, complete = true, extra = {}) {
   return { subject, kind, complete, items, ...extra };
 }
 
-export function rosterItem({ id, kind, declId = '', name = id, description = '', principal = '', bound = true, online = null }, observedAt = STAMP) {
+function layerMeasure(name, layer, observedAt) {
+  if (!layer?.state) return { name, value: null, unknown: true, reason: 'no_testimony', observed_at: observedAt, since: null };
+  return {
+    name,
+    value: layer.state,
+    unknown: false,
+    ...(layer.reason ? { reason: layer.reason } : {}),
+    observed_at: observedAt,
+    since: layer.since > 0 ? layer.since : null,
+  };
+}
+
+// 两层状态随名册行一起出（与真后端 OBS 同形：standard/business 两个 measure，
+// value 是状态字符串，reason 说为什么没就绪，since 是进入这个状态的时刻）。
+// 干活的成员默认两层都就绪；人没有证词。
+export function defaultLayers(kind) {
+  return kind === 'human' ? null : { standard: { state: 'ready' }, business: { state: 'ready' } };
+}
+
+export function setRosterLayers(row, layers, observedAt = STAMP) {
+  const measures = (row.actual?.measures || []).filter((entry) => entry.name !== 'standard' && entry.name !== 'business');
+  measures.push(layerMeasure('standard', layers?.standard, observedAt), layerMeasure('business', layers?.business, observedAt));
+  measures.sort((left, right) => left.name.localeCompare(right.name));
+  row.actual = { ...(row.actual || {}), measures };
+  return row;
+}
+
+// 名册行上的两层读回 member.list / member.get 的形状：{state, reason?, since_ms?}。
+// 事实只有一处（行上的 measure），不另存一份。
+export function rowLayer(row, name) {
+  const measure = row?.actual?.measures?.find((entry) => entry.name === name);
+  if (!measure || measure.unknown || typeof measure.value !== 'string') return undefined;
+  return { state: measure.value, ...(measure.reason ? { reason: measure.reason } : {}), ...(measure.since > 0 ? { since_ms: measure.since } : {}) };
+}
+
+export function rosterItem({ id, kind, declId = '', name = id, description = '', principal = '', bound = true, online = null, layers = defaultLayers(kind) }, observedAt = STAMP) {
   const declared = {
     id,
     kind,
@@ -29,7 +93,7 @@ export function rosterItem({ id, kind, declId = '', name = id, description = '',
     measures.push(measure('device_online', online, observedAt));
   }
   measures.sort((left, right) => left.name.localeCompare(right.name));
-  return item(declared, measures);
+  return setRosterLayers(item(declared, measures), layers, observedAt);
 }
 
 export function envelope({ id, channelId, sender, kind, type, payload = {}, parentId = '', correlationId = '', visibility = 'public', audience = [], ts }) {
@@ -133,6 +197,140 @@ export class MockDomain {
       this.files.set(address, { content, mediaType, size: content.length });
     }
     this.tickets = new Map();
+    // 全局 key 是空间的，不属于任何频道：id → {value, created_by, created_at}。
+    this.globals = new Map();
+    // 成员的 class 与配置（成员行是权威）：`${channelId}\u0000${actorId}` → {class, config, source, desired_host?}。
+    this.memberConfigs = new Map();
+    for (const [channelId, rows] of this.rosters) {
+      for (const row of rows) {
+        const declaration = this.declarations.get(row.declared.decl_id || '');
+        if (!declaration || !['agent', 'tool'].includes(row.declared.kind)) continue;
+        this.memberConfigs.set(this.memberKey(channelId, row.declared.id), {
+          class: declaration.default_class || declaration.class,
+          config: structuredClone(declaration.config || {}),
+          source: { decl_id: declaration.id },
+        });
+      }
+    }
+    if (this.behavior.actor_layers_demo) this.seedActorLayersDemo();
+  }
+
+  // actor-config 场景：一个因为缺全局 key 而卡住的 agent、一个连不上端点正在重试
+  // 的 tool，外加一把已有的全局 key 给编辑器插引用用。
+  seedActorLayersDemo() {
+    const stamp = STAMP;
+    this.declarations.set('mock:deepseek', { id: 'mock:deepseek', name: 'DeepSeek', description: 'Mock DeepSeek agent declaration', owner: ROOT_ID, class: 'deepseek-agent', default_class: 'deepseek-agent', kind: 'agent', config: { model: 'deepseek-chat', api_key: `${GLOBAL_REFERENCE}deepseek_prod` }, status: 'present', visibility: 'private', created_at: stamp, updated_at: stamp });
+    this.globals.set(`${GLOBAL_PREFIX}openai_prod`, { value: 'sk-mock-openai-0000', created_by: 'c0/root', created_at: stamp });
+    const rows = this.rosters.get('c0');
+    if (!rows) return;
+    rows.push(rosterItem({ id: 'deepseek', kind: 'agent', declId: 'mock:deepseek', name: 'DeepSeek', description: 'Mock DeepSeek agent' }, this.clock));
+    this.memberConfigs.set(this.memberKey('c0', 'deepseek'), {
+      class: 'deepseek-agent',
+      config: { model: 'deepseek-chat', api_key: `${GLOBAL_REFERENCE}deepseek_prod` },
+      source: { decl_id: 'mock:deepseek' },
+    });
+    rows.push(rosterItem({ id: 'search-tool', kind: 'tool', declId: 'mock:search', name: 'Search Tool', description: 'Mock MCP search tool' }, this.clock));
+    this.memberConfigs.set(this.memberKey('c0', 'search-tool'), {
+      class: 'mcp-tool',
+      config: { endpoint: 'http://127.0.0.1:9000/mcp' },
+      source: { decl_id: 'mock:search' },
+      desired_host: 'local-device',
+    });
+    this.evaluateMember('c0', 'deepseek');
+    this.evaluateMember('c0', 'search-tool');
+  }
+
+  memberKey(channelId, actorId) {
+    return `${channelId}\u0000${actorId}`;
+  }
+
+  memberRow(channelId, actorId) {
+    return (this.rosters.get(channelId) || []).find((entry) => entry.declared.id === actorId) || null;
+  }
+
+  // 业务层是配置的函数：引用的全局 key 缺了 → stuck；class 拒绝配置 → stuck；
+  // tool 的端点还指着那个死端口 → retrying；否则 ready。标准层恒就绪。
+  businessOf(record) {
+    const effective = { ...(MOCK_CLASSES[record.class]?.defaults || {}), ...record.config };
+    for (const name of globalReferences(effective)) {
+      if (!this.globals.has(`${GLOBAL_PREFIX}${name}`)) return { state: 'stuck', reason: `missing global resource ${GLOBAL_PREFIX}${name}` };
+    }
+    const refused = MOCK_CLASSES[record.class]?.refuse?.(effective) || '';
+    if (refused) return { state: 'stuck', reason: `config refused by ${record.class}: ${refused}` };
+    if (record.class === 'mcp-tool' && String(effective.endpoint || '').includes(':9000')) {
+      return { state: 'retrying', reason: `dial tcp ${String(effective.endpoint).replace(/^\w+:\/\//, '').split('/')[0]}: connection refused; retry in 8s` };
+    }
+    return { state: 'ready' };
+  }
+
+  evaluateMember(channelId, actorId) {
+    const row = this.memberRow(channelId, actorId);
+    const record = this.memberConfigs.get(this.memberKey(channelId, actorId));
+    if (!row || !record) return null;
+    const business = this.businessOf(record);
+    setRosterLayers(row, { standard: { state: 'ready' }, business: { ...business, ...(business.state === 'ready' ? {} : { since: this.clock }) } }, this.clock);
+    return business;
+  }
+
+  // system.member.get：成员事实 + 两层 + class/config/来源（只有干活的成员有后三样）。
+  memberInfo(channelId, actorId) {
+    const row = this.memberRow(channelId, actorId);
+    if (!row) throw new TypeError('member does not exist');
+    const standard = rowLayer(row, 'standard');
+    const business = rowLayer(row, 'business');
+    const record = this.memberConfigs.get(this.memberKey(channelId, actorId));
+    return {
+      actor_id: row.declared.id,
+      member: true,
+      present: business ? business.state === 'ready' : true,
+      uptime_ms: 60_000,
+      ...(standard ? { standard } : {}),
+      ...(business ? { business } : {}),
+      ...(record ? {
+        class: record.class,
+        config: structuredClone(record.config),
+        source: structuredClone(record.source),
+        ...(record.desired_host ? { desired_host: record.desired_host } : {}),
+      } : {}),
+    };
+  }
+
+  // system.member.set：config 是顶层补丁（null = 回 class 默认值，即从存储里去掉
+  // 这个键）；换 class 不许换 kind；class 拒绝的配置、引用了不存在的全局 key 都
+  // 整条拒绝。dry_run 只回将要存的样子。
+  setMember(channelId, { member, class: nextClass, config, dry_run: dryRun } = {}) {
+    const row = this.memberRow(channelId, member);
+    if (!row) throw new TypeError('member does not exist');
+    const kind = row.declared.kind;
+    if (!['agent', 'tool'].includes(kind)) {
+      const error = new TypeError(`member ${member} is a ${kind}; only agent and tool members have a class and config`);
+      error.code = kind === 'system' || kind === 'peer' ? 'protected_actor' : 'invalid_args';
+      throw error;
+    }
+    const current = this.memberConfigs.get(this.memberKey(channelId, member)) || { class: '', config: {}, source: {} };
+    if (config != null && (typeof config !== 'object' || Array.isArray(config))) throw new TypeError('config must be an object');
+    const className = nextClass == null || nextClass === '' ? current.class : String(nextClass);
+    const definition = MOCK_CLASSES[className];
+    if (!definition) throw new TypeError(`unknown class ${className}`);
+    if (definition.kind !== kind) throw new TypeError(`class ${className} makes a ${definition.kind}; member ${member} is a ${kind}`);
+    const stored = structuredClone(current.config || {});
+    for (const [key, value] of Object.entries(config || {})) {
+      if (value === null) delete stored[key];
+      else stored[key] = structuredClone(value);
+    }
+    const effective = { ...definition.defaults, ...stored };
+    const refused = definition.refuse?.(effective) || '';
+    if (refused) throw new TypeError(`config refused by ${className}: ${refused}`);
+    for (const name of globalReferences(effective)) {
+      if (!this.globals.has(`${GLOBAL_PREFIX}${name}`)) throw new TypeError(`missing global resource ${GLOBAL_PREFIX}${name}`);
+    }
+    const changed = className !== current.class || JSON.stringify(sortKeys(stored)) !== JSON.stringify(sortKeys(current.config || {}));
+    if (dryRun) return { member, changed, class: className, config: stored };
+    if (changed) {
+      this.memberConfigs.set(this.memberKey(channelId, member), { ...current, class: className, config: stored });
+      this.evaluateMember(channelId, member);
+    }
+    return { member, changed, rebuilt: changed };
   }
 
   now() {
@@ -297,6 +495,12 @@ export class MockDomain {
     const id = `${kind}-${this.nextId('actor')}`;
     const rows = this.rosters.get(channelId) || [];
     rows.push(rosterItem({ id, kind, declId, name: declaration.name || id, description: 'Introduced by mock system actor' }, this.clock));
+    this.memberConfigs.set(this.memberKey(channelId, id), {
+      class: declaration.default_class || declaration.class,
+      config: structuredClone(declaration.config || {}),
+      source: { decl_id: declId },
+    });
+    this.evaluateMember(channelId, id);
     return { member: id };
   }
 
@@ -341,6 +545,8 @@ export class MockDomain {
       error.code = 'protected_actor';
       throw error;
     }
+    // 重启 = 按当前配置重建业务层：缺的全局 key 补上了，卡住的成员就起来了。
+    this.evaluateMember(channelId, actorId);
     return { member: actorId };
   }
 
@@ -450,8 +656,38 @@ export class MockDomain {
     return { channel_id: channelId, device_id: deviceId, attached: attach };
   }
 
+  // global/ 不是这个频道的：任何频道的资源面都落到同一份空间存储。只有 kv；
+  // 名字必须满足 [a-z0-9_-]{1,64}，和 $global.<name> 引用能写的一样。
+  globalResource(channelId, payload) {
+    const { op, resource_id: id, args } = payload;
+    const creator = `${channelId}/${this.activeMembership(ROOT_ID, channelId)?.actor_id || ROOT_ID}`;
+    if (op === 'list') {
+      const prefix = String(payload.query?.prefix || GLOBAL_PREFIX);
+      const items = [...this.globals.keys()].filter((key) => key.startsWith(prefix)).sort()
+        .map((key) => ({ id: key, kind: 'kv', ops: ['read', 'write', 'delete'], meta: {} }));
+      return { items, next: null };
+    }
+    const name = String(id || '').slice(GLOBAL_PREFIX.length);
+    if (op === 'create') {
+      if (payload.address) throw new TypeError('global resources are kv only');
+      if (!GLOBAL_NAME.test(name)) throw new TypeError('a global resource is named global/<name>, name matching [a-z0-9_-]{1,64}');
+      if (this.globals.has(id)) throw new TypeError('resource already exists');
+      this.globals.set(id, { value: structuredClone(args ?? null), created_by: creator, created_at: this.clock });
+      return { status: 'ok', resource_id: id };
+    }
+    const row = this.globals.get(id);
+    if (op === 'stat') return { exists: Boolean(row), ...(row ? { meta: { kind: 'kv', created_at: row.created_at, created_by: row.created_by } } : {}) };
+    if (!row) throw new TypeError('resource does not exist');
+    if (op === 'read') return { status: 'ok', resource_id: id, value: structuredClone(row.value) };
+    if (op === 'write') { row.value = structuredClone(args ?? null); return { status: 'ok', resource_id: id }; }
+    if (op === 'delete') { this.globals.delete(id); return { status: 'ok', resource_id: id, deleted: true }; }
+    throw new TypeError('unsupported resource operation');
+  }
+
   resource(channelId, payload) {
     const store = this.resources.get(channelId); if (!store) throw new TypeError('channel does not exist');
+    const target = String(payload.resource_id || (payload.op === 'list' ? payload.query?.prefix || '' : ''));
+    if (target.startsWith(GLOBAL_PREFIX)) return this.globalResource(channelId, payload);
     const { op, resource_id: id, args } = payload;
     if (op === 'list') {
       const prefix = String(payload.query?.prefix || '');
@@ -594,8 +830,33 @@ export class MockDomain {
       bindings: [...this.bindings],
       resources: Object.fromEntries([...this.resources].map(([id, rows]) => [id, [...rows.values()].map((row) => ({ id: row.id, kind: row.kind, address: row.address }))])),
       tickets: [...this.tickets.values()].map((row) => ({ method: row.method, address: row.address, expiresAt: row.expiresAt, used: row.used })),
+      // 全局 key 的值恒不出现在状态里：只给摘要，测试据此核对写进去的是哪个值。
+      globals: [...this.globals].map(([id, row]) => ({
+        id,
+        kind: 'kv',
+        created_by: row.created_by,
+        value_sha256: createHash('sha256').update(JSON.stringify(row.value)).digest('hex'),
+      })),
+      member_configs: [...this.memberConfigs].map(([key, row]) => {
+        const [channelId, actorId] = key.split('\u0000');
+        return { channel_id: channelId, member: actorId, class: row.class, config: structuredClone(row.config) };
+      }),
     };
   }
+}
+
+function globalReferences(value, found = new Set()) {
+  if (typeof value === 'string') {
+    if (value.startsWith(GLOBAL_REFERENCE) && GLOBAL_NAME.test(value.slice(GLOBAL_REFERENCE.length))) found.add(value.slice(GLOBAL_REFERENCE.length));
+  } else if (Array.isArray(value)) value.forEach((item) => globalReferences(item, found));
+  else if (value && typeof value === 'object') Object.values(value).forEach((item) => globalReferences(item, found));
+  return found;
+}
+
+function sortKeys(value) {
+  if (Array.isArray(value)) return value.map(sortKeys);
+  if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortKeys(value[key])]));
+  return value;
 }
 
 export const createMockDomain = (config) => new MockDomain(config);

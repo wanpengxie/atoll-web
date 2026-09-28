@@ -55,7 +55,9 @@ npm run dev
 6. 直接批准预置审批，或先打开 `/mock/approve?channel=c0` 推一张新审批卡；批准/拒绝后卡片进入终态。
 7. 在编辑器输入 `/channels`：mock 刻意拒绝该 registrar capability，发送占位显示中文错误、`forbidden` code 和可展开的 detail。向原始 v3 socket 提交不存在的 audience/channel 时则分别返回 `not_in_audience` / `channel_not_found`。
 
-`/mock/approve`、`/mock/introduce`、`/mock/drop` 已由 Vite 代理，因此既可在当前站点直接打开，也可访问 `http://127.0.0.1:8832`。mock 历史只在本进程内存中保存，重启会恢复预置状态。
+8. 以 `ATOLL_MOCK_SCENARIO=actor-config` 启动：c0 名册里 DeepSeek 因缺 `global/deepseek_prod` 业务层卡住、Search Tool 在重试；成员详情可「读取配置」并经 `system.member.set` 编辑；「空间管理 → 全局 key」增删改 key（只显示名字）。打开 `/mock/ui-form?channel=c0`（或对 steward 说"配置 deepseek"）会向最近连上的屏发一条 `ui.form`，密钥字段写进 `global/deepseek_prod`，回复里只有掩码。
+
+`/mock/approve`、`/mock/introduce`、`/mock/drop`、`/mock/ui-form` 已由 Vite 代理，因此既可在当前站点直接打开，也可访问 `http://127.0.0.1:8832`。mock 历史只在本进程内存中保存，重启会恢复预置状态。
 
 ## 验证
 

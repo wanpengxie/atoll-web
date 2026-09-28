@@ -18,7 +18,7 @@ import {
   SESSION_COOKIE,
   validatePayload,
 } from './protocol.mjs';
-import { createMockDomain, envelope as domainEnvelope, item as domainItem, measure as domainMeasure, observation as domainObservation, rosterItem as domainRosterItem } from './domain.mjs';
+import { createMockDomain, defaultLayers, envelope as domainEnvelope, item as domainItem, measure as domainMeasure, observation as domainObservation, rosterItem as domainRosterItem, rowLayer, setRosterLayers } from './domain.mjs';
 import { loadScenario, scenarioIds } from './scenarios.mjs';
 
 const ROOT_ID = 'root';
@@ -145,8 +145,22 @@ function rosterItem({ id, kind, declId = '', name = id, description = '', bound 
     measures.push(measure('device_online', online));
   }
   measures.sort((left, right) => left.name.localeCompare(right.name));
-  return item(declared, measures);
+  return setRosterLayers(item(declared, measures), defaultLayers(kind), now());
 }
+
+// ui.form 演示表单：一个密钥字段（写进 global/deepseek_prod）、一个枚举、一个可选文本。
+const DEEPSEEK_FORM_SCHEMA = Object.freeze({
+  type: 'object',
+  required: ['api_key', 'model'],
+  properties: {
+    api_key: { type: 'string', title: 'API Key', description: 'DeepSeek 控制台里生成的 key' },
+    model: { type: 'string', title: '模型', enum: ['deepseek-chat', 'deepseek-reasoner'], default: 'deepseek-chat' },
+    base_url: { type: 'string', title: 'Base URL', description: '留空使用默认地址', examples: ['https://api.deepseek.com'] },
+  },
+});
+
+// 客户端受理的 ui.* 词（platform/subjectgate IsUIWord）；ui.session.list 由 human cell 自己答。
+const CLIENT_UI_WORDS = new Set(['ui.state', 'ui.navigate', 'ui.open', 'ui.form']);
 
 function envelope({
   id,
@@ -476,6 +490,7 @@ export function createMockServer({
   const attached = new WeakSet();
   const socketPrincipals = new WeakMap();
   const socketSessionIds = new WeakMap();
+  const socketLabels = new WeakMap();
   const socketObserved = new WeakMap();
   const socketGenerations = new WeakMap();
   let nextSocketSession = 0;
@@ -666,6 +681,42 @@ export function createMockServer({
       audience: [selfActorId],
     }));
     return id;
+  }
+
+  // 此刻连着的屏（attach 过、还开着），按连上的先后。ui.* 请求靠 session 点名其中一块。
+  function liveSessions() {
+    return [...sockets]
+      .filter((socket) => attached.has(socket) && socket.readyState === WebSocket.OPEN)
+      .map((socket) => ({ id: socketSessionIds.get(socket) || '', label: socketLabels.get(socket) || '' }))
+      .filter((row) => row.id);
+  }
+
+  // 一条从 agent 发给这个人、点名某块屏的 ui.form。session 缺省点最近连上的那块；
+  // 显式给 '' 则不点名（客户端应以 session_required 拒绝）。
+  function pushUiForm(channelId = 'c0', overrides = {}) {
+    const id = domain.nextId(`${channelId}-ui-form`);
+    const selfActorId = domain.activeMembership(ROOT_ID, channelId)?.actor_id || ROOT_ACTOR_ID;
+    const session = overrides.session ?? liveSessions().at(-1)?.id ?? '';
+    const secret = overrides.secret === undefined ? { api_key: 'global/deepseek_prod' } : overrides.secret;
+    const body = {
+      ...(session ? { session } : {}),
+      title: overrides.title || '填写 DeepSeek key',
+      schema: overrides.schema || DEEPSEEK_FORM_SCHEMA,
+      ...(overrides.values ? { values: overrides.values } : {}),
+      ...(secret ? { secret } : {}),
+    };
+    append(channelId, envelope({
+      id,
+      channelId,
+      sender: { kind: 'agent', id: overrides.agentId || STEWARD_ACTOR_ID },
+      kind: 'request',
+      type: 'ui.form',
+      payload: body,
+      parentId: overrides.parentId || '',
+      correlationId: overrides.parentId || '',
+      audience: [selfActorId],
+    }));
+    return { id, session };
   }
 
   let liveTick = 0;
@@ -979,6 +1030,14 @@ export function createMockServer({
       return;
     }
 
+    // 业务层没就绪前，除 actor.describe 外什么都不投递给它（与真后端 actorhost 同）。
+    const targetRow = target ? (rosters.get(channelId) || []).find((entry) => entry.declared.id === target.id) : null;
+    const targetBusiness = targetRow ? rowLayer(targetRow, 'business') : undefined;
+    if (kind === 'request' && target && target.id !== SYSTEM_ACTOR_ID && targetBusiness && targetBusiness.state !== 'ready') {
+      fail('not_ready', `business layer is ${targetBusiness.state}${targetBusiness.reason ? `: ${targetBusiness.reason}` : ''}`);
+      return;
+    }
+
     // 频道面与空间面都只有一个收件人：本频道的 system actor。
     if (target?.id === SYSTEM_ACTOR_ID && String(payload.msg_type).startsWith('system.')) {
       if (domain.behavior.governance_denied) { fail('unauthorized_sender', 'sender is not an active channel member'); return; }
@@ -1004,18 +1063,31 @@ export function createMockServer({
           // ---- 频道面（system actor 自己答）----
           case 'system.member.list': {
             assertClosedPayload(body, []);
+            // present = 能服务 = 业务层就绪；两层各带没就绪的原因。
             const actors = (rosters.get(channelId) || [])
-              .map((entry) => entry.declared)
-              .filter((row) => row.id !== SYSTEM_ACTOR_ID)
-              .map((row) => ({ id: row.id, kind: row.kind, ...(row.name ? { name: row.name } : {}), present: true }));
+              .filter((entry) => entry.declared.id !== SYSTEM_ACTOR_ID)
+              .map((entry) => {
+                const row = entry.declared;
+                const standard = rowLayer(entry, 'standard');
+                const business = rowLayer(entry, 'business');
+                return {
+                  id: row.id, kind: row.kind, ...(row.name ? { name: row.name } : {}),
+                  present: business ? business.state === 'ready' : true,
+                  ...(standard ? { standard } : {}), ...(business ? { business } : {}),
+                };
+              });
             completeFlat({ actors });
             return;
           }
           case 'system.member.get': {
             assertClosedPayload(body, ['member']);
-            const row = (rosters.get(channelId) || []).map((entry) => entry.declared).find((entry) => entry.id === body.member);
-            if (!row) throw new TypeError('member does not exist');
-            completeFlat({ actor_id: row.id, member: true, present: true });
+            completeFlat(domain.memberInfo(channelId, body.member));
+            return;
+          }
+          case 'system.member.set': {
+            assertClosedPayload(body, ['member', 'class', 'config', 'dry_run']);
+            if (!body.member) throw new TypeError('member required');
+            completeFlat(domain.setMember(channelId, body));
             return;
           }
           case 'system.member.create': {
@@ -1237,6 +1309,15 @@ export function createMockServer({
       const count = payload.payload?.count;
       if (!payload.payload?.name || !Number.isInteger(count) || count < 1) fail('payload_invalid', 'name and a positive integer count are required');
       else complete({ order_id: domain.nextId('order'), accepted: true, ...payload.payload });
+      return;
+    }
+
+    // actor-config 演示：问 steward 要 key 时，它向发问的那块屏（agent.ask 上盖的
+    // origin.session）发一条 ui.form，拿到回复再把这一轮答完（见 handleUiResolve）。
+    if (domain.behavior.actor_layers_demo && payload.msg_type === 'agent.ask' && /deepseek|ui\.form/i.test(text)) {
+      const session = String(payload.payload?.origin?.session || '');
+      later(15, () => append(channelId, envelope({ ...responseBase, id: `${messageId}-processing`, kind: 'response', type: payload.msg_type, payload: { status: 'processing', turn_index: 1, controls: PROCESSING_CONTROLS } })));
+      later(30, () => pushUiForm(channelId, { session, parentId: messageId, agentId: respondingAgent.id }));
       return;
     }
 
@@ -1616,11 +1697,19 @@ export function createMockServer({
       return;
     }
     const request = history.find((row) => row.envelope.id === payload.req_id)?.envelope;
-    if (!request || request.kind !== 'request' || !['human.ask', 'human.approve'].includes(request.type)) {
+    if (!request || request.kind !== 'request' || !(['human.ask', 'human.approve'].includes(request.type) || CLIENT_UI_WORDS.has(request.type))) {
       sendError(socket, { ref, frame: 'resolve', code: 'request_not_found', detail: 'no such resolvable request' });
       return;
     }
+    if (CLIENT_UI_WORDS.has(request.type)) {
+      handleUiResolve(socket, ref, payload, request);
+      return;
+    }
     // 字段闭集：human.ask 只收 text；human.approve 只收 decision + 可选 note。
+    if (payload.result !== undefined || payload.error != null) {
+      sendError(socket, { ref, frame: 'resolve', code: 'bad_payload', detail: `${request.type} is answered by a person; result/error close only ui.* words` });
+      return;
+    }
     if (request.type === 'human.ask' && (typeof payload.text !== 'string' || payload.decision || payload.note != null)) {
       sendError(socket, { ref, frame: 'resolve', code: 'bad_payload', detail: 'human.ask resolve requires only text' });
       return;
@@ -1654,6 +1743,72 @@ export function createMockServer({
       correlationId: request.correlation_id || request.id,
       audience: [request.sender.id],
     }));
+  }
+
+  // ui.* 由客户端关：带 result（做成了）或 error（没做成，自己的 code）二选一，
+  // 恒不带 text/decision/note。回复平铺在 status 旁边，与 sys.Reply / sys.Fail 同形。
+  function handleUiResolve(socket, ref, payload, request) {
+    if (payload.text != null || payload.decision != null || payload.note != null) {
+      sendError(socket, { ref, frame: 'resolve', code: 'bad_payload', detail: `${request.type} resolve carries result or error, not text/decision/note` });
+      return;
+    }
+    const hasResult = payload.result !== undefined;
+    const hasError = payload.error != null;
+    if (hasResult === hasError) {
+      sendError(socket, { ref, frame: 'resolve', code: 'bad_payload', detail: `${request.type} resolve requires exactly one of result or error` });
+      return;
+    }
+    if (hasError && (!isObject(payload.error) || typeof payload.error.code !== 'string' || !payload.error.code)) {
+      sendError(socket, { ref, frame: 'resolve', code: 'bad_payload', detail: 'a ui error needs a code' });
+      return;
+    }
+    const principal = socketPrincipals.get(socket) || '';
+    const selfActorId = domain.activeMembership(principal, payload.channel_id)?.actor_id || '';
+    if (!selfActorId || !request.audience.includes(selfActorId)) {
+      sendError(socket, { ref, frame: 'resolve', code: 'not_in_audience', detail: 'request not addressed to this subject' });
+      return;
+    }
+    if (closedRequests.has(payload.req_id) || hasTerminal(payload.channel_id, payload.req_id)) {
+      sendError(socket, { ref, frame: 'resolve', code: 'already_closed', detail: 'request already closed' });
+      return;
+    }
+    closedRequests.add(payload.req_id);
+    sendReceipt(socket, ref, { req_id: payload.req_id });
+    const body = hasError
+      ? { status: 'failed', error_code: payload.error.code, detail: String(payload.error.message || payload.error.code) }
+      : { status: 'completed', ...(isObject(payload.result) ? payload.result : { value: payload.result }) };
+    append(payload.channel_id, envelope({
+      id: `${payload.req_id}-resolved`,
+      channelId: payload.channel_id,
+      sender: { kind: 'human', id: selfActorId },
+      kind: 'response',
+      type: request.type,
+      payload: body,
+      parentId: payload.req_id,
+      correlationId: request.correlation_id || request.id,
+      audience: [request.sender.id],
+    }));
+    // 演示：steward 为一轮 agent.ask 发的表单被答了，它把那一轮答完。
+    const ask = request.parent_id
+      ? histories.get(payload.channel_id)?.find((row) => row.envelope.id === request.parent_id)?.envelope
+      : null;
+    if (ask && ask.type === 'agent.ask' && !hasTerminal(payload.channel_id, ask.id)) {
+      const secrets = Object.entries(body.secret || {}).map(([field, value]) => `${field} → ${value?.resource}（${value?.masked}）`);
+      const text = hasError
+        ? `表单没有填：${payload.error.code}。`
+        : `收到表单。${Object.keys(body.values || {}).length ? `值：${JSON.stringify(body.values)}。` : ''}${secrets.length ? `密钥已写入：${secrets.join('，')}。` : ''}`;
+      later(20, () => append(payload.channel_id, envelope({
+        id: `${ask.id}-terminal`,
+        channelId: payload.channel_id,
+        sender: { kind: 'agent', id: request.sender.id },
+        kind: 'response',
+        type: ask.type,
+        payload: { status: 'completed', turn_index: 1, text },
+        parentId: ask.id,
+        correlationId: ask.id,
+        audience: [ask.sender.id],
+      })));
+    }
   }
 
   function handleAttachedFrame(socket, value) {
@@ -1940,6 +2095,7 @@ export function createMockServer({
       }
       // 对齐真后端 AttachReceipt：成员清单随回执直接交付（资格账快照），
       // 前端连上即知道自己在哪些频道，恒不靠 feed 副作用反推。
+      socketLabels.set(socket, typeof payload.label === 'string' ? payload.label : '');
       sendReceipt(socket, ref, {
         contract_version: CONTRACT_VERSION,
         boot: bootId,
@@ -2141,6 +2297,17 @@ export function createMockServer({
       return;
     }
 
+    if (request.method === 'GET' && path === '/mock/ui-form') {
+      const channelId = url.searchParams.get('channel') || 'c0';
+      if (!histories.has(channelId)) {
+        httpError(response, 404, 'not_found', 'channel does not exist');
+        return;
+      }
+      const session = url.searchParams.has('session') ? url.searchParams.get('session') : undefined;
+      json(response, 200, { ...pushUiForm(channelId, { session }), channel_id: channelId });
+      return;
+    }
+
     if (request.method === 'GET' && path === '/mock/introduce') {
       introduced += 1;
       const actorId = `introduced-${introduced}`;
@@ -2179,12 +2346,12 @@ export function createMockServer({
     }
 
     if (request.method === 'GET' && path === '/mock/control/catalog') {
-      json(response, 200, { scenarios: scenarioIds(), agent_advance: true, actions: ['drop', 'approval', 'revoke_membership', 'grant_membership', 'retire_channel', 'set_channel_open', 'set_obs_complete', 'pulse', 'push_provisional', 'push_terminal', 'replay_envelope', 'terminal_conflict', 'resolve_approval', 'notification_lifecycle'] });
+      json(response, 200, { scenarios: scenarioIds(), agent_advance: true, actions: ['drop', 'approval', 'revoke_membership', 'grant_membership', 'retire_channel', 'set_channel_open', 'set_obs_complete', 'pulse', 'push_provisional', 'push_terminal', 'replay_envelope', 'terminal_conflict', 'resolve_approval', 'notification_lifecycle', 'ui_form'] });
       return;
     }
 
     if (request.method === 'GET' && path === '/mock/control/state') {
-      json(response, 200, domain.snapshot());
+      json(response, 200, { ...domain.snapshot(), sessions: liveSessions() });
       return;
     }
 
@@ -2224,6 +2391,19 @@ export function createMockServer({
         if (body.type === 'approval') {
           const id = pushApproval(body.channel_id || 'c0');
           json(response, 200, { type: body.type, id });
+          return;
+        }
+        if (body.type === 'ui_form') {
+          const channelId = body.channel_id || 'c0';
+          if (!histories.has(channelId)) throw new TypeError('channel does not exist');
+          const pushed = pushUiForm(channelId, {
+            ...(Object.hasOwn(body, 'session') ? { session: body.session } : {}),
+            ...(body.title ? { title: body.title } : {}),
+            ...(body.schema ? { schema: body.schema } : {}),
+            ...(body.values ? { values: body.values } : {}),
+            ...(Object.hasOwn(body, 'secret') ? { secret: body.secret } : {}),
+          });
+          json(response, 200, { type: body.type, ...pushed, channel_id: channelId });
           return;
         }
         if (body.type === 'revoke_membership') {
