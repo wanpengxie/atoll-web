@@ -8,6 +8,80 @@ const GLOBAL_PREFIX = 'global/';
 const GLOBAL_NAME = /^[a-z0-9_-]{1,64}$/;
 const GLOBAL_REFERENCE = '$global.';
 
+// ---- 描述与配置的纯函数（对齐 platform/configval）----
+const REQUIRED = '$required';
+
+function plainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+// 上层盖下层，对象逐层合并，不删键（configval.Overlay）。
+function overlay(base, top) {
+  if (!plainObject(base) || !plainObject(top)) return structuredClone(top === undefined ? base : top);
+  const out = structuredClone(base);
+  for (const [key, value] of Object.entries(top)) {
+    out[key] = plainObject(out[key]) && plainObject(value) ? overlay(out[key], value) : structuredClone(value);
+  }
+  return out;
+}
+
+// RFC 7396（configval.ApplyPatch）：null 删键，对象逐层合并。
+function applyMergePatch(target, patch) {
+  if (!plainObject(patch)) return structuredClone(patch);
+  const out = plainObject(target) ? structuredClone(target) : {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null) delete out[key];
+    else out[key] = applyMergePatch(out[key], value);
+  }
+  return out;
+}
+
+// 还站着的占位："$required" 或 "$required:说明"（configval.Missing）。
+function placeholders(value, path = '', out = []) {
+  if (typeof value === 'string' && (value === REQUIRED || value.startsWith(`${REQUIRED}:`))) {
+    out.push({ key: path, ...(value.length > REQUIRED.length + 1 ? { hint: value.slice(REQUIRED.length + 1) } : {}) });
+  } else if (plainObject(value)) {
+    for (const key of Object.keys(value).sort()) placeholders(value[key], path ? `${path}.${key}` : key, out);
+  }
+  return out;
+}
+
+// 每个叶子键来自哪一层：后面的层盖前面的。
+function layerSources(layers) {
+  const out = {};
+  const walk = (value, path, layer) => {
+    if (plainObject(value) && Object.keys(value).length) {
+      for (const [key, inner] of Object.entries(value)) walk(inner, path ? `${path}.${key}` : key, layer);
+      return;
+    }
+    if (!path) return;
+    for (const existing of Object.keys(out)) if (existing.startsWith(`${path}.`)) delete out[existing];
+    out[path] = layer;
+  };
+  for (const [layer, value] of layers) walk(value, '', layer);
+  return out;
+}
+
+function bodyPhrase(body) {
+  if (body?.actor) return `actor ${body.actor}`;
+  return `class ${body?.class || '?'}`;
+}
+
+// actor id 是 <kind>:<名字>:<届次>；老 mock 行的 id 就是名字。
+function memberNameOf(id) {
+  const parts = String(id || '').split(':');
+  return parts.length >= 3 ? parts.slice(1, -1).join(':') : String(id || '');
+}
+
+function operationError(code, message) {
+  const error = new TypeError(message);
+  error.code = code;
+  return error;
+}
+
+const MEMBER_NAME = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+const GENERATED_BODY = 'generated';
+
 // 成员可用的 class：它造出什么 kind 的成员、默认配置、以及它拒绝什么配置。
 // member.set 换 class 不许换 kind；配置被 class 拒绝时业务层卡住。
 const MOCK_CLASSES = Object.freeze({
@@ -77,11 +151,11 @@ export function rowLayer(row, name) {
   return { state: measure.value, ...(measure.reason ? { reason: measure.reason } : {}), ...(measure.since > 0 ? { since_ms: measure.since } : {}) };
 }
 
-export function rosterItem({ id, kind, declId = '', name = id, description = '', principal = '', bound = true, online = null, layers = defaultLayers(kind) }, observedAt = STAMP) {
+export function rosterItem({ id, kind, body = '', name = id, description = '', principal = '', bound = true, online = null, layers = defaultLayers(kind) }, observedAt = STAMP) {
   const declared = {
     id,
     kind,
-    ...(declId ? { decl_id: declId } : {}),
+    ...(body ? { body } : {}),
     ...(name ? { name } : {}),
     ...(description ? { description } : {}),
     ...(principal ? { principal } : {}),
@@ -116,17 +190,17 @@ function createRoster(channel, memberships, clock, { seedBusiness = true, canoni
   // 与真实后端一致：每个频道都有 system 与 svcactor(peer)，registrar 只在 c0。
   const rows = [
     rosterItem({ id: 'system', kind: 'system', name: 'system', description: 'Channel system actor' }, clock),
-    rosterItem({ id: 'svcactor', kind: 'peer', declId: 'svcactor', name: 'Service Actor', description: 'Service actor' }, clock),
+    rosterItem({ id: 'svcactor', kind: 'peer', body: GENERATED_BODY, name: 'Service Actor', description: 'Service actor' }, clock),
   ];
   if (channel.id === 'c0') {
-    rows.push(rosterItem({ id: 'registrar', kind: 'system', declId: 'registrar', name: 'Registrar Seat', description: 'Registrar seat' }, clock));
+    rows.push(rosterItem({ id: 'registrar', kind: 'system', body: GENERATED_BODY, name: 'Registrar Seat', description: 'Registrar seat' }, clock));
   }
 	if (!channel.internal && seedBusiness) {
 		const businessActorId = channel.id === 'c0'
 			? canonicalActorIds ? 'agent:steward:test' : 'steward'
 			: canonicalActorIds ? `agent:${channel.name}:test` : `${channel.name}-agent`;
-		rows.push(rosterItem({ id: businessActorId, kind: 'agent', declId: 'mock:steward', name: channel.id === 'c0' ? 'steward' : `${channel.name}-agent`, description: 'Mock collaboration agent' }, clock));
-    if (channel.id === 'c0') rows.push(rosterItem({ id: 'claude', kind: 'agent', declId: 'mock:claude', name: 'Claude', description: 'Mock Claude collaboration agent' }, clock));
+		rows.push(rosterItem({ id: businessActorId, kind: 'agent', body: 'class codex', name: channel.id === 'c0' ? 'steward' : `${channel.name}-agent`, description: 'Mock collaboration agent' }, clock));
+    if (channel.id === 'c0') rows.push(rosterItem({ id: 'claude', kind: 'agent', body: 'class claude', name: 'Claude', description: 'Mock Claude collaboration agent' }, clock));
   }
   for (const membership of memberships.filter((entry) => entry.channel_id === channel.id && entry.status === 'active')) {
     rows.push(rosterItem({ id: membership.actor_id, kind: 'human', name: membership.principal_id, principal: membership.principal_id, online: true, description: 'Human channel member' }, clock));
@@ -157,22 +231,37 @@ export class MockDomain {
     this.obsComplete = config.obs_complete !== false;
     this.faults = [];
     const stamp = STAMP;
-    this.declarations = new Map([
-      ['mock:steward', { id: 'mock:steward', name: 'Steward', description: 'Mock steward declaration', owner: ROOT_ID, class: 'codex', default_class: 'codex', config: {}, status: 'present', visibility: 'private', created_at: stamp, updated_at: stamp }],
-      ['mock:claude', { id: 'mock:claude', name: 'Claude', description: 'Mock Claude agent declaration', owner: ROOT_ID, class: 'claude', default_class: 'claude', kind: 'agent', config: {}, status: 'present', visibility: 'private', created_at: stamp, updated_at: stamp }],
-      ['mock:analyst', { id: 'mock:analyst', name: 'Analyst Agent', description: 'Mock agent declaration', owner: ROOT_ID, class: 'codex-agent', default_class: 'codex-agent', kind: 'agent', config: {}, status: 'present', visibility: 'private', created_at: stamp, updated_at: stamp }],
-      ['mock:search', { id: 'mock:search', name: 'Search Tool', description: 'Mock tool declaration', owner: ROOT_ID, class: 'mcp-tool', default_class: 'mcp-tool', kind: 'tool', config: {}, status: 'present', visibility: 'private', created_at: stamp, updated_at: stamp }],
-      ['registrar', { id: 'registrar', name: 'Registrar Seat', owner: ROOT_ID, class: 'registrar', default_class: 'registrar', status: 'present', visibility: 'private', created_at: stamp, updated_at: stamp }],
-      ['svcactor', { id: 'svcactor', name: 'Service Actor', owner: ROOT_ID, class: 'svcactor', default_class: 'svcactor', status: 'present', visibility: 'private', created_at: stamp, updated_at: stamp }],
-    ]);
-    this.channelTemplates = new Map([
-      ['mock:team', { id: 'mock:team', name: 'Team channel', description: 'Mock team template', visibility: 'private', body: { declarations: [{ decl_id: 'mock:steward' }], profile: { default_storage_device_id: 'local-device' } }, status: 'present' }],
-    ]);
-    this.profiles = new Map([...this.channels.values()].map((channel) => [channel.id, { channel_id: channel.id, description: channel.description || '', serving: channel.open ? 1 : 0, default_storage_device_id: 'local-device', endpoints: {} }]));
+    // Actor 描述：不可变的 名字@版本（c0 的 actor_descriptions 表）。
+    this.actorDescriptions = new Map();
+    for (const [name, klass, description, params] of [
+      ['steward', 'codex', 'Mock steward', {}],
+      ['claude', 'claude', 'Mock Claude agent', {}],
+      ['analyst', 'codex-agent', 'Mock analyst agent', {}],
+      ['search', 'mcp-tool', 'Mock search tool', {}],
+    ]) this.putActorDescription({ name, class: klass, description, params }, stamp);
+    // 频道描述（c0 的 channel_descriptions 表）：c0 和大厅是平台搭的，没有描述。
+    this.descriptions = new Map();
+    // c0 的成员是平台固定的：条目只能读，这一台的配置可以改。
+    this.c0Entries = [];
+    // 成员这一台的配置（各频道自己的 member_config 表）：key → {desired_host, values, revision}。
+    this.memberConfigs = new Map();
+    // 每个成员 / 频道最近一次构建记录。
+    this.builds = new Map();
+    this.channelBuilds = new Map();
+    this.events = [];
+    for (const channel of this.channels.values()) {
+      const entries = (this.rosters.get(channel.id) || [])
+        .filter((row) => ['agent', 'tool'].includes(row.declared.kind) && String(row.declared.body || '').startsWith('class '))
+        .map((row) => ({ name: memberNameOf(row.declared.id), body: { class: row.declared.body.slice('class '.length) } }));
+      if (channel.id === 'c0') this.c0Entries = entries;
+      else if (!channel.internal) this.descriptions.set(channel.id, { body: this.normalizedDescription({ members: entries, description: channel.description || '' }), revision: 1 });
+    }
+    for (const channelId of this.channels.keys()) {
+      for (const entry of this.entriesOf(channelId)) this.builds.set(this.memberKey(channelId, entry.name), this.buildRecord(channelId, entry.name, { result: 'ok', state: 'ready', attempt: 1, at: stamp }));
+    }
     // Device id is authority/routing identity; its canonical name spells the
     // human-readable daemon:// namespace.
     this.devices = new Map([['local-device', { id: 'local-device', owner_principal: ROOT_ID, name: 'local-device', status: 'present', online: true, key: 'mock-device-key-never-observed' }]]);
-    this.bindings = new Set([...this.channels.keys()].map((channelId) => `${channelId}:local-device`));
     this.resources = new Map([...this.channels.keys()].map((id) => [id, new Map()]));
     this.files = new Map();
     for (const [index, seed] of (config.files || []).entries()) {
@@ -198,138 +287,351 @@ export class MockDomain {
     this.tickets = new Map();
     // 全局 key 是空间的，不属于任何频道：id → {value, created_by, created_at}。
     this.globals = new Map();
-    // 成员的 class 与配置（成员行是权威）：`${channelId}\u0000${actorId}` → {class, config, source, desired_host?}。
-    this.memberConfigs = new Map();
-    for (const [channelId, rows] of this.rosters) {
-      for (const row of rows) {
-        const declaration = this.declarations.get(row.declared.decl_id || '');
-        if (!declaration || !['agent', 'tool'].includes(row.declared.kind)) continue;
-        this.memberConfigs.set(this.memberKey(channelId, row.declared.id), {
-          class: declaration.default_class || declaration.class,
-          config: structuredClone(declaration.config || {}),
-          source: { decl_id: declaration.id },
-        });
-      }
-    }
     if (this.behavior.actor_layers_demo) this.seedActorLayersDemo();
+    // 场景自带的构建是初始状态，不是账本里发生过的事。
+    this.events = [];
   }
 
-  // actor-config 场景：一个因为缺全局 key 而卡住的 agent、一个连不上端点正在重试
-  // 的 tool，外加一把已有的全局 key 给编辑器插引用用。
+  // actor-config 场景（c0.project 里）：一个引用了不存在的全局 key、业务层卡住的
+  // agent（deepseek）；一个连不上端点正在重试的 tool（search-tool）；一个还有占位
+  // 没填、构建已经停下的 agent（writer）。外加一把已有的全局 key 给编辑器插引用用。
   seedActorLayersDemo() {
     const stamp = STAMP;
-    this.declarations.set('mock:deepseek', { id: 'mock:deepseek', name: 'DeepSeek', description: 'Mock DeepSeek agent declaration', owner: ROOT_ID, class: 'deepseek-agent', default_class: 'deepseek-agent', kind: 'agent', config: { model: 'deepseek-chat', api_key: `${GLOBAL_REFERENCE}deepseek_prod` }, status: 'present', visibility: 'private', created_at: stamp, updated_at: stamp });
+    this.putActorDescription({ name: 'deepseek', class: 'deepseek-agent', description: 'Mock DeepSeek agent', params: { model: 'deepseek-chat', api_key: `${GLOBAL_REFERENCE}deepseek_prod` } }, stamp);
+    this.putActorDescription({ name: 'writer', class: 'claude', description: '写作助手', params: { model: 'claude-opus', service: { api_key: `${REQUIRED}:写作服务的 API key`, region: 'cn' } } }, stamp);
     this.globals.set(`${GLOBAL_PREFIX}openai_prod`, { value: 'sk-mock-openai-0000', created_by: 'c0/root', created_at: stamp });
-    const rows = this.rosters.get('c0');
-    if (!rows) return;
-    rows.push(rosterItem({ id: 'deepseek', kind: 'agent', declId: 'mock:deepseek', name: 'DeepSeek', description: 'Mock DeepSeek agent' }, this.clock));
-    this.memberConfigs.set(this.memberKey('c0', 'deepseek'), {
-      class: 'deepseek-agent',
-      config: { model: 'deepseek-chat', api_key: `${GLOBAL_REFERENCE}deepseek_prod` },
-      source: { decl_id: 'mock:deepseek' },
-    });
-    rows.push(rosterItem({ id: 'search-tool', kind: 'tool', declId: 'mock:search', name: 'Search Tool', description: 'Mock MCP search tool' }, this.clock));
-    this.memberConfigs.set(this.memberKey('c0', 'search-tool'), {
-      class: 'mcp-tool',
-      config: { endpoint: 'http://127.0.0.1:9000/mcp' },
-      source: { decl_id: 'mock:search' },
-      desired_host: 'local-device',
-    });
-    this.evaluateMember('c0', 'deepseek');
-    this.evaluateMember('c0', 'search-tool');
+    const channelId = 'c0.project';
+    const description = this.descriptions.get(channelId);
+    if (!description) return;
+    description.body.members.push(
+      { name: 'deepseek', body: { actor: 'deepseek@1' } },
+      { name: 'search-tool', body: { actor: 'search@1' }, params: { endpoint: 'http://127.0.0.1:9000/mcp' } },
+      { name: 'writer', body: { actor: 'writer@1' }, params: { temperature: 0.3 } },
+    );
+    description.revision += 1;
+    for (const name of ['deepseek', 'search-tool', 'writer']) this.buildMember(channelId, name, { at: stamp });
+    // writer 已经试满了：停下，等描述或配置换新值。
+    const writer = this.builds.get(this.memberKey(channelId, 'writer'));
+    if (writer) Object.assign(writer, { attempt: 4, state: 'stopped' });
   }
 
-  memberKey(channelId, actorId) {
-    return `${channelId}\u0000${actorId}`;
+  memberKey(channelId, name) {
+    return `${channelId}\u0000${name}`;
   }
 
-  memberRow(channelId, actorId) {
-    return (this.rosters.get(channelId) || []).find((entry) => entry.declared.id === actorId) || null;
+  // 名册行：按 actor id 或成员名找。
+  memberRow(channelId, target) {
+    const rows = this.rosters.get(channelId) || [];
+    return rows.find((entry) => entry.declared.id === target)
+      || rows.find((entry) => entry.declared.kind !== 'human' && memberNameOf(entry.declared.id) === target)
+      || null;
   }
 
-  // 业务层是配置的函数：引用的全局 key 缺了 → stuck；class 拒绝配置 → stuck；
-  // tool 的端点还指着那个死端口 → retrying；否则 ready。标准层恒就绪。
-  businessOf(record) {
-    const effective = { ...(MOCK_CLASSES[record.class]?.defaults || {}), ...record.config };
+  putActorDescription({ name, class: klass, params = {}, description = '', visibility = 'private' }, at = this.clock) {
+    if (!MEMBER_NAME.test(String(name || ''))) throw operationError('invalid_args', `name ${JSON.stringify(name)}: 1-63 chars of lowercase a-z, 0-9 or '-'`);
+    if (!klass) throw operationError('invalid_args', 'class required');
+    if (!MOCK_CLASSES[klass]) throw operationError('invalid_args', `class ${klass} is not a class this node has; see system.class.list`);
+    if (!plainObject(params)) throw operationError('invalid_args', 'params must be a JSON object');
+    const version = [...this.actorDescriptions.values()].filter((row) => row.name === name).reduce((highest, row) => Math.max(highest, row.version), 0) + 1;
+    const ref = `${name}@${version}`;
+    const row = { name, version, ref, class: klass, params: structuredClone(params), description, owner: ROOT_ID, visibility, status: 'present', created_at: at };
+    this.actorDescriptions.set(ref, row);
+    return structuredClone(row);
+  }
+
+  actorDescription(name, version = 0) {
+    const rows = [...this.actorDescriptions.values()].filter((row) => row.name === name);
+    const row = version ? rows.find((entry) => entry.version === Number(version)) : rows.filter((entry) => entry.status === 'present').sort((left, right) => right.version - left.version)[0];
+    if (!row) throw operationError('not_found', `actor description ${name}${version ? `@${version}` : ''} does not exist; see system.actor.description.list`);
+    return structuredClone(row);
+  }
+
+  retireActorDescription(name, version) {
+    const row = this.actorDescriptions.get(`${name}@${version}`);
+    if (!row) throw operationError('not_found', `actor description ${name}@${version} does not exist`);
+    row.status = 'retired';
+    return structuredClone(row);
+  }
+
+  actorDescriptionRows() {
+    return [...this.actorDescriptions.values()].map((row) => item(structuredClone(row), null, row.ref));
+  }
+
+  normalizedDescription(body = {}) {
+    return {
+      members: Array.isArray(body.members) ? structuredClone(body.members) : [],
+      service: plainObject(body.service) ? structuredClone(body.service) : { words: {} },
+      ...(body.description ? { description: String(body.description) } : {}),
+      serving: Number(body.serving || 0) === 1 ? 1 : 0,
+      ...(Array.isArray(body.devices) && body.devices.length ? { devices: [...body.devices] } : {}),
+    };
+  }
+
+  validateDescription(body) {
+    const seen = new Set();
+    for (const entry of body.members) {
+      if (!MEMBER_NAME.test(String(entry?.name || ''))) throw operationError('invalid_args', `member name ${JSON.stringify(entry?.name)}: 1-63 chars of lowercase a-z, 0-9 or '-'`);
+      if (seen.has(entry.name)) throw operationError('invalid_args', `two members are named ${entry.name}`);
+      seen.add(entry.name);
+      const hasClass = Boolean(entry.body?.class);
+      const hasActor = Boolean(entry.body?.actor);
+      if (hasClass === hasActor) throw operationError('invalid_args', `member ${entry.name}: body names exactly one of class and actor ("name@version")`);
+      if (hasActor && !/^[a-z0-9-]+@[1-9][0-9]*$/.test(entry.body.actor)) throw operationError('invalid_args', `member ${entry.name}: actor ${JSON.stringify(entry.body.actor)} is not name@version`);
+      if (entry.params != null && !plainObject(entry.params)) throw operationError('invalid_args', `member ${entry.name}: params must be a JSON object`);
+    }
+  }
+
+  entriesOf(channelId) {
+    if (channelId === 'c0') return this.c0Entries;
+    return this.descriptions.get(channelId)?.body.members || [];
+  }
+
+  entry(channelId, name) {
+    return this.entriesOf(channelId).find((entry) => entry.name === name) || null;
+  }
+
+  // 频道描述的唯一写口：c0 和大厅没有描述。改完重新校验、版本加一、重建。
+  editDescription(channelId, mutate, { dryRun = false } = {}) {
+    const current = this.descriptions.get(channelId);
+    if (!current) throw operationError('forbidden', 'this channel is built by the platform and has no description: its members are fixed (a member\'s own configuration can still be changed with system.member.config.set)');
+    const next = structuredClone(current.body);
+    const result = mutate(next);
+    const body = this.normalizedDescription(next);
+    this.validateDescription(body);
+    if (dryRun) return { revision: current.revision, result };
+    current.body = body;
+    current.revision += 1;
+    this.realize(channelId);
+    return { revision: current.revision, result };
+  }
+
+  // 成员的各层合成：Class 默认值 ← Actor 描述 ← 成员条目 ← 这一台的配置。
+  layersOf(channelId, entry) {
+    const actor = entry.body?.actor ? this.actorDescriptions.get(entry.body.actor) || null : null;
+    const klass = actor?.class || entry.body?.class || '';
+    const config = this.memberConfigs.get(this.memberKey(channelId, entry.name)) || { desired_host: '', values: {}, revision: 0 };
+    const layers = [
+      ['default', structuredClone(MOCK_CLASSES[klass]?.defaults || {})],
+      ['actor', structuredClone(actor?.params || {})],
+      ['member', structuredClone(entry.params || {})],
+      ['config', structuredClone(config.values || {})],
+    ];
+    const effective = layers.reduce((value, [, layer]) => overlay(value, layer), {});
+    return { actor, klass, config, layers, effective, sources: layerSources(layers), missing: placeholders(effective) };
+  }
+
+  channelDeviceIds(channelId) {
+    const channel = this.channel(channelId);
+    if (!channel || channel.internal) return [];
+    const described = this.descriptions.get(channelId)?.body.devices || [];
+    return ['local-device', ...described.filter((id) => this.devices.get(id)?.status === 'present' && id !== 'local-device')];
+  }
+
+  buildRecord(channelId, name, { result, state, reason = '', attempt = 1, cause = '', at = this.clock }) {
+    const entry = this.entry(channelId, name);
+    const config = this.memberConfigs.get(this.memberKey(channelId, name));
+    return {
+      object: { kind: 'member', channel: channelId, name },
+      description: { channel_revision: this.descriptions.get(channelId)?.revision || 0, ...(entry?.body?.actor ? { actor: entry.body.actor } : {}) },
+      ...(config ? { config: { revision: config.revision } } : {}),
+      attempt,
+      ...(cause ? { cause } : {}),
+      result,
+      state,
+      ...(reason ? { reason } : {}),
+      started_at: at,
+      finished_at: at,
+    };
+  }
+
+  // 一个成员的一次构建：失败就不在名册上（占位没填、设备不在、描述缺失）；业务层
+  // 初始化失败时名册上有它、构建记为失败。两条事件进本频道账本。
+  buildMember(channelId, name, { cause = '', at = this.clock } = {}) {
+    const entry = this.entry(channelId, name);
+    if (!entry) return null;
+    const key = this.memberKey(channelId, name);
+    const { actor, klass, config, effective, missing } = this.layersOf(channelId, entry);
+    let reason = '';
+    if (entry.body?.actor && !actor) reason = `member ${name}: actor description ${entry.body.actor} does not exist; see system.actor.description.list`;
+    else if (!MOCK_CLASSES[klass]) reason = `member ${name}: class ${klass} is not a class this node has`;
+    else if (missing.length) reason = `member ${name}: ${missing.map((row) => `${row.key} is a placeholder still unfilled${row.hint ? ` (${row.hint})` : ''}`).join('; ')}; fill it in this member's own configuration with system.member.config.set`;
+    else if (config.desired_host && !this.channelDeviceIds(channelId).includes(config.desired_host)) reason = `member ${name}: desired_host ${config.desired_host} is neither local-device nor one of this channel's devices; attach it with system.device.attach, or clear desired_host with system.member.config.set`;
+    const started = this.buildRecord(channelId, name, { result: '', state: '', attempt: 1, cause, at });
+    delete started.result; delete started.state; delete started.finished_at;
+    this.events.push({ channelId, type: 'system.build.started', payload: started });
+    let record;
+    if (reason) {
+      const rows = this.rosters.get(channelId) || [];
+      const index = rows.findIndex((row) => row.declared.kind !== 'human' && memberNameOf(row.declared.id) === name);
+      if (index >= 0) rows.splice(index, 1);
+      record = this.buildRecord(channelId, name, { result: 'failed', state: 'retrying', reason, cause, at });
+    } else {
+      const kind = MOCK_CLASSES[klass].kind;
+      let row = this.memberRow(channelId, name);
+      if (row && row.declared.kind !== kind) {
+        this.rosters.get(channelId).splice(this.rosters.get(channelId).indexOf(row), 1);
+        row = null;
+      }
+      if (!row) {
+        this.counter += 1;
+        row = rosterItem({ id: `${kind}:${name}:${this.clock + this.counter}`, kind, body: bodyPhrase(entry.body), name, description: actor?.description || '' }, this.clock);
+        this.rosters.get(channelId)?.push(row);
+      } else {
+        row.declared.body = bodyPhrase(entry.body);
+      }
+      const business = this.businessOf({ class: klass, effective });
+      setRosterLayers(row, { standard: { state: 'ready' }, business: { ...business, ...(business.state === 'ready' ? {} : { since: this.clock }) } }, this.clock);
+      record = business.state === 'ready'
+        ? this.buildRecord(channelId, name, { result: 'ok', state: 'ready', cause, at })
+        : this.buildRecord(channelId, name, { result: 'failed', state: 'retrying', reason: `member ${name}: its business did not start: ${business.reason}`, cause, at });
+    }
+    this.builds.set(key, record);
+    this.events.push({ channelId, type: 'system.build.finished', payload: structuredClone(record) });
+    return record;
+  }
+
+  // 让一个频道的成员对上它的描述：多的删、少的建、变了的重建。
+  realize(channelId, { cause = '', only = null } = {}) {
+    const names = new Set(this.entriesOf(channelId).map((entry) => entry.name));
+    const rows = this.rosters.get(channelId) || [];
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+      const row = rows[index].declared;
+      if (!['agent', 'tool'].includes(row.kind) || row.body === GENERATED_BODY) continue;
+      if (!names.has(memberNameOf(row.id))) rows.splice(index, 1);
+    }
+    for (const key of [...this.builds.keys()]) if (key.startsWith(`${channelId}\u0000`) && !names.has(key.slice(channelId.length + 1))) this.builds.delete(key);
+    for (const name of names) if (!only || only === name) this.buildMember(channelId, name, { cause });
+  }
+
+  takeEvents() {
+    const events = this.events;
+    this.events = [];
+    return events;
+  }
+
+  // 业务层是合成配置的函数：引用的全局 key 缺了 → stuck；class 拒绝配置 → stuck；
+  // tool 的端点还指着那个死端口 → retrying；否则 ready。
+  businessOf({ class: klass, effective }) {
     for (const name of globalReferences(effective)) {
       if (!this.globals.has(`${GLOBAL_PREFIX}${name}`)) return { state: 'stuck', reason: `missing global resource ${GLOBAL_PREFIX}${name}` };
     }
-    const refused = MOCK_CLASSES[record.class]?.refuse?.(effective) || '';
-    if (refused) return { state: 'stuck', reason: `config refused by ${record.class}: ${refused}` };
-    if (record.class === 'mcp-tool' && String(effective.endpoint || '').includes(':9000')) {
+    const refused = MOCK_CLASSES[klass]?.refuse?.(effective) || '';
+    if (refused) return { state: 'stuck', reason: `config refused by ${klass}: ${refused}` };
+    if (klass === 'mcp-tool' && String(effective.endpoint || '').includes(':9000')) {
       return { state: 'retrying', reason: `dial tcp ${String(effective.endpoint).replace(/^\w+:\/\//, '').split('/')[0]}: connection refused; retry in 8s` };
     }
     return { state: 'ready' };
   }
 
-  evaluateMember(channelId, actorId) {
-    const row = this.memberRow(channelId, actorId);
-    const record = this.memberConfigs.get(this.memberKey(channelId, actorId));
-    if (!row || !record) return null;
-    const business = this.businessOf(record);
-    setRosterLayers(row, { standard: { state: 'ready' }, business: { ...business, ...(business.state === 'ready' ? {} : { since: this.clock }) } }, this.clock);
-    return business;
+  memberSummary(channelId, row) {
+    const name = memberNameOf(row.id);
+    const entry = row.kind === 'human' ? null : this.entry(channelId, name);
+    return entry ? bodyPhrase(entry.body) : GENERATED_BODY;
   }
 
-  // system.member.get：成员事实 + 两层 + class/config/来源（只有干活的成员有后三样）。
-  memberInfo(channelId, actorId) {
-    const row = this.memberRow(channelId, actorId);
-    if (!row) throw new TypeError('member does not exist');
-    const standard = rowLayer(row, 'standard');
-    const business = rowLayer(row, 'business');
-    const record = this.memberConfigs.get(this.memberKey(channelId, actorId));
-    return {
-      actor_id: row.declared.id,
-      member: true,
-      present: business ? business.state === 'ready' : true,
-      uptime_ms: 60_000,
+  // system.member.get：成员事实 + 两层 + 它的各层（条目、这一台的配置、合成值、
+  // 来源、占位、最近一次构建）。描述里有但没在跑的成员也答（从描述里答）。
+  memberInfo(channelId, target) {
+    const row = this.memberRow(channelId, target);
+    const name = row ? memberNameOf(row.declared.id) : String(target || '');
+    const entry = row?.declared.kind === 'human' ? null : this.entry(channelId, name);
+    if (!row && !entry) throw operationError('not_found', `${target} is not a member of this channel; see system.member.list`);
+    const standard = row ? rowLayer(row, 'standard') : undefined;
+    const business = row ? rowLayer(row, 'business') : undefined;
+    const status = {
+      actor_id: row?.declared.id || '',
+      member: Boolean(row),
+      present: row ? (business ? business.state === 'ready' : true) : false,
+      ...(row ? { uptime_ms: 60_000 } : {}),
       ...(standard ? { standard } : {}),
       ...(business ? { business } : {}),
-      ...(record ? {
-        class: record.class,
-        config: structuredClone(record.config),
-        source: structuredClone(record.source),
-        ...(record.desired_host ? { desired_host: record.desired_host } : {}),
-      } : {}),
+      name,
+    };
+    if (!entry) return row?.declared.kind === 'human' ? status : { ...status, generated: true };
+    const { klass, config, effective, sources, missing } = this.layersOf(channelId, entry);
+    const newer = entry.body.actor ? [...this.actorDescriptions.values()].filter((value) => value.name === entry.body.actor.split('@')[0] && value.status === 'present' && value.version > Number(entry.body.actor.split('@')[1])).sort((left, right) => right.version - left.version)[0] : null;
+    return {
+      ...status,
+      class: klass,
+      config: structuredClone(effective),
+      desired_host: config.desired_host || 'local-device',
+      body: structuredClone(entry.body),
+      ...(entry.params ? { params: structuredClone(entry.params) } : {}),
+      ...(entry.requires?.length ? { requires: [...entry.requires] } : {}),
+      own_config: { ...(config.desired_host ? { desired_host: config.desired_host } : {}), values: structuredClone(config.values || {}), revision: config.revision || 0 },
+      effective,
+      sources,
+      ...(missing.length ? { missing } : {}),
+      ...(this.builds.get(this.memberKey(channelId, name)) ? { build: structuredClone(this.builds.get(this.memberKey(channelId, name))) } : {}),
+      ...(newer ? { note: `a newer version of its actor description exists: ${newer.ref}; change body.actor with system.member.set to use it` } : {}),
     };
   }
 
-  // system.member.set：config 是顶层补丁（null = 回 class 默认值，即从存储里去掉
-  // 这个键）；换 class 不许换 kind；class 拒绝的配置、引用了不存在的全局 key 都
-  // 整条拒绝。dry_run 只回将要存的样子。
-  setMember(channelId, { member, class: nextClass, config, dry_run: dryRun } = {}) {
+  // system.member.create：频道描述里加一个条目。
+  createMemberEntry(channelId, { name, body, params, requires, dry_run: dryRun } = {}) {
+    const entry = { name: String(name || '').trim(), body: structuredClone(body || {}), ...(params ? { params: structuredClone(params) } : {}), ...(requires?.length ? { requires: [...requires] } : {}) };
+    const { revision } = this.editDescription(channelId, (description) => {
+      if (description.members.some((row) => row.name === entry.name)) throw operationError('invalid_args', `the channel description already has a member named ${JSON.stringify(entry.name)}; change it with system.member.set, or pick another name`);
+      description.members.push(entry);
+    }, { dryRun });
+    return { written: !dryRun, description_revision: revision, ...(dryRun ? { dry_run: true } : {}), entry };
+  }
+
+  // system.member.set：条目原地改——body 整个换、params 合并补丁、requires 整个换（null 清空）。
+  setMemberEntry(channelId, { member, body, params, requires, dry_run: dryRun } = {}) {
+    const name = this.memberRow(channelId, member) ? memberNameOf(this.memberRow(channelId, member).declared.id) : String(member || '');
+    let result = null;
+    const { revision } = this.editDescription(channelId, (description) => {
+      const entry = description.members.find((row) => row.name === name);
+      if (!entry) throw operationError('invalid_args', `the channel description has no member named ${JSON.stringify(name)}; members the runtime keeps itself (the service door, peers, handles) are not in it — see system.channel.description.get`);
+      if (body) entry.body = structuredClone(body);
+      if (params) entry.params = applyMergePatch(entry.params || {}, params);
+      if (requires === null) delete entry.requires;
+      else if (Array.isArray(requires)) entry.requires = [...requires];
+      result = structuredClone(entry);
+    }, { dryRun });
+    return { written: !dryRun, description_revision: revision, ...(dryRun ? { dry_run: true } : {}), entry: result };
+  }
+
+  // system.member.delete：人就是请出去；其余是条目离开描述，这一台的配置一起删。
+  deleteMember(channelId, member) {
+    if (['system', 'svcactor', 'registrar'].includes(member)) throw operationError('protected_actor', 'protected system actor cannot be removed');
     const row = this.memberRow(channelId, member);
-    if (!row) throw new TypeError('member does not exist');
-    const kind = row.declared.kind;
-    if (!['agent', 'tool'].includes(kind)) {
-      const error = new TypeError(`member ${member} is a ${kind}; only agent and tool members have a class and config`);
-      error.code = kind === 'system' || kind === 'peer' ? 'protected_actor' : 'invalid_args';
-      throw error;
-    }
-    const current = this.memberConfigs.get(this.memberKey(channelId, member)) || { class: '', config: {}, source: {} };
-    if (config != null && (typeof config !== 'object' || Array.isArray(config))) throw new TypeError('config must be an object');
-    const className = nextClass == null || nextClass === '' ? current.class : String(nextClass);
-    const definition = MOCK_CLASSES[className];
-    if (!definition) throw new TypeError(`unknown class ${className}`);
-    if (definition.kind !== kind) throw new TypeError(`class ${className} makes a ${definition.kind}; member ${member} is a ${kind}`);
-    const stored = structuredClone(current.config || {});
-    for (const [key, value] of Object.entries(config || {})) {
-      if (value === null) delete stored[key];
-      else stored[key] = structuredClone(value);
-    }
-    const effective = { ...definition.defaults, ...stored };
-    const refused = definition.refuse?.(effective) || '';
-    if (refused) throw new TypeError(`config refused by ${className}: ${refused}`);
-    for (const name of globalReferences(effective)) {
-      if (!this.globals.has(`${GLOBAL_PREFIX}${name}`)) throw new TypeError(`missing global resource ${GLOBAL_PREFIX}${name}`);
-    }
-    const changed = className !== current.class || JSON.stringify(sortKeys(stored)) !== JSON.stringify(sortKeys(current.config || {}));
-    if (dryRun) return { member, changed, class: className, config: stored };
-    if (changed) {
-      this.memberConfigs.set(this.memberKey(channelId, member), { ...current, class: className, config: stored });
-      this.evaluateMember(channelId, member);
-    }
-    return { member, changed, rebuilt: changed };
+    if (row?.declared.kind === 'human') return this.removeActor(channelId, row.declared.id);
+    const name = row ? memberNameOf(row.declared.id) : String(member || '');
+    const { revision } = this.editDescription(channelId, (description) => {
+      const before = description.members.length;
+      description.members = description.members.filter((entry) => entry.name !== name);
+      if (description.members.length === before) throw operationError('invalid_args', `the channel description has no member named ${JSON.stringify(name)}; members the runtime keeps itself (the service door, peers, handles) leave when what they follow from changes`);
+    });
+    this.memberConfigs.delete(this.memberKey(channelId, name));
+    return { written: true, description_revision: revision };
+  }
+
+  memberConfig(channelId, member) {
+    const name = this.memberRow(channelId, member) ? memberNameOf(this.memberRow(channelId, member).declared.id) : String(member || '');
+    const config = this.memberConfigs.get(this.memberKey(channelId, name)) || { desired_host: '', values: {}, revision: 0 };
+    return { member: name, desired_host: config.desired_host || '', values: structuredClone(config.values || {}), revision: config.revision || 0 };
+  }
+
+  // system.member.config.set：这一台的设备和 values 的合并补丁。值本身不检查，
+  // 构建会说它行不行。
+  setMemberConfig(channelId, { member, desired_host: desiredHost, values, dry_run: dryRun } = {}) {
+    const name = this.memberRow(channelId, member) ? memberNameOf(this.memberRow(channelId, member).declared.id) : String(member || '');
+    if (!this.entry(channelId, name)) throw operationError('invalid_args', `${JSON.stringify(name)} is not a member of this channel's description, so it has no configuration of its own here; see system.channel.description.get`);
+    if (values != null && !plainObject(values)) throw operationError('invalid_args', 'values must be a JSON object (a merge patch)');
+    const key = this.memberKey(channelId, name);
+    const current = this.memberConfigs.get(key) || { desired_host: '', values: {}, revision: 0 };
+    const next = {
+      desired_host: desiredHost === undefined ? current.desired_host : String(desiredHost || '').trim(),
+      values: values ? applyMergePatch(current.values, values) : structuredClone(current.values),
+      revision: current.revision,
+    };
+    if (dryRun) return { member: name, desired_host: next.desired_host, values: next.values, revision: next.revision, dry_run: true };
+    next.revision += 1;
+    this.memberConfigs.set(key, next);
+    this.buildMember(channelId, name);
+    return { member: name, desired_host: next.desired_host, values: structuredClone(next.values), revision: next.revision };
   }
 
   now() {
@@ -369,10 +671,6 @@ export class MockDomain {
       type: 'group',
       status: channel.status,
 			owner_principal: channel.owner_principal || ROOT_ID,
-      description: channel.description || '',
-      serving: channel.open ? 1 : 0,
-      default_storage_device_id: this.profiles.get(channel.id)?.default_storage_device_id || 'local-device',
-      spec: {},
       created_at: STAMP,
     };
     const value = item(declared, [measure('open', channel.open, this.clock)]);
@@ -441,68 +739,6 @@ export class MockDomain {
     return true;
   }
 
-  createChannel(parentId, name, principalId = ROOT_ID, initialActorIds = []) {
-    const clean = String(name || '').trim().toLowerCase();
-    if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(clean)) throw new TypeError('channel name must use lowercase letters, numbers or hyphens');
-    const parent = this.channel(parentId);
-    if (!parent || parent.status !== 'present') throw new TypeError('parent channel does not exist');
-		if (!Array.isArray(initialActorIds)) throw new TypeError('initial_actor_ids must be an array');
-		if (new Set(initialActorIds).size !== initialActorIds.length) throw new TypeError('initial_actor_ids contains duplicates');
-		const sourceRows = this.rosters.get(parentId) || [];
-		const sourceActors = initialActorIds.map((actorId) => {
-			const row = sourceRows.find((entry) => entry.declared.id === actorId);
-			if (!row) throw new TypeError(`actor ${actorId} is not an active member of this channel`);
-			if (!['human', 'agent', 'tool'].includes(row.declared.kind)) throw new TypeError(`actor ${actorId} is not importable`);
-			return row.declared;
-		});
-    const id = `${parentId}.${clean}`;
-    if (this.channels.has(id)) throw new TypeError('channel already exists');
-		const channel = { id, name: clean, qualified_name: id, parent_id: parentId, owner_principal: principalId, internal: false, open: true, status: 'present' };
-    this.channels.set(id, channel);
-		for (const source of sourceActors.filter((entry) => entry.kind === 'human')) {
-			this.memberships.push({
-				principal_id: source.principal, channel_id: id,
-				actor_id: `human:${source.principal}:${this.clock + this.counter + 1}`,
-				role: source.principal === principalId ? 'owner' : 'member', status: 'active',
-			});
-			this.counter += 1;
-		}
-		const targetRows = createRoster(channel, this.memberships, this.clock, { seedBusiness: false });
-		for (const source of sourceActors.filter((entry) => entry.kind !== 'human')) {
-			this.counter += 1;
-			const actorId = `${source.kind}:${source.name || source.id}:${this.clock + this.counter}`;
-			targetRows.push(rosterItem({
-				id: actorId, kind: source.kind, declId: source.decl_id || '', name: source.name,
-				description: source.description || '', principal: source.principal || '',
-			}, this.clock));
-		}
-    this.rosters.set(id, targetRows);
-    this.histories.set(id, []);
-    this.profiles.set(id, { channel_id: id, description: '', serving: 1, default_storage_device_id: 'local-device', endpoints: {} });
-    this.bindings.add(`${id}:local-device`);
-    return { ...channel };
-  }
-
-  // system.member.create：只收 decl_id，actor kind 由声明本身决定。
-  createMember(channelId, declId) {
-    const channel = this.channel(channelId);
-    if (!channel || channel.status !== 'present') throw new TypeError('channel does not exist');
-    if (!declId) throw new TypeError('decl_id required');
-    const declaration = this.declarations.get(declId);
-    if (!declaration || declaration.status !== 'present') throw new TypeError('declaration does not exist');
-    const kind = declaration.kind || (String(declaration.default_class || '').includes('codex') ? 'agent' : 'tool');
-    const id = `${kind}-${this.nextId('actor')}`;
-    const rows = this.rosters.get(channelId) || [];
-    rows.push(rosterItem({ id, kind, declId, name: declaration.name || id, description: 'Introduced by mock system actor' }, this.clock));
-    this.memberConfigs.set(this.memberKey(channelId, id), {
-      class: declaration.default_class || declaration.class,
-      config: structuredClone(declaration.config || {}),
-      source: { decl_id: declId },
-    });
-    this.evaluateMember(channelId, id);
-    return { member: id };
-  }
-
   // system.member.admit：只收 principal。
   admitMember(channelId, principal) {
     const channel = this.channel(channelId);
@@ -539,71 +775,98 @@ export class MockDomain {
   restartActor(channelId, actorId) {
     const row = (this.rosters.get(channelId) || []).find((entry) => entry.declared.id === actorId);
     if (!row) throw new TypeError('actor does not exist');
-    if (['system', 'svcactor', 'registrar'].includes(actorId) || String(row.declared.decl_id || '').startsWith('peer:')) {
+    if (['system', 'svcactor', 'registrar'].includes(actorId) || row.declared.body === GENERATED_BODY) {
       const error = new TypeError('protected system actor cannot be restarted');
       error.code = 'protected_actor';
       throw error;
     }
-    // 重启 = 按当前配置重建业务层：缺的全局 key 补上了，卡住的成员就起来了。
-    this.evaluateMember(channelId, actorId);
+    // 重启 = 按当前描述和配置重建：缺的全局 key 补上了，卡住的成员就起来了。
+    this.buildMember(channelId, memberNameOf(actorId));
     return { member: actorId };
   }
 
-  declarationRows() {
-    return [...this.declarations.values()].filter((row) => row.status === 'present').map((row) => item({ ...row }, null));
+  // system.channel.create：从空描述、给定的描述或复制另一个频道的描述（copy_from，
+  // 只抄描述，成员配置留在源频道）开始；humans 是一开始放进来的人。
+  createChannel(parentId, { name, parent, humans = [], description, copy_from: copyFrom } = {}, principalId = ROOT_ID) {
+    const clean = String(name || '').trim();
+    if (!MEMBER_NAME.test(clean)) throw operationError('invalid_args', 'channel name must use lowercase letters, numbers or hyphens');
+    if (description != null && copyFrom) throw operationError('invalid_args', 'give at most one of description (the new channel\'s description) and copy_from (copy another channel\'s)');
+    const parentRef = String(parent || parentId);
+    const parentRow = this.channel(parentRef) || [...this.channels.values()].find((row) => row.qualified_name === parentRef);
+    if (!parentRow || parentRow.status !== 'present') throw operationError('not_found', `parent channel ${parentRef} does not exist; see system.channel.list`);
+    if (parentRow.internal) throw operationError('reserved', 'the lobby has no child channels');
+    let body = this.normalizedDescription({});
+    if (description != null) {
+      if (!plainObject(description)) throw operationError('invalid_args', 'description must be a JSON object');
+      body = this.normalizedDescription(description);
+    } else if (copyFrom) {
+      const source = this.channel(copyFrom) || [...this.channels.values()].find((row) => row.qualified_name === copyFrom);
+      if (!source || source.status !== 'present') throw operationError('not_found', `channel to copy ${copyFrom} does not exist; see system.channel.list`);
+      const copied = this.descriptions.get(source.id);
+      if (!copied) throw operationError('invalid_args', `${source.qualified_name} is built by the platform and has no description to copy`);
+      body = structuredClone(copied.body);
+    }
+    this.validateDescription(body);
+    if (!Array.isArray(humans)) throw operationError('invalid_args', 'humans must be an array of principal ids');
+    for (const human of humans) if (!this.humanPrincipals.has(human)) throw operationError('not_found', `principal ${human} does not exist; see system.principal.list`);
+    const id = `${parentRow.id}.${clean}`;
+    if (this.channels.has(id)) throw operationError('conflict_exists', `channel ${id} already exists (${id})`);
+    const channel = { id, name: clean, qualified_name: id, parent_id: parentRow.id, owner_principal: principalId, internal: false, open: true, status: 'present' };
+    this.channels.set(id, channel);
+    for (const human of new Set(humans)) {
+      this.counter += 1;
+      this.memberships.push({ principal_id: human, channel_id: id, actor_id: `human:${human}:${this.clock + this.counter}`, role: human === principalId ? 'owner' : 'member', status: 'active' });
+    }
+    this.rosters.set(id, createRoster(channel, this.memberships, this.clock, { seedBusiness: false }));
+    this.histories.set(id, []);
+    this.resources.set(id, new Map());
+    this.descriptions.set(id, { body, revision: 1 });
+    this.channelBuilds.set(id, { object: { kind: 'channel', channel: id }, description: { channel_revision: 1 }, attempt: 1, result: 'ok', state: 'serving', started_at: this.clock, finished_at: this.clock });
+    this.realize(id);
+    return { channel_id: id, revision: 1 };
   }
 
-  registerActorTemplate(spec) {
-    if (!spec.id || !spec.name || !spec.class || !spec.visibility) throw new TypeError('id, name, class and visibility are required');
-    if (this.declarations.get(spec.id)?.status === 'present') throw new TypeError('actor template already exists');
-    const row = { ...structuredClone(spec), owner: ROOT_ID, default_class: spec.class, status: 'present', created_at: this.clock, updated_at: this.clock };
-    this.declarations.set(row.id, row);
-    return { ...row };
+  // system.channel.get：目录行、描述、这个节点对它的运行账（health、它自己和每个
+  // 成员最近一次构建）。
+  channelView(channelId) {
+    const channel = this.channel(channelId) || [...this.channels.values()].find((row) => row.qualified_name === channelId);
+    if (!channel) throw operationError('not_found', `channel ${channelId} does not exist; see system.channel.list`);
+    const description = this.descriptions.get(channel.id);
+    const members = [...this.builds.entries()].filter(([key]) => key.startsWith(`${channel.id}\u0000`)).map(([, record]) => structuredClone(record));
+    return {
+      id: channel.id,
+      ...(channel.parent_id ? { parent_id: channel.parent_id } : {}),
+      name: channel.name,
+      qualified_name: channel.qualified_name,
+      type: 'group',
+      status: channel.status,
+      owner_principal: channel.owner_principal || ROOT_ID,
+      created_at: STAMP,
+      temporary: false,
+      ...(description ? { description: { body: structuredClone(description.body), revision: description.revision } } : {}),
+      ...(channel.open ? {} : { health: 'broken', health_reason: 'the channel is not open on this node' }),
+      ...(this.channelBuilds.get(channel.id) ? { build: structuredClone(this.channelBuilds.get(channel.id)) } : {}),
+      ...(members.length ? { members } : {}),
+    };
   }
 
-  editActorTemplate(spec) {
-    const row = this.declarations.get(spec.id);
-    if (!row || row.status !== 'present') throw new TypeError('actor template does not exist');
-    Object.assign(row, structuredClone(spec), spec.class ? { default_class: spec.class } : {}, { updated_at: this.clock });
-    return { ...row };
+  channelDescription(channelRef) {
+    const channel = this.channel(channelRef) || [...this.channels.values()].find((row) => row.qualified_name === channelRef);
+    if (!channel) throw operationError('not_found', `channel ${channelRef} does not exist; see system.channel.list`);
+    const description = this.descriptions.get(channel.id);
+    if (!description) throw operationError('reserved', `${channel.qualified_name} is built by the platform and has no description; system.member.list shows its members`);
+    return { body: structuredClone(description.body), revision: description.revision };
   }
 
-  revokeActorTemplate(id) {
-    const row = this.declarations.get(id);
-    if (!row || row.status !== 'present') throw new TypeError('actor template does not exist');
-    if (String(id).startsWith('atoll-internal:') || String(id).startsWith('peer:')) throw new TypeError('protected actor template');
-    row.status = 'revoked'; row.updated_at = this.clock;
-    return { id, revoked: true };
-  }
-
-  registerChannelTemplate(spec) {
-    if (!spec.id || !spec.name || !spec.visibility || !spec.body) throw new TypeError('id, name, visibility and body are required');
-    if (this.channelTemplates.get(spec.id)?.status === 'present') throw new TypeError('channel template already exists');
-    const row = { ...structuredClone(spec), status: 'present' };
-    this.channelTemplates.set(row.id, row); return { ...row };
-  }
-
-  editChannelTemplate(spec) {
-    const row = this.channelTemplates.get(spec.id);
-    if (!row || row.status !== 'present') throw new TypeError('channel template does not exist');
-    Object.assign(row, structuredClone(spec)); return { ...row };
-  }
-
-  revokeChannelTemplate(id) {
-    const row = this.channelTemplates.get(id);
-    if (!row || row.status !== 'present') throw new TypeError('channel template does not exist');
-    row.status = 'revoked'; return { id, revoked: true };
-  }
-
-  setProfile(channelId, profile) {
+  // system.channel.set：描述里的说明和 serving 两个字段。
+  setChannel(channelId, { description, serving } = {}) {
+    const { revision } = this.editDescription(channelId, (body) => {
+      if (description !== undefined) body.description = String(description || '');
+      if (serving !== undefined) body.serving = Number(serving) === 1 ? 1 : 0;
+    });
     const channel = this.channel(channelId);
-    if (!channel) throw new TypeError('channel does not exist');
-    const current = this.profiles.get(channelId) || {};
-    const next = { ...current, ...structuredClone(profile) };
-    if (!this.bindings.has(`${channelId}:${next.default_storage_device_id}`)) throw new TypeError('default storage device is not attached to channel');
-    this.profiles.set(channelId, next);
-    channel.description = profile.description; channel.open = profile.serving > 0;
-    return structuredClone(next);
+    if (channel && description !== undefined) channel.description = String(description || '');
+    return { channel_id: channelId, revision };
   }
 
   daemonRows() {
@@ -611,10 +874,9 @@ export class MockDomain {
   }
 
   channelDeviceRows(channelId) {
-    const defaultDevice = this.profiles.get(channelId)?.default_storage_device_id || 'local-device';
-    return [...this.devices.values()]
-      .filter((row) => row.status === 'present' && this.bindings.has(`${channelId}:${row.id}`))
-      .map((row) => item({ channel_id: channelId, device_id: row.id, owner_principal: row.owner_principal, name: row.name, status: row.status, attached_at: STAMP, default_storage: row.id === defaultDevice }, [measure('online', row.online, this.clock)]));
+    return this.channelDeviceIds(channelId)
+      .map((id) => this.devices.get(id))
+      .map((row) => item({ channel_id: channelId, device_id: row.id, owner_principal: row.owner_principal, name: row.name, status: row.status, default: row.id === 'local-device' }, [measure('online', row.online, this.clock)], row.id));
   }
 
   mintDevice(name, claimedId = '') {
@@ -627,21 +889,24 @@ export class MockDomain {
   }
 
   retireDevice(id) {
+    if (id === 'local-device') throw operationError('reserved', 'local-device is the node\'s own device and cannot be retired');
     const row = this.devices.get(id); if (!row || row.status !== 'present') throw new TypeError('device does not exist');
-    if ([...this.profiles.values()].some((profile) => profile.default_storage_device_id === id)) throw new TypeError('device is still a channel default storage');
-    row.status = 'retired'; this.bindings = new Set([...this.bindings].filter((value) => !value.endsWith(`:${id}`)));
+    row.status = 'retired';
+    for (const channelId of this.descriptions.keys()) if ((this.descriptions.get(channelId).body.devices || []).includes(id)) this.realize(channelId);
     return { device_id: id, retired: true };
   }
 
+  // system.device.attach / detach：编辑频道描述里的 devices。
   bindDevice(channelId, deviceId, attach) {
-    if (!this.channel(channelId) || !this.devices.get(deviceId) || this.devices.get(deviceId).status !== 'present') throw new TypeError('channel or device does not exist');
-    const key = `${channelId}:${deviceId}`;
-    if (attach) this.bindings.add(key);
-    else {
-      if (this.profiles.get(channelId)?.default_storage_device_id === deviceId) throw new TypeError('device is this channel default storage');
-      this.bindings.delete(key);
-    }
-    return { channel_id: channelId, device_id: deviceId, attached: attach };
+    if (!this.channel(channelId)) throw operationError('not_found', `channel ${channelId} does not exist`);
+    if (deviceId === 'local-device') throw operationError('reserved', 'every channel already has local-device; it is not attached or detached');
+    if (!this.devices.get(deviceId) || this.devices.get(deviceId).status !== 'present') throw operationError('not_found', `device ${deviceId} does not exist; see system.device.list`);
+    const { revision } = this.editDescription(channelId, (body) => {
+      const devices = new Set(body.devices || []);
+      if (attach) devices.add(deviceId); else devices.delete(deviceId);
+      body.devices = [...devices];
+    });
+    return { channel_id: channelId, revision };
   }
 
   // global/ 不是这个频道的：任何频道的资源面都落到同一份空间存储。只有 kv；
@@ -812,10 +1077,9 @@ export class MockDomain {
       behavior: structuredClone(this.behavior),
       obs_complete: this.obsComplete,
       faults: structuredClone(this.faults),
-      declarations: [...this.declarations.values()].map(({ config, ...row }) => ({ ...row, has_config: Boolean(config && Object.keys(config).length) })),
-      channel_templates: [...this.channelTemplates.values()].map((row) => ({ id: row.id, name: row.name, status: row.status })),
+      actor_descriptions: [...this.actorDescriptions.values()].map((row) => structuredClone(row)),
+      descriptions: Object.fromEntries([...this.descriptions].map(([id, row]) => [id, structuredClone(row)])),
       devices: [...this.devices.values()].map(({ key, ...row }) => row),
-      bindings: [...this.bindings],
       resources: Object.fromEntries([...this.resources].map(([id, rows]) => [id, [...rows.values()].map((row) => ({ id: row.id, kind: row.kind, address: row.address }))])),
       tickets: [...this.tickets.values()].map((row) => ({ method: row.method, address: row.address, expiresAt: row.expiresAt, used: row.used })),
       // 全局 key 的值恒不出现在状态里：只给摘要，测试据此核对写进去的是哪个值。
@@ -826,9 +1090,10 @@ export class MockDomain {
         value_sha256: createHash('sha256').update(JSON.stringify(row.value)).digest('hex'),
       })),
       member_configs: [...this.memberConfigs].map(([key, row]) => {
-        const [channelId, actorId] = key.split('\u0000');
-        return { channel_id: channelId, member: actorId, class: row.class, config: structuredClone(row.config) };
+        const [channelId, member] = key.split('\u0000');
+        return { channel_id: channelId, member, desired_host: row.desired_host, values: structuredClone(row.values), revision: row.revision };
       }),
+      builds: [...this.builds.values()].map((row) => structuredClone(row)),
     };
   }
 }
@@ -841,10 +1106,5 @@ function globalReferences(value, found = new Set()) {
   return found;
 }
 
-function sortKeys(value) {
-  if (Array.isArray(value)) return value.map(sortKeys);
-  if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortKeys(value[key])]));
-  return value;
-}
 
 export const createMockDomain = (config) => new MockDomain(config);

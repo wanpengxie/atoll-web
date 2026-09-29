@@ -17,7 +17,9 @@ function projectActor(item) {
     id,
     kind: declared.kind || '',
     name: actorDisplayName({ id, name: declared.name }),
-    decl_id: declared.decl_id || '',
+    // 成员是从什么造出来的，一句话："class kimi"、"actor 小研@2"，运行时
+    // 自己生成的是 "generated"。
+    body: declared.body || '',
     description: declared.description || '',
     principal: declared.principal || '',
     bound: bound?.unknown ? null : Boolean(bound?.value),
@@ -338,9 +340,10 @@ export function useChannelRoster({
   }, [authorityCurrent, owner]);
   const handleEnvelope = useCallback((channelId, envelope) => {
     if (committedOwnerRef.current !== owner) return;
-    const invalidating = [TYPES.narration.memberCreated, TYPES.narration.memberDeleted].includes(envelope?.type)
+    // 成员进出、一次构建结束（成员换了届次或停下）、描述或配置写成：名册都可能变。
+    const invalidating = [TYPES.narration.memberCreated, TYPES.narration.memberDeleted, TYPES.narration.buildFinished].includes(envelope?.type)
       || (envelope?.kind === 'response'
-        && [TYPES.member.create, TYPES.member.admit, TYPES.member.remove, TYPES.member.restart, TYPES.member.set].includes(envelope.type)
+        && [TYPES.member.create, TYPES.member.admit, TYPES.member.remove, TYPES.member.restart, TYPES.member.set, TYPES.member.configSet].includes(envelope.type)
         && argsOf(envelope)?.status === 'completed');
     if (!invalidating) return;
     const timers = storeRef.current.refreshTimers;

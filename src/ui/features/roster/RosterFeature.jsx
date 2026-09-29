@@ -30,7 +30,7 @@ export function RosterFeature({ port = {}, onClose }) {
         const [status, label] = issue ? [`layer-${issue.state}`, issue.label] : presence(row);
         return <button type="button" className={port.selectedActor?.id === row.id ? 'roster-row selected' : 'roster-row'} key={row.id} onClick={() => port.commands?.select?.(row)}>
           <span className={`actor-icon kind-${row.kind || 'unknown'}`}>{String(row.kind || '?').slice(0, 1).toUpperCase()}</span>
-          <div><strong title={row.id}>{actorDisplayName(row)}{row.id === port.selfId && <em>我</em>}</strong><span>{row.kind || 'actor'} · {row.decl_id || row.declarationId || 'channel member'}</span>{issue && <span className={`member-layer-issue layer-${issue.state}`} title={issue.text}>{issue.text}</span>}</div>
+          <div><strong title={row.id}>{actorDisplayName(row)}{row.id === port.selfId && <em>我</em>}</strong><span>{row.kind || 'actor'} · {row.body || 'channel member'}</span>{issue && <span className={`member-layer-issue layer-${issue.state}`} title={issue.text}>{issue.text}</span>}</div>
           <span className={`presence ${status}`}>{label}</span>
         </button>;
       })}
@@ -74,7 +74,7 @@ export function ActorDetailPanel({ port = {}, onClose }) {
     }
   };
   return <SidePanel className="actor-details" ariaLabel="Actor 详情" eyebrow={actor.kind || 'ACTOR'} title={actorDisplayName(actor)} onClose={onClose} headerActions={<button type="button" className="text-button" disabled={port.detailBusy} onClick={describe}>{port.detailBusy ? '读取中…' : '刷新能力'}</button>}>
-    <dl className="work-item-metadata"><dt>Actor ID</dt><dd>{actor.id}</dd><dt>类型</dt><dd>{actor.kind || '未知'}</dd><dt>声明</dt><dd>{actor.decl_id || actor.declarationId || '未声明'}</dd><dt>绑定</dt><dd>{actor.bound === true ? '已绑定' : actor.bound === false ? '未绑定' : '未知'}</dd><dt>说明</dt><dd>{actor.description || '—'}</dd></dl>
+    <dl className="work-item-metadata"><dt>Actor ID</dt><dd>{actor.id}</dd><dt>类型</dt><dd>{actor.kind || '未知'}</dd><dt>来源</dt><dd>{actor.body || '—'}</dd><dt>绑定</dt><dd>{actor.bound === true ? '已绑定' : actor.bound === false ? '未绑定' : '未知'}</dd><dt>说明</dt><dd>{actor.description || '—'}</dd></dl>
     {(actor.standard || actor.business) && <section className="panel-card member-runtime" aria-label="运行状态"><header className="panel-card-header"><h3>运行状态</h3></header><MemberLayers member={actor} /></section>}
     {actor.kind !== 'human' && <MemberConfigSection actor={actor} port={port} />}
     {port.detailError && <p className="governance-error" role="alert">{port.detailError}</p>}

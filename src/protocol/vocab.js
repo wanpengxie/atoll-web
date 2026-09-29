@@ -55,6 +55,11 @@ export const TYPES = Object.freeze({
     memberCreated: 'system.member.created',
     memberDeleted: 'system.member.deleted',
     channelInbound: 'system.channel.inbound',
+    memberUpdated: 'system.member.updated',
+    serviceUpdated: 'system.service.updated',
+    // 构建记录：运行时把写下的描述和配置变成在跑的东西，每次尝试两条事件。
+    buildStarted: 'system.build.started',
+    buildFinished: 'system.build.finished',
   }),
 
   // 频道面：由本频道的 system actor 直接受理。
@@ -65,9 +70,12 @@ export const TYPES = Object.freeze({
     get: 'system.member.get',
     remove: 'system.member.delete',
     restart: 'system.member.restart',
-    // 改一个成员的 class / 配置。config 是顶层补丁：给出的键整键替换，值为
-    // null 的键回到 class 默认值；dry_run 只算不写。
+    // 改一个成员在频道描述里的条目：body（class 或 名字@版本）、params（RFC 7396
+    // 合并补丁）、requires；dry_run 只算不写。
     set: 'system.member.set',
+    // 这一台的配置（本频道库里）：desired_host 和 values（合并补丁）。
+    configGet: 'system.member.config.get',
+    configSet: 'system.member.config.set',
     // 破窗恢复：给频道内所有干活的成员（agent/tool）换一届任期。不删任何东西。
     restartAll: 'system.member.restart_all',
   }),
@@ -82,20 +90,18 @@ export const TYPES = Object.freeze({
     remove: 'system.channel.delete',
   }),
   channelDevice: Object.freeze({ list: 'system.channel.device.list' }),
-  channelTemplate: Object.freeze({
-    create: 'system.channel.template.create',
-    get: 'system.channel.template.get',
-    list: 'system.channel.template.list',
-    set: 'system.channel.template.set',
-    remove: 'system.channel.template.delete',
+  // 频道描述（c0 里的那份文档）：成员条目、服务、说明、外挂设备。频道内的
+  // member.create/set/delete 和 channel.set、device.attach/detach 都是在改它。
+  channelDescription: Object.freeze({ get: 'system.channel.description.get' }),
+  // Actor 描述：不可变的 名字@版本。新建同名 = 下一个版本；退役只让它不能再被新
+  // 成员引用，已经引用它的成员照旧。
+  actorDescription: Object.freeze({
+    create: 'system.actor.description.create',
+    get: 'system.actor.description.get',
+    list: 'system.actor.description.list',
+    retire: 'system.actor.description.retire',
   }),
-  actorTemplate: Object.freeze({
-    create: 'system.actor.template.create',
-    get: 'system.actor.template.get',
-    list: 'system.actor.template.list',
-    set: 'system.actor.template.set',
-    remove: 'system.actor.template.delete',
-  }),
+  classes: Object.freeze({ list: 'system.class.list' }),
   principal: Object.freeze({
     create: 'system.principal.create',
     login: 'system.principal.login',
@@ -131,8 +137,16 @@ export const DECISIONS = Object.freeze({ approve: 'approve', reject: 'reject' })
 // c0 的 registrar，所以客户端只需要认识这一个收件人。
 export const SYSTEM_ACTOR_ID = 'system';
 
-// 由 genesis 铸出、不可由人增删的声明 id（platform/lagoon/contracts.go）。
-export const SYSTEM_DECL_IDS = Object.freeze(['registrar', 'svcactor']);
+// 运行时自己生成、不在频道描述里的成员名（platform/lagoon/contracts.go）。
+export const SYSTEM_MEMBER_NAMES = Object.freeze(['registrar', 'svcactor']);
+
+// 节点自己的设备：除大厅外每个频道都有它，文件和成员默认都在它上面，不需要
+// 任何设置。
+export const LOCAL_DEVICE_ID = 'local-device';
+
+// member.list / OBS 名册里 body 的这个值说：成员是运行时自己生成的（服务门、
+// peer、handle），没有描述条目。
+export const GENERATED_BODY = 'generated';
 
 // 叙事的判据是 visibility，不是词的前缀：system.* 里既有 visibility=system 的
 // 事件，也有 visibility=public 的治理请求/回复——后者是正经的 turn。

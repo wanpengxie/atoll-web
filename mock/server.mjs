@@ -123,11 +123,11 @@ function channelRow(id, { parentId = '', name = id, qualifiedName = id, serving 
   return item(declared, [measure('open', serving)]);
 }
 
-function rosterItem({ id, kind, declId = '', name = id, description = '', bound = true, online = null }) {
+function rosterItem({ id, kind, body = '', name = id, description = '', bound = true, online = null }) {
   const declared = {
     id,
     kind,
-    ...(declId ? { decl_id: declId } : {}),
+    ...(body ? { body } : {}),
     ...(name ? { name } : {}),
     ...(description ? { description } : {}),
   };
@@ -298,7 +298,7 @@ function seededHistory(channelId, behavior = {}) {
       sender: system,
       kind: 'event',
       type: 'system.member.created',
-      payload: { member: actorId, decl_id: actorId === 'steward' ? 'mock:steward' : 'svcactor', by: { caller: { channel: channelId, actor: selfActorId } } },
+      payload: { member: actorId, by: 'runtime', class: actorId === 'steward' ? 'codex' : 'svcactor' },
       visibility: 'system',
       ts: base + 50_000 + index,
     }));
@@ -554,7 +554,7 @@ export function createMockServer({
     if (domain.behavior.message !== 'agent-tree') return;
     const rows = rosters.get('c0');
     if (rows && !rows.some((row) => row.declared.id === REVIEWER_ACTOR_ID)) {
-      rows.push(rosterItem({ id: REVIEWER_ACTOR_ID, kind: 'agent', declId: 'mock:analyst', name: 'Reviewer', description: 'Mock review agent' }));
+      rows.push(rosterItem({ id: REVIEWER_ACTOR_ID, kind: 'agent', body: 'class codex-agent', name: 'Reviewer', description: 'Mock review agent' }));
     }
   };
   applyScenarioRoster();
@@ -1052,18 +1052,27 @@ export function createMockServer({
         visibility: 'system',
         ts: domain.now(),
       }));
-      const channelReply = (value) => ({
-        ...value,
-        owner_principal: ROOT_ID,
-        serving: value.open ? 1 : 0,
-        profile: { serving: value.open ? 1 : 0, endpoints: {} },
+      // 构建记录（system.build.*）：领域层在写入时记下，这里按频道追加进各自账本。
+      later(40, () => {
+        for (const event of domain.takeEvents()) {
+          append(event.channelId, envelope({
+            id: domain.nextId(`${event.channelId}-build-event`),
+            channelId: event.channelId,
+            sender: { kind: 'system', id: SYSTEM_ACTOR_ID },
+            kind: 'event',
+            type: event.type,
+            payload: event.payload,
+            visibility: 'system',
+            ts: domain.now(),
+          }));
+        }
       });
       try {
         switch (payload.msg_type) {
           // ---- 频道面（system actor 自己答）----
           case 'system.member.list': {
             assertClosedPayload(body, []);
-            // present = 能服务 = 业务层就绪；两层各带没就绪的原因。
+            // present = 能服务 = 业务层就绪；两层各带没就绪的原因；body 说它从什么造。
             const actors = (rosters.get(channelId) || [])
               .filter((entry) => entry.declared.id !== SYSTEM_ACTOR_ID)
               .map((entry) => {
@@ -1072,6 +1081,7 @@ export function createMockServer({
                 const business = rowLayer(entry, 'business');
                 return {
                   id: row.id, kind: row.kind, ...(row.name ? { name: row.name } : {}),
+                  body: domain.memberSummary(channelId, row),
                   present: business ? business.state === 'ready' : true,
                   ...(standard ? { standard } : {}), ...(business ? { business } : {}),
                 };
@@ -1084,17 +1094,26 @@ export function createMockServer({
             completeFlat(domain.memberInfo(channelId, body.member));
             return;
           }
-          case 'system.member.set': {
-            assertClosedPayload(body, ['member', 'class', 'config', 'dry_run']);
-            if (!body.member) throw new TypeError('member required');
-            completeFlat(domain.setMember(channelId, body));
+          case 'system.member.create': {
+            assertClosedPayload(body, ['name', 'body', 'params', 'requires', 'dry_run']);
+            completeFlat(domain.createMemberEntry(channelId, body));
             return;
           }
-          case 'system.member.create': {
-            assertClosedPayload(body, ['decl_id']);
-            const value = domain.createMember(channelId, body.decl_id);
-            narrate('system.member.created', { member: value.member, decl_id: body.decl_id });
-            completeFlat(value);
+          case 'system.member.set': {
+            assertClosedPayload(body, ['member', 'body', 'params', 'requires', 'dry_run']);
+            if (!body.member) throw new TypeError('system.member.set takes {member, body?, params? (a merge patch), requires? (null clears), dry_run?}');
+            completeFlat(domain.setMemberEntry(channelId, body));
+            return;
+          }
+          case 'system.member.config.get': {
+            assertClosedPayload(body, ['member']);
+            completeFlat(domain.memberConfig(channelId, body.member));
+            return;
+          }
+          case 'system.member.config.set': {
+            assertClosedPayload(body, ['member', 'desired_host', 'values', 'dry_run']);
+            if (!body.member) throw new TypeError('system.member.config.set takes {member, desired_host?, values? (a merge patch), dry_run?}');
+            completeFlat(domain.setMemberConfig(channelId, body));
             return;
           }
           case 'system.member.admit': {
@@ -1106,8 +1125,9 @@ export function createMockServer({
           }
           case 'system.member.delete': {
             assertClosedPayload(body, ['member']);
-            const value = domain.removeActor(channelId, body.member);
-            narrate('system.member.deleted', { member: body.member, reason: 'removed' });
+            const row = domain.memberRow(channelId, body.member);
+            const value = domain.deleteMember(channelId, body.member);
+            if (row) narrate('system.member.deleted', { member: row.declared.id, reason: 'removed' });
             completeFlat(value);
             return;
           }
@@ -1126,10 +1146,8 @@ export function createMockServer({
 
           // ---- 空间面（system actor 转交 registrar）----
           case 'system.channel.create': {
-						assertClosedPayload(body, ['name', 'recipe', 'initial_actor_ids']);
-						if (!Object.hasOwn(body, 'initial_actor_ids')) throw new TypeError('initial_actor_ids is required; send [] for an empty channel');
-						const created = domain.createChannel(channelId, body.name, principal, body.initial_actor_ids);
-            complete({ channel_id: created.id });
+            assertClosedPayload(body, ['name', 'parent', 'type', 'temporary', 'humans', 'description', 'copy_from']);
+            complete(domain.createChannel(channelId, body, principal));
             // attach carries the authoritative membership snapshot. Creating a
             // channel changes that snapshot, so reconnect after the response
             // has landed just like explicit grant/revoke does below.
@@ -1145,15 +1163,17 @@ export function createMockServer({
           }
           case 'system.channel.get': {
             assertClosedPayload(body, ['channel_id']);
-            const value = domain.channel(body.channel_id);
-            if (!value) throw new TypeError('channel does not exist');
-            complete(channelReply(value));
+            complete(domain.channelView(body.channel_id));
+            return;
+          }
+          case 'system.channel.description.get': {
+            assertClosedPayload(body, ['channel']);
+            complete(domain.channelDescription(body.channel || channelId));
             return;
           }
           case 'system.channel.set': {
-            assertClosedPayload(body, ['channel_id', 'description', 'serving', 'default_storage_device_id']);
-            if (body.channel_id !== channelId) throw new TypeError('profile must target the source channel');
-            complete(domain.setProfile(channelId, body));
+            assertClosedPayload(body, ['channel_id', 'description', 'serving']);
+            complete(domain.setChannel(body.channel_id || channelId, body));
             return;
           }
           case 'system.channel.device.list':
@@ -1172,51 +1192,21 @@ export function createMockServer({
             later(80, () => domain.retireChannel(targetChannelId));
             return;
           }
-          case 'system.actor.template.list':
-            assertClosedPayload(body, []);
-            complete([...domain.declarations.values()].filter((row) => row.status === 'present').map((row) => ({ ...row })));
+          case 'system.actor.description.list':
+            assertClosedPayload(body, ['name']);
+            complete([...domain.actorDescriptions.values()].filter((row) => !body.name || row.name === body.name).map((row) => structuredClone(row)));
             return;
-          case 'system.actor.template.get': {
-            assertClosedPayload(body, ['id']);
-            const row = domain.declarations.get(body.id);
-            if (!row || row.status !== 'present') throw new TypeError('declaration does not exist');
-            complete({ ...row });
+          case 'system.actor.description.get':
+            assertClosedPayload(body, ['name', 'version']);
+            complete(domain.actorDescription(body.name, body.version));
             return;
-          }
-          case 'system.actor.template.create':
-            assertClosedPayload(body, ['id', 'name', 'description', 'class', 'config', 'visibility', 'singleton']);
-            complete(domain.registerActorTemplate(body));
+          case 'system.actor.description.create':
+            assertClosedPayload(body, ['name', 'class', 'params', 'description', 'visibility']);
+            complete(domain.putActorDescription(body));
             return;
-          case 'system.actor.template.set':
-            assertClosedPayload(body, ['id', 'name', 'description', 'class', 'config', 'visibility', 'singleton']);
-            complete(domain.editActorTemplate(body));
-            return;
-          case 'system.actor.template.delete':
-            assertClosedPayload(body, ['id']);
-            complete(domain.revokeActorTemplate(body.id));
-            return;
-          case 'system.channel.template.list':
-            assertClosedPayload(body, []);
-            complete([...domain.channelTemplates.values()].filter((row) => row.status === 'present').map((row) => ({ ...row })));
-            return;
-          case 'system.channel.template.get': {
-            assertClosedPayload(body, ['id']);
-            const row = domain.channelTemplates.get(body.id);
-            if (!row || row.status !== 'present') throw new TypeError('channel template does not exist');
-            complete({ ...row });
-            return;
-          }
-          case 'system.channel.template.create':
-            assertClosedPayload(body, ['id', 'name', 'description', 'visibility', 'body']);
-            complete(domain.registerChannelTemplate(body));
-            return;
-          case 'system.channel.template.set':
-            assertClosedPayload(body, ['id', 'name', 'description', 'visibility', 'body']);
-            complete(domain.editChannelTemplate(body));
-            return;
-          case 'system.channel.template.delete':
-            assertClosedPayload(body, ['id']);
-            complete(domain.revokeChannelTemplate(body.id));
+          case 'system.actor.description.retire':
+            assertClosedPayload(body, ['name', 'version']);
+            complete(domain.retireActorDescription(body.name, body.version));
             return;
           case 'system.device.create':
             assertClosedPayload(body, ['name']);
@@ -1229,7 +1219,7 @@ export function createMockServer({
           case 'system.device.attach':
           case 'system.device.detach':
             assertClosedPayload(body, ['channel_id', 'device_id']);
-            complete(domain.bindDevice(body.channel_id, body.device_id, payload.msg_type.endsWith('.attach')));
+            complete(domain.bindDevice(body.channel_id || channelId, body.device_id, payload.msg_type.endsWith('.attach')));
             return;
           case 'system.device.list':
             assertClosedPayload(body, []);
@@ -2240,8 +2230,8 @@ export function createMockServer({
         json(response, 200, observation('space', 'daemons', domain.daemonRows()));
         return;
       }
-      if (path === '/obs/space/decls') {
-        json(response, 200, observation('space', 'decls', domain.declarationRows()));
+      if (path === '/obs/space/actor-descriptions') {
+        json(response, 200, observation('space', 'actor-descriptions', domain.actorDescriptionRows()));
         return;
       }
       const match = path.match(/^\/obs\/channel\/([^/]+)\/(profile|actors|devices)$/);
@@ -2253,9 +2243,6 @@ export function createMockServer({
         }
         if (match[2] === 'profile') {
           const profile = domain.channelRow(domain.channel(channelId), { withKey: false });
-          profile.declared.description = domain.profiles.get(channelId)?.description || profile.declared.description;
-          profile.declared.serving = domain.profiles.get(channelId)?.serving ?? profile.declared.serving;
-          profile.declared.endpoints = structuredClone(domain.profiles.get(channelId)?.endpoints || {});
           json(response, 200, observation(channelId, 'profile', [profile]));
         } else if (match[2] === 'devices') {
           json(response, 200, observation(channelId, 'devices', domain.channelDeviceRows(channelId)));
@@ -2299,14 +2286,14 @@ export function createMockServer({
     if (request.method === 'GET' && path === '/mock/introduce') {
       introduced += 1;
       const actorId = `introduced-${introduced}`;
-      rosters.get('c0').push(rosterItem({ id: actorId, kind: 'agent', declId: `mock:${actorId}`, name: actorId, description: 'Introduced codex agent' }));
+      rosters.get('c0').push(rosterItem({ id: actorId, kind: 'agent', body: 'class codex', name: actorId, description: 'Introduced codex agent' }));
       append('c0', envelope({
         id: domain.nextId(`c0-registered-${actorId}`),
         channelId: 'c0',
         sender: { kind: 'system', id: SYSTEM_ACTOR_ID },
         kind: 'event',
         type: 'system.member.created',
-        payload: { member: actorId, decl_id: `mock:${actorId}` },
+        payload: { member: actorId, by: 'runtime', class: 'codex' },
         visibility: 'system',
       }));
       json(response, 200, { actor_id: actorId });

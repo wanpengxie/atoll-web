@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { diagnostic } from '../../model/diagnostics.js';
 import { normalizeFeatureDirectory } from '../../model/feature-files.js';
+import { LOCAL_DEVICE_ID } from '../../protocol/vocab.js';
 import {
   assessRequestOwner,
   captureRequestOwner,
@@ -191,11 +192,11 @@ function errorText(error) {
   return error?.detail || error?.message || String(error);
 }
 
+// 频道的文件默认放在节点的 local-device 上，不读任何设置；频道描述里外挂的
+// 设备只是另外几个可选的位置。设备列表里 default 标着的就是 local-device。
 function availableDefaultStorageDeviceId(channel, devices) {
-  const configured = devices.find((row) => row?.defaultStorage === true)?.id
-    || channel?.default_storage_device_id
-    || 'local-device';
-  return devices.some((row) => row?.id === configured) ? configured : '';
+  const local = devices.find((row) => row?.defaultStorage === true)?.id || LOCAL_DEVICE_ID;
+  return devices.some((row) => row?.id === local) ? local : '';
 }
 
 function projectChannelDevices(observation) {
@@ -207,7 +208,7 @@ function projectChannelDevices(observation) {
     return [{
       id,
       name: declared.name || declared.device_id || item.key,
-      defaultStorage: declared.default_storage === true,
+      defaultStorage: declared.default === true || id === LOCAL_DEVICE_ID,
       online: measures.online,
     }];
   });
@@ -1126,8 +1127,8 @@ export function useAttachmentTransactions({
       const devices = acquire.value || [];
       const daemonId = uploadDeviceId || availableDefaultStorageDeviceId(channel, devices);
       const daemon = devices.find((row) => row.id === daemonId);
-      if (!daemon) throw new TypeError('频道没有可用的默认文件存储设备');
-      if (daemon.online === false) throw new TypeError(`频道默认文件存储设备 ${daemon.name || daemon.id} 当前离线`);
+      if (!daemon) throw new TypeError('频道的默认存储位置 local-device 当前不可用');
+      if (daemon.online === false) throw new TypeError(`文件存储设备 ${daemon.name || daemon.id} 当前离线`);
       const uploaded = [];
       let uploadFailure = null;
       const occupiedNames = new Set((associateDraft

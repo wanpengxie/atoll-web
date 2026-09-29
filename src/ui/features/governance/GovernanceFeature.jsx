@@ -1,13 +1,15 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { actorDisplayName } from '../../../model/actor-display.js';
-import { isManageableDeclaration, isVisibleActor } from '../../../model/actor-visibility.js';
+import { actorDescriptionRef, actorMemberName, isVisibleActor } from '../../../model/actor-visibility.js';
 import { memberLayerIssue } from '../../../model/member-config.js';
+import { LOCAL_DEVICE_ID } from '../../../protocol/vocab.js';
 import { TERMINAL_RESULT_UNAVAILABLE } from '../../../model/terminal-result.js';
 import { InlineConfirmation } from '../../primitives/InlineConfirmation.jsx';
 import { PanelCard } from '../../primitives/PanelCard.jsx';
 import { SelectMenu } from '../../primitives/SelectMenu.jsx';
 import { SidePanel } from '../../primitives/SidePanel.jsx';
 import { useModalFocus } from '../../primitives/useModalFocus.js';
+import { BuildLine } from './BuildLine.jsx';
 import { GlobalKeysPanel } from './GlobalKeysPanel.jsx';
 
 function errorMessage(error) {
@@ -78,19 +80,6 @@ function OperationState({ operation, terminal = false, onRefresh, onReenter }) {
   </>;
 }
 
-function declarationKind(row) {
-  const declaration = row?.declared || row || {};
-  const explicit = declaration.kind || declaration.actor_kind;
-  if (explicit === 'agent' || explicit === 'tool') return explicit;
-  const className = String(declaration.default_class || declaration.class || '').toLowerCase();
-  if (className.includes('agent') || className.includes('codex') || className.includes('claude')) return 'agent';
-  // Directory projections normally carry `kind`; the id fallback keeps a
-  // sparse declaration row observable without inventing a second source of
-  // authority. The command still sends only the declaration id.
-  const id = String(declaration.id || '');
-  return /(^|[:._-])(agent|assistant)([:._-]|$)/i.test(id) ? 'agent' : 'tool';
-}
-
 function participantTypeLabel(kind) {
   return kind === 'human' ? '用户' : kind === 'agent' ? 'Agent' : '工具';
 }
@@ -134,24 +123,62 @@ function compareParticipantCandidates(left, right) {
     || String(left?.value || '').localeCompare(String(right?.value || ''), 'zh-CN');
 }
 
-function ChannelOverview({ channel, port }) {
+// channel.get 的 health：空 = 正常；broken = 频道打不开（原因在 health_reason）。
+const HEALTH_LABELS = Object.freeze({ broken: '损坏' });
+
+// 频道设置：说明文字、是否对外服务（channel.set）；外挂设备（device.attach /
+// detach）；频道的健康、它自己和每个成员最近一次构建（channel.get）。频道
+// 状态按需读——打开面板不发任何请求。
+function ChannelSettings({ channel, port }) {
   const currentChannel = channel || {};
-  const [description, setDescription] = useState(channel?.description || '');
-  const [child, setChild] = useState({ name: '', purpose: '', templateId: '' });
+  const commands = port.commands || {};
+  const [view, setView] = useState(null);
+  const [reading, setReading] = useState(false);
+  const [readError, setReadError] = useState('');
+  const [description, setDescription] = useState('');
+  const [serving, setServing] = useState(false);
   const action = useCommand(port.commands, 'channel');
-  useEffect(() => setDescription(channel?.description || ''), [channel?.description, channel?.id]);
+  const channelIdRef = useRef(channel?.id);
+  channelIdRef.current = channel?.id;
+  useEffect(() => { setView(null); setReadError(''); setDescription(''); setServing(false); }, [channel?.id]);
   const children = port.children || [];
-  // Channel governance consumes only its canonical Workspace projection. The
-  // space port is a separate owner and must never be read as a compatibility
-  // fallback for a channel creation decision.
-  const templates = port.channelTemplates || [];
-  const refreshDirectory = typeof port.commands?.refresh === 'function'
-    ? () => port.commands.refresh('directory')
+  const refreshDirectory = typeof commands.refresh === 'function'
+    ? () => commands.refresh('directory')
     : undefined;
+  const readable = typeof commands.readChannel === 'function';
+  const body = view?.description?.body || null;
+  const platformChannel = Boolean(view) && !view.description;
+  const read = async () => {
+    if (!readable) return;
+    const target = channel?.id;
+    setReading(true);
+    setReadError('');
+    try {
+      const value = await commands.readChannel(target);
+      if (channelIdRef.current !== target) return;
+      setView(value || {});
+      setDescription(String(value?.description?.body?.description || ''));
+      setServing(Number(value?.description?.body?.serving || 0) === 1);
+    } catch (failure) {
+      if (channelIdRef.current === target) setReadError(errorMessage(failure));
+    } finally {
+      if (channelIdRef.current === target) setReading(false);
+    }
+  };
+  const describedDevices = new Set(Array.isArray(body?.devices) ? body.devices : []);
+  const usable = new Set((port.channelDevices || []).map((row) => row.id));
+  const spaceDevices = (port.spaceDevices || []).filter((row) => row.id && row.id !== LOCAL_DEVICE_ID);
+  const saveProfile = async () => {
+    await action.submit('update_profile', { channelId: channel?.id, description, serving }, { refresh: 'directory', submitted: '频道描述已写入；构建结果重新读取频道状态查看。' });
+    if (readable) await read();
+  };
+  const toggleDevice = async (row, attach) => {
+    await action.submit(attach ? 'attach_device' : 'detach_device', { channelId: channel?.id, deviceId: row.id }, { refresh: 'directory', submitted: attach ? '设备已写进频道描述。' : '设备已从频道描述移除。' });
+    if (readable) await read();
+  };
   return <>
     {action.error && <p className="governance-error" role="alert">{action.error}</p>}
     <OperationState operation={action.operation} />
-    {port.candidatesUnavailable && <p className="governance-error" role="status">成员候选目录当前不可用；已有名册仍可查看和刷新。</p>}
     <PanelCard className="channel-facts">
       <header><h3>{displayChannelName(currentChannel)}</h3><span className={currentChannel.open === true || currentChannel.serving === true ? 'fact-ok' : 'fact-warn'}>{channelStatusLabel(currentChannel)}</span></header>
       <dl>
@@ -159,21 +186,56 @@ function ChannelOverview({ channel, port }) {
         <dt>父级</dt><dd>{channel?.parent_id || '无（空间根）'}</dd>
         <dt>Owner</dt><dd>{channel?.owner_principal || '—'}</dd>
         <dt>状态</dt><dd>{channelStatusLabel(channel)}</dd>
-        <dt>说明</dt><dd>{channel?.description || '—'}</dd>
       </dl>
       {refreshDirectory && <button type="button" className="secondary-button" disabled={action.busy} onClick={refreshDirectory}>刷新目录事实</button>}
     </PanelCard>
+    <PanelCard className="channel-runtime" title="频道状态" action={<button type="button" className="text-button" disabled={!readable || reading} onClick={read}>{reading ? '读取中…' : view ? '刷新' : '读取'}</button>}>
+      {!readable && <p className="governance-empty">当前会话不能读取频道状态。</p>}
+      {readable && !view && !reading && !readError && <p className="governance-empty">频道的描述、健康和构建结果按需读取：点「读取」发一条 system.channel.get。</p>}
+      {readError && <p className="governance-error" role="alert">{readError}</p>}
+      {view && <>
+        <dl className="channel-health">
+          <dt>健康</dt><dd className={`health-${view.health || 'ok'}`}>{view.health ? HEALTH_LABELS[view.health] || view.health : '正常'}{view.health_reason ? `：${view.health_reason}` : ''}</dd>
+          {body && <><dt>描述版本</dt><dd>第 {view.description.revision} 版</dd></>}
+          {body && <><dt>说明</dt><dd>{body.description || '—'}</dd></>}
+          {body && <><dt>对外服务</dt><dd>{Number(body.serving || 0) === 1 ? '是' : '否'}</dd></>}
+        </dl>
+        {platformChannel && <p className="governance-empty">这个频道由平台搭建，没有频道描述；成员固定。</p>}
+        {view.build && <BuildLine record={view.build} label="频道自身" />}
+        <div className="member-builds" aria-label="成员构建摘要">
+          {(view.members || []).map((record, index) => <BuildLine key={`${record?.object?.name || index}`} record={record} />)}
+          {!(view.members || []).length && <p className="governance-empty">还没有成员构建记录。</p>}
+        </div>
+      </>}
+    </PanelCard>
+    {body && <PanelCard className="governance-form" title="说明与服务">
+      <label>说明<textarea aria-label="频道说明" rows="3" value={description} onChange={(event) => setDescription(event.target.value)} /></label>
+      <label className="checkbox-row"><input type="checkbox" aria-label="对外服务" checked={serving} onChange={(event) => setServing(event.target.checked)} /> 对外服务（频道的服务门接受外部请求）</label>
+      <button type="button" className="primary-button" disabled={port.disabled || action.busy} onClick={saveProfile}>保存</button>
+    </PanelCard>}
+    {body && <PanelCard className="channel-devices" title="设备">
+      <p className="field-hint">频道的文件和成员默认在 local-device 上；这里挂上的设备是另外几个可选的位置，成员在自己的配置里选 desired_host 才会去那里。</p>
+      <div className="device-row default"><div><strong>local-device</strong><small>默认 · 不需要挂载</small></div></div>
+      {spaceDevices.map((row) => {
+        const attached = describedDevices.has(row.id);
+        return <div className="device-row" key={row.id} data-device-id={row.id}>
+          <div><strong>{row.name || row.id}</strong><small>{row.id} · {row.online === true ? '在线' : row.online === false ? '离线' : '未知'} · {attached ? (usable.has(row.id) ? '已挂载' : '已写入描述') : '未挂载'}</small></div>
+          <button type="button" disabled={port.disabled || action.busy} onClick={() => toggleDevice(row, !attached)}>{attached ? '卸载' : '挂到本频道'}</button>
+        </div>;
+      })}
+      {!spaceDevices.length && <p className="governance-empty">空间里还没有别的设备；可在「空间管理 → 设备」创建。</p>}
+    </PanelCard>}
     <PanelCard title="子频道" titleMeta={String(children.length)} action={refreshDirectory && <button type="button" className="text-button" disabled={action.busy} onClick={refreshDirectory}>刷新</button>}>
       {children.map((row) => <div className="child-channel" key={row.id}><span># {row.name || row.qualified_name || row.id}</span><small>{row.open === true ? '服务中' : row.status || '等待服务'}</small></div>)}
       {!children.length && <p className="governance-empty">还没有子频道。</p>}
     </PanelCard>
-    <PanelCard className="governance-form" title="编辑频道说明"><label>说明<textarea rows="3" value={description} onChange={(event) => setDescription(event.target.value)} /></label><button type="button" className="primary-button" disabled={port.disabled || action.busy} onClick={() => action.submit('update_profile', { channelId: channel?.id, description }, { refresh: 'directory', submitted: '频道资料已进入提交队列，并已请求目录刷新；最终以账本与目录投影为准。' })}>保存频道资料</button></PanelCard>
-    <PanelCard className="governance-form" title="创建子频道"><p>在 {displayChannelName(channel)} 下创建；提交后最终状态以账本和目录投影为准。</p><label>名称<input value={child.name} onChange={(event) => setChild({ ...child, name: event.target.value })} /></label><label>用途<textarea rows="3" value={child.purpose} onChange={(event) => setChild({ ...child, purpose: event.target.value })} /></label><label>频道模板<SelectMenu ariaLabel="频道模板" value={child.templateId} options={templates.map((row) => ({ value: row.id, label: row.name || row.id }))} onChange={(templateId) => setChild({ ...child, templateId })} /></label>{!templates.length && <p className="field-hint">当前目录没有可用的频道模板；创建仍可使用空配方。</p>}<button type="button" className="primary-button" disabled={port.disabled || action.busy || !child.name.trim()} onClick={() => action.submit('create_child', { ...child, parentId: channel?.id }, { refresh: 'directory', submitted: '子频道创建已进入提交队列，并已请求目录刷新；最终以账本与目录投影为准。' })}>创建子频道</button></PanelCard>
   </>;
 }
 
 function ChannelMembers({ channel, port }) {
   const [candidate, setCandidate] = useState('');
+  const [memberName, setMemberName] = useState('');
+  const [className, setClassName] = useState('');
   const [confirm, setConfirm] = useState(null);
   const [directOperation, setDirectOperation] = useState(null);
   const [submittedMember, setSubmittedMember] = useState(null);
@@ -191,7 +253,7 @@ function ChannelMembers({ channel, port }) {
   const submittedMemberPresent = Boolean(submittedMember && roster.some((row) => (
     row.id === submittedMember.id
       || (submittedMember.kind === 'principal' && row.principal === submittedMember.id)
-      || (submittedMember.kind === 'declaration' && row.decl_id === submittedMember.id)
+      || (submittedMember.kind !== 'principal' && actorMemberName(row.id) === submittedMember.name)
   )));
   const memberReady = Boolean(
     submittedMember
@@ -204,18 +266,21 @@ function ChannelMembers({ channel, port }) {
     .filter((row) => eligiblePrincipal(row) && !currentPrincipals.has(row.id))
     .map((row) => ({ value: `principal:${row.id}`, label: `${row.display_name || row.email || row.id} · 用户`, row, kind: 'principal', participantKind: 'human' }))
     .sort(compareParticipantCandidates);
-  const declarationCandidates = (port.declarations || []).filter(isManageableDeclaration)
-    .map((entry) => entry?.declared || entry)
-    .map((row) => {
-      const participantKind = declarationKind(row);
-      return { value: `declaration:${row.id}`, label: `${row.name || row.id} · ${participantTypeLabel(participantKind)}`, row, kind: 'declaration', participantKind };
-    })
+  const descriptionCandidates = (port.actorDescriptions || [])
+    .map((row) => ({ value: `description:${actorDescriptionRef(row)}`, label: `${actorDescriptionRef(row)} · Actor 描述（class ${row.class || '?'}）`, row: { ...row, id: actorDescriptionRef(row) }, kind: 'description', participantKind: 'actor' }))
     .sort(compareParticipantCandidates);
   const candidates = [
     ...principalCandidates,
-    ...declarationCandidates,
+    ...descriptionCandidates,
+    { value: 'class:', label: '直接按 Class 新建…', row: { id: '' }, kind: 'class', participantKind: 'actor' },
   ];
   const selected = candidates.find((row) => row.value === candidate);
+  const needsName = selected && selected.kind !== 'principal';
+  const trimmedName = memberName.trim();
+  const nameError = needsName && trimmedName && !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(trimmedName)
+    ? '成员名须为 1–63 位小写字母、数字或连字符' : '';
+  const ready = selected && (!needsName || (trimmedName && !nameError))
+    && (selected.kind !== 'class' || className.trim());
   const restartCommand = commandPort.restartActor || commandPort.restart;
   const bindCommand = commandPort.bindActor || commandPort.bind;
   const unbindCommand = commandPort.unbindActor || commandPort.unbind;
@@ -231,11 +296,27 @@ function ChannelMembers({ channel, port }) {
       setDirectOperation({ state: 'failed', message: errorMessage(failure) });
     }
   };
+  const choose = (value) => {
+    setCandidate(value);
+    const next = candidates.find((row) => row.value === value);
+    if (next?.kind === 'description') setMemberName(String(next.row.name || ''));
+    else if (next?.kind === 'class') setMemberName('');
+  };
   const introduce = (event) => {
     event.preventDefault();
-    if (!selected) return;
-    setSubmittedMember({ id: selected.row.id, kind: selected.kind });
-    action.submit('introduce_actor', { channelId: channel?.id, candidateType: selected.kind, candidateId: selected.row.id });
+    if (!ready) return;
+    if (selected.kind === 'principal') {
+      setSubmittedMember({ id: selected.row.id, kind: 'principal' });
+      action.submit('introduce_actor', { channelId: channel?.id, candidateType: 'principal', candidateId: selected.row.id });
+      return;
+    }
+    setSubmittedMember({ name: trimmedName, kind: selected.kind });
+    action.submit('introduce_actor', {
+      channelId: channel?.id,
+      candidateType: selected.kind,
+      candidateId: selected.kind === 'class' ? className.trim() : selected.row.id,
+      name: trimmedName,
+    }, { submitted: '成员条目已写进频道描述；成员构建好后出现在名册里，构建结果在成员详情和时间线上。' });
   };
   const confirmActor = () => {
     if (!confirm) return;
@@ -260,7 +341,7 @@ function ChannelMembers({ channel, port }) {
         const canBind = typeof bindCommand === 'function' && row.bound === false;
         const canUnbind = typeof unbindCommand === 'function' && row.bound === true;
         return <div className="managed-actor" key={row.id}>
-          <div><strong>{actorDisplayName(row)}{row.id === port.selfId && <em>我</em>}</strong><small>{row.kind || 'actor'}{row.principal ? ` · principal ${row.principal}` : ''} · {row.id}</small>{issue && <small className={`member-layer-issue layer-${issue.state}`} title={issue.text}>{issue.text}</small>}</div>
+          <div><strong>{actorDisplayName(row)}{row.id === port.selfId && <em>我</em>}</strong><small>{row.kind || 'actor'}{row.principal ? ` · principal ${row.principal}` : ''}{row.body ? ` · ${row.body}` : ''} · {row.id}</small>{issue && <small className={`member-layer-issue layer-${issue.state}`} title={issue.text}>{issue.text}</small>}</div>
           <span className={`actor-runtime ${runtimeState}`}>{runtimeLabel}</span>
           <button type="button" disabled={typeof commandPort.selectActor !== 'function'} onClick={() => commandPort.selectActor?.(row)} aria-label={`查看 ${actorDisplayName(row)}`}>查看</button>
           {canBind || canUnbind ? <button type="button" disabled={port.disabled || directOperation?.state === 'pending'} onClick={() => runDirectCommand(row.bound ? '解绑' : '绑定', row.bound ? unbindCommand : bindCommand, row)}>{row.bound ? '解绑' : '绑定'}</button> : <button type="button" disabled title="当前治理端口未提供绑定命令">绑定</button>}
@@ -271,17 +352,19 @@ function ChannelMembers({ channel, port }) {
       {!roster.length && <p className="governance-empty">暂无可管理的业务 Actor</p>}
       {port.identityPending && <p className="roster-identity-pending" role="status">正在确认你在本频道中的 Actor 身份</p>}
       {memberReady && <p className="roster-ready" role="status">成员已就绪</p>}
-      <p className="protected-note">标准系统 Actor 与维持频道关系的 foundation Actor 已隐藏并受后端保护。</p>
+      <p className="protected-note">运行时自己生成的成员（服务门、peer、handle）不在频道描述里，已隐藏。</p>
       {!hasLifecycleCommands && <p className="protected-note">当前治理端口未提供绑定或重启命令；这里仅展示目录事实、查看与已有移除入口。</p>}
     </PanelCard>
     <PanelCard as="form" className="governance-form" title="添加参与者" onSubmit={introduce}>
-      <p>先选择业务参与者；系统会根据对象类型显示必要配置。标准 Actor 不会出现在候选项中。</p>
-      <label>参与者<SelectMenu ariaLabel="选择参与者" placeholder="搜索用户、Agent 或工具" value={candidate} options={candidates} onChange={(value) => setCandidate(value)} /></label>
-      {selected && <div className="participant-selection" role="status" data-participant-id={selected.row.id} data-participant-kind={selected.participantKind}><span>{participantTypeLabel(selected.participantKind)}</span><strong>{selected.row.display_name || selected.row.email || selected.row.name || selected.row.id}</strong><small>{selected.row.id}</small></div>}
-      {selected && selected.kind === 'declaration' && <p className="field-hint">Actor 的归属 principal 由声明本身决定；要改归属请编辑声明。</p>}
-      <button className="primary-button" type="submit" disabled={port.disabled || action.busy || !selected}>添加到频道</button>
+      <p>人直接邀请进来；Agent 和工具是在频道描述里写一个成员条目：从一个 Actor 描述（名字@版本）或直接从一个 Class 造。</p>
+      <label>参与者<SelectMenu ariaLabel="选择参与者" placeholder="搜索用户或 Actor 描述" value={candidate} options={candidates} onChange={choose} /></label>
+      {selected && selected.kind !== 'class' && <div className="participant-selection" role="status" data-participant-id={selected.row.id} data-participant-kind={selected.participantKind}><span>{selected.kind === 'principal' ? '用户' : 'Actor 描述'}</span><strong>{selected.row.display_name || selected.row.email || selected.row.id}</strong><small>{selected.kind === 'principal' ? selected.row.id : `class ${selected.row.class || '?'}${selected.row.description ? ` · ${selected.row.description}` : ''}`}</small></div>}
+      {selected?.kind === 'class' && <label>Class<input aria-label="成员 Class" value={className} onChange={(event) => setClassName(event.target.value)} placeholder="例如 claude、codex" /></label>}
+      {needsName && <label>成员名<input aria-label="成员名" value={memberName} onChange={(event) => setMemberName(event.target.value)} placeholder="在这个频道里叫什么" /></label>}
+      {nameError && <small className="field-error">{nameError}</small>}
+      <button className="primary-button" type="submit" disabled={port.disabled || action.busy || !ready}>添加到频道</button>
     </PanelCard>
-    {confirm && <InlineConfirmation title={`确认${confirm.kind === 'restart' ? '重启' : '移除'} ${actorDisplayName(confirm.row)}？`} description={confirm.kind === 'restart' ? '重启结果以账本和 presence 收敛为准；当前页面不会猜测成功。' : '该操作将通过频道治理命令提交，最终状态以频道事实为准。'} tone="danger" onCancel={() => setConfirm(null)} onConfirm={confirmActor} />}
+    {confirm && <InlineConfirmation title={`确认${confirm.kind === 'restart' ? '重启' : '移除'} ${actorDisplayName(confirm.row)}？`} description={confirm.kind === 'restart' ? '重启结果以账本和 presence 收敛为准；当前页面不会猜测成功。' : '成员条目会从频道描述里删掉，它这一台的配置一起删；该操作通过频道治理命令提交，最终状态以频道事实为准。'} tone="danger" onCancel={() => setConfirm(null)} onConfirm={confirmActor} />}
   </>;
 }
 
@@ -330,20 +413,6 @@ function createdChildFor(channel, children, name) {
   )) || null;
 }
 
-function templateRecipeBody(value) {
-  const body = value?.body;
-  return body && typeof body === 'object' && !Array.isArray(body) ? body : null;
-}
-
-function isUnavailableTemplateDetail(error) {
-  const code = String(error?.code || '');
-  return code === 'template_body_invalid'
-    || code === 'governance_terminal_unavailable'
-    || code === 'terminal_result_unavailable'
-    || error?.resultPhase === 'unavailable'
-    || error?.resultUnavailable === true;
-}
-
 // The Shell must provide one read-only, typed creation projection for the
 // request returned by `commands.submit`.  A submission id is only a locator;
 // it is not proof of acceptance or a ledger terminal.  The projection is
@@ -381,6 +450,12 @@ function creationConvergence(channel, children, request, creation = null) {
   };
 }
 
+const CREATE_STARTS = Object.freeze([
+  ['blank', '空白', '从一份空描述开始，之后再加成员'],
+  ['copy', '复制一个频道', '照抄另一个频道的描述（成员条目、服务、说明、设备）；被复制频道的成员配置不跟过来'],
+  ['pick', '从本频道挑成员', '把本频道描述里的几个成员条目抄进新频道'],
+]);
+
 // The rail entry is a real modal owned by GovernanceFeature. The command,
 // channel directory and access projection remain the existing Workspace
 // owners; this component only keeps the local request and renders their
@@ -388,37 +463,34 @@ function creationConvergence(channel, children, request, creation = null) {
 export function ChannelCreateModal({ channel, port = {}, onClose, returnFocusRef = null }) {
   const [name, setName] = useState('');
   const [purpose, setPurpose] = useState('');
-  const [templateId, setTemplateId] = useState('');
-  const [initialAgentIds, setInitialAgentIds] = useState([]);
+  const [start, setStart] = useState('blank');
+  const [copyFrom, setCopyFrom] = useState('');
+  const [entries, setEntries] = useState(null);
+  const [entriesError, setEntriesError] = useState('');
+  const [readingEntries, setReadingEntries] = useState(false);
+  const [pickedNames, setPickedNames] = useState([]);
+  const [humanIds, setHumanIds] = useState([]);
   const [createRequest, setCreateRequest] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
-  const templateListRequestedRef = useRef(false);
   const dialogRef = useRef(null);
   const nameRef = useRef(null);
   const commands = port.commands || {};
   const children = Array.isArray(port.children) ? port.children : [];
-  const templatesKnown = Array.isArray(port.channelTemplates);
-  const templates = templatesKnown ? port.channelTemplates : [];
   const validation = validateChannelName(name);
   const convergence = creationConvergence(channel, children, createRequest, port.creation);
   const tracking = Boolean(createRequest && !convergence?.ready && !convergence?.failed);
   const locked = port.disabled || submitting || tracking || convergence?.ready;
   const parentName = displayChannelName(channel);
   const shellEnter = typeof commands.enterChannel === 'function';
-  const initialAgents = (Array.isArray(port.roster) ? port.roster : [])
-    .filter((row) => row?.kind === 'agent' && row.id && isVisibleActor(row));
-  const selectedInitialAgentIds = initialAgentIds.filter((id) => initialAgents.some((row) => row.id === id));
-
-  // Registrar templates are not part of the OBS directory.  Ask the existing
-  // command owner for the list when this public create owner opens, then use
-  // the typed projection it publishes; never read a space port or invent rows.
-  useEffect(() => {
-    if (templatesKnown || templateListRequestedRef.current || typeof commands.listTemplates !== 'function') return undefined;
-    templateListRequestedRef.current = true;
-    Promise.resolve(commands.listTemplates()).catch(() => {});
-    return undefined;
-  }, [commands.listTemplates, templatesKnown]);
+  const copyable = (Array.isArray(port.copyableChannels) ? port.copyableChannels : [])
+    .map((row) => ({ value: row.id, label: row.qualified_name || row.name || row.id }));
+  const humans = (Array.isArray(port.principals) ? port.principals : [])
+    .map((entry) => entry?.declared || entry)
+    .filter(eligiblePrincipal);
+  const selectedHumans = humanIds.filter((id) => humans.some((row) => row.id === id));
+  const picked = (entries || []).filter((entry) => pickedNames.includes(entry.name));
+  const startReady = start === 'blank' || (start === 'copy' && copyFrom) || (start === 'pick' && picked.length > 0);
 
   function retryCreate() {
     setCreateRequest(null);
@@ -433,12 +505,35 @@ export function ChannelCreateModal({ channel, port = {}, onClose, returnFocusRef
     closeDisabled: submitting,
   });
 
+  // 挑成员要先读本频道的描述：一次真人点击发一条 system.channel.description.get。
+  async function readEntries() {
+    if (typeof commands.readDescription !== 'function') {
+      setEntriesError('当前会话不能读取频道描述');
+      return;
+    }
+    setReadingEntries(true);
+    setEntriesError('');
+    try {
+      const value = await commands.readDescription(channel?.id);
+      const members = Array.isArray(value?.body?.members) ? value.body.members : [];
+      setEntries(members.filter((entry) => entry?.name));
+    } catch (failure) {
+      setEntriesError(errorMessage(failure));
+    } finally {
+      setReadingEntries(false);
+    }
+  }
+
   async function submit(event) {
     event.preventDefault();
     const normalized = String(name || '').trim();
     const nameError = validateChannelName(normalized);
     if (nameError) {
       setError(nameError);
+      return;
+    }
+    if (!startReady) {
+      setError(start === 'copy' ? '请选择要复制的频道' : '请至少挑一个成员条目');
       return;
     }
     if (typeof commands.submit !== 'function') {
@@ -448,30 +543,25 @@ export function ChannelCreateModal({ channel, port = {}, onClose, returnFocusRef
     setError('');
     setSubmitting(true);
     try {
-      let body = null;
-      if (templateId) {
-        if (typeof commands.getTemplate !== 'function') {
-          throw Object.assign(new Error(TERMINAL_RESULT_UNAVAILABLE), { code: 'template_body_invalid' });
-        }
-        const template = await commands.getTemplate(templateId);
-        body = templateRecipeBody(template);
-        if (!body) throw Object.assign(new Error(TERMINAL_RESULT_UNAVAILABLE), { code: 'template_body_invalid' });
-      }
       const messageId = await commands.submit({
         scope: 'channel',
         action: 'create_child',
         payload: {
           name: normalized,
-          purpose: String(purpose || '').trim(),
           parentId: channel?.id,
-          ...(templateId ? { templateId, templateBody: body } : {}),
-          ...(selectedInitialAgentIds.length ? { initialActorIds: selectedInitialAgentIds } : {}),
+          humans: selectedHumans,
+          ...(start === 'copy'
+            ? { copyFrom }
+            : {
+              purpose: String(purpose || '').trim(),
+              ...(start === 'pick' ? { members: picked } : {}),
+            }),
         },
       });
       if (!messageId) throw new Error('创建命令没有返回可追踪的请求编号');
       setCreateRequest({ id: String(messageId), name: normalized });
     } catch (failure) {
-      setError(isUnavailableTemplateDetail(failure) ? TERMINAL_RESULT_UNAVAILABLE : errorMessage(failure));
+      setError(errorMessage(failure));
     } finally {
       setSubmitting(false);
     }
@@ -509,34 +599,53 @@ export function ChannelCreateModal({ channel, port = {}, onClose, returnFocusRef
         <p id="channel-create-description">在 <strong>{parentName}</strong> 下创建子频道。提交后会持续核对账本、可观察性、成员关系和服务状态。</p>
         <label><span>频道名称</span><input ref={nameRef} aria-label="新频道名称" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如 backend" disabled={locked} aria-invalid={Boolean(name && validation)} required /></label>
         {name && validation && <small className="field-error">{validation}</small>}
-        <label><span>用途</span><input aria-label="频道用途" value={purpose} onChange={(event) => setPurpose(event.target.value)} placeholder="这个频道用于什么" disabled={locked} /></label>
-        <label><span>频道模板</span><SelectMenu
-          ariaLabel="频道模板"
-          value={templateId}
-          options={templates.map((row) => ({ value: row.id, label: row.name || row.id }))}
-          onChange={setTemplateId}
-          disabled={locked || !templatesKnown}
-        /></label>
-        {!templatesKnown && <small className="field-hint">正在读取频道模板…</small>}
-        {templatesKnown && !templates.length && <small className="field-hint">当前没有可用的频道模板；创建仍可使用空配方。</small>}
-        <section className="channel-create-members" aria-labelledby="channel-create-members-title">
-          <header><strong id="channel-create-members-title">初始成员</strong><small>你会自动加入，也可以带入当前频道的 Agent</small></header>
-          {port.selfId && <div className="channel-create-member pinned"><span>✓</span><div><strong>我</strong><small>{port.selfId}</small></div></div>}
-          {initialAgents.map((row) => <label className="channel-create-member" key={row.id}>
+        <fieldset className="channel-create-start" disabled={locked}>
+          <legend>起点</legend>
+          {CREATE_STARTS.map(([value, label, hint]) => <label key={value} className="channel-create-start-option">
+            <input type="radio" name="channel-create-start" aria-label={`起点 ${label}`} value={value} checked={start === value} onChange={() => setStart(value)} />
+            <div><strong>{label}</strong><small>{hint}</small></div>
+          </label>)}
+        </fieldset>
+        {start !== 'copy' && <label><span>说明</span><input aria-label="频道用途" value={purpose} onChange={(event) => setPurpose(event.target.value)} placeholder="这个频道用于什么" disabled={locked} /></label>}
+        {start === 'copy' && <>
+          <label><span>复制哪个频道</span><SelectMenu ariaLabel="复制的频道" value={copyFrom} options={copyable} onChange={setCopyFrom} disabled={locked} /></label>
+          {!copyable.length && <small className="field-hint">你还不是任何可复制频道的成员。</small>}
+          <small className="field-hint">说明随被复制频道的描述一起过来，创建后可在频道设置里改。</small>
+        </>}
+        {start === 'pick' && <section className="channel-create-members" aria-labelledby="channel-create-entries-title">
+          <header><strong id="channel-create-entries-title">成员条目</strong><button type="button" className="text-button" disabled={locked || readingEntries} onClick={readEntries}>{readingEntries ? '读取中…' : entries ? '重新读取' : `读取 ${parentName} 的成员条目`}</button></header>
+          {entriesError && <p className="governance-error" role="alert">{entriesError}</p>}
+          {entries && !entries.length && <small className="field-hint">本频道的描述里还没有成员条目。</small>}
+          {(entries || []).map((entry) => <label className="channel-create-member" key={entry.name}>
             <input
               type="checkbox"
-              aria-label={`初始 Agent ${actorDisplayName(row)}`}
-              checked={selectedInitialAgentIds.includes(row.id)}
+              aria-label={`抄成员条目 ${entry.name}`}
+              checked={pickedNames.includes(entry.name)}
               disabled={locked}
-              onChange={(event) => setInitialAgentIds((current) => (
-                event.target.checked
-                  ? [...new Set([...current, row.id])]
-                  : current.filter((id) => id !== row.id)
+              onChange={(event) => setPickedNames((current) => (
+                event.target.checked ? [...new Set([...current, entry.name])] : current.filter((value) => value !== entry.name)
               ))}
             />
-            <div><strong>{actorDisplayName(row)}</strong><small>Agent · {row.id}</small></div>
+            <div><strong>{entry.name}</strong><small>{entry.body?.actor ? `actor ${entry.body.actor}` : `class ${entry.body?.class || '?'}`}</small></div>
           </label>)}
-          {!initialAgents.length && <small className="field-hint">当前没有可管理的 Agent。</small>}
+          <small className="field-hint">抄的是条目（从什么造、参数）；这些成员在新频道里各自的配置从空开始。</small>
+        </section>}
+        <section className="channel-create-members" aria-labelledby="channel-create-humans-title">
+          <header><strong id="channel-create-humans-title">带进来的人</strong><small>你会自动加入，也可以带上别的用户</small></header>
+          {port.selfId && <div className="channel-create-member pinned"><span>✓</span><div><strong>我</strong><small>{port.selfId}</small></div></div>}
+          {humans.map((row) => <label className="channel-create-member" key={row.id}>
+            <input
+              type="checkbox"
+              aria-label={`带上用户 ${row.display_name || row.email || row.id}`}
+              checked={selectedHumans.includes(row.id)}
+              disabled={locked}
+              onChange={(event) => setHumanIds((current) => (
+                event.target.checked ? [...new Set([...current, row.id])] : current.filter((id) => id !== row.id)
+              ))}
+            />
+            <div><strong>{row.display_name || row.email || row.id}</strong><small>用户 · {row.id}</small></div>
+          </label>)}
+          {!humans.length && <small className="field-hint">目录里没有别的用户。</small>}
         </section>
         {error && <p className="governance-error" role="alert">{error}</p>}
         {convergence && <section className="convergence channel-create-progress" aria-label="频道创建进度" aria-live="polite">
@@ -547,7 +656,7 @@ export function ChannelCreateModal({ channel, port = {}, onClose, returnFocusRef
             <small>{convergence[key] ? '已确认' : waiting}</small>
           </div>)}
           {convergence.error && <p className="governance-error" role="alert">{convergence.error}</p>}
-          {convergence.ready && <p className="ready-message">{shellEnter ? '频道已经可以打开和协作。' : '频道已经就绪，但 Shell navigation port 尚未连接。'}</p>}
+          {convergence.ready && <p className="ready-message">{shellEnter ? '频道已经可以打开和协作。成员的构建结果在频道设置和时间线上。' : '频道已经就绪，但 Shell navigation port 尚未连接。'}</p>}
         </section>}
         <footer>
           <button type="button" onClick={onClose} disabled={submitting}>取消</button>
@@ -555,7 +664,7 @@ export function ChannelCreateModal({ channel, port = {}, onClose, returnFocusRef
             ? <button type="button" className="primary-button" disabled={!shellEnter} title={shellEnter ? '' : 'Shell navigation port 尚未连接'} onClick={enterChannel}>进入新频道</button>
             : convergence?.failed
               ? <button type="button" className="primary-button" onClick={retryCreate}>重新创建</button>
-            : <button type="submit" className="primary-button" disabled={locked || Boolean(validation)}>{submitting ? '正在提交…' : tracking ? '等待频道就绪…' : '创建频道'}</button>}
+            : <button type="submit" className="primary-button" disabled={locked || Boolean(validation) || !startReady}>{submitting ? '正在提交…' : tracking ? '等待频道就绪…' : '创建频道'}</button>}
         </footer>
       </form>
     </section>
@@ -576,9 +685,9 @@ export function ChannelAdministrationPanel({ channel, port = {}, initialTab = 'm
   const reenterChannel = typeof port.commands?.enterChannel === 'function' && channel?.id
     ? () => port.commands.enterChannel({ channelId: channel.id, view: 'conversation' })
     : undefined;
-  return <SidePanel className="channel-governance" ariaLabel="频道治理" eyebrow="CHANNEL CONTEXT" title="频道详情" tabs={[{ id: 'members', label: '成员' }, { id: 'overview', label: '概览' }, { id: 'danger', label: '危险操作' }]} activeTab={tab} onTabChange={setTab} onClose={onClose}>
+  return <SidePanel className="channel-governance" ariaLabel="频道治理" eyebrow="CHANNEL CONTEXT" title="频道详情" tabs={[{ id: 'members', label: '成员' }, { id: 'overview', label: '设置' }, { id: 'danger', label: '危险操作' }]} activeTab={tab} onTabChange={setTab} onClose={onClose}>
     <OperationState operation={port.operation} terminal onRefresh={refreshOperation} onReenter={reenterChannel} />
-    <div hidden={tab !== 'overview'}><ChannelOverview channel={channel} port={port} /></div>
+    <div hidden={tab !== 'overview'}><ChannelSettings channel={channel} port={port} /></div>
     <div hidden={tab !== 'members'}><ChannelMembers channel={channel} port={port} /></div>
     <div hidden={tab !== 'danger'}><ChannelDanger channel={channel} port={port} /></div>
   </SidePanel>;
@@ -669,63 +778,113 @@ export function ChannelAutomationPanel({ channel, port = {}, onClose }) {
   </SidePanel>;
 }
 
-function JsonEditor({ title, value, actions, disabled, onSubmit }) {
-  const [text, setText] = useState(() => JSON.stringify(value || {}, null, 2));
-  const [error, setError] = useState('');
-  const act = (action) => {
-    setError('');
-    try { onSubmit(action, JSON.parse(text || '{}')); }
-    catch (failure) { setError(errorMessage(failure)); }
-  };
-  return <PanelCard className="governance-form" title={title}><label>JSON<textarea rows="12" value={text} onChange={(event) => setText(event.target.value)} /></label>{error && <p className="governance-error" role="alert">{error}</p>}<div className="form-actions">{actions.map((entry) => <button type="button" className={entry.primary ? 'primary-button' : entry.danger ? 'danger-text' : ''} disabled={disabled} key={entry.id} onClick={() => act(entry.id)}>{entry.label}</button>)}</div></PanelCard>;
+function parseParams(text) {
+  const value = JSON.parse(String(text || '').trim() || '{}');
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('参数必须是 JSON 对象');
+  return value;
 }
 
-function TemplateList({ rows, empty }) {
-  return <PanelCard title="已登记项目">{rows.map((row) => <div className="template-row" key={row.id}><strong>{row.name || row.id}</strong><small>{row.id}</small>{row.protected && <span>系统保护</span>}</div>)}{!rows.length && <p className="governance-empty">{empty}</p>}</PanelCard>;
-}
-
-function SpaceTemplates({ kind, port }) {
-  const isActor = kind === 'actor_templates';
-  const rows = isActor ? port.actorTemplates || [] : port.channelTemplates || [];
+// Actor 描述：不可变的 名字@版本。新建同名的就是下一个版本；退役只让它不能再被
+// 新成员引用，已经引用它的成员照旧。
+function SpaceActorDescriptions({ port }) {
   const action = useCommand(port.commands, 'space');
-  return <>{action.error && <p className="governance-error" role="alert">{action.error}</p>}<TemplateList rows={rows} empty="尚未读取模板。" /><JsonEditor title={isActor ? '登记或编辑 Actor 模板' : '登记或编辑频道模板'} value={{ id: '', name: '', description: '', ...(isActor ? { class: 'agent', config: {} } : { body: {} }) }} disabled={port.disabled} actions={[{ id: 'upsert', label: '保存', primary: true }, { id: 'retire', label: '退役', danger: true }, { id: 'list', label: '重新读取' }]} onSubmit={(actionName, payload) => action.submit(`${isActor ? 'actor_template' : 'channel_template'}_${actionName}`, payload)} /></>;
+  const [name, setName] = useState('');
+  const [klass, setKlass] = useState('');
+  const [description, setDescription] = useState('');
+  const [paramsText, setParamsText] = useState('{}');
+  const [formError, setFormError] = useState('');
+  const [confirm, setConfirm] = useState(null);
+  const rows = Array.isArray(port.actorDescriptions) ? port.actorDescriptions : [];
+  const groups = new Map();
+  for (const row of rows) {
+    if (!row?.name) continue;
+    if (!groups.has(row.name)) groups.set(row.name, []);
+    groups.get(row.name).push(row);
+  }
+  const names = [...groups.keys()].sort((left, right) => left.localeCompare(right, 'zh-CN'));
+  const nextVersion = (groups.get(name.trim()) || []).reduce((highest, row) => Math.max(highest, Number(row.version || 0)), 0) + 1;
+  const refresh = typeof port.commands?.refresh === 'function' ? () => port.commands.refresh() : undefined;
+  const create = async (event) => {
+    event.preventDefault();
+    setFormError('');
+    let params;
+    try { params = parseParams(paramsText); }
+    catch (failure) { setFormError(errorMessage(failure)); return; }
+    const reply = await action.submit('actor_description_create', { name: name.trim(), class: klass.trim(), description, params }, { submitted: 'Actor 描述已新建。' });
+    if (reply) { setDescription(''); setParamsText('{}'); }
+  };
+  const retire = async () => {
+    const row = confirm;
+    setConfirm(null);
+    if (row) await action.submit('actor_description_retire', { name: row.name, version: row.version }, { submitted: `${actorDescriptionRef(row)} 已退役。` });
+  };
+  return <>
+    {action.error && <p className="governance-error" role="alert">{action.error}</p>}
+    <OperationState operation={action.operation} />
+    <PanelCard title="Actor 描述" titleMeta={String(rows.length)} action={refresh && <button type="button" className="text-button" disabled={action.busy} onClick={refresh}>刷新</button>}>
+      {port.actorDescriptionsUnavailable && <p className="governance-error" role="status">Actor 描述目录当前不可用。</p>}
+      {names.map((entryName) => {
+        const versions = [...groups.get(entryName)].sort((left, right) => Number(right.version) - Number(left.version));
+        return <section className="actor-description" key={entryName} aria-label={`Actor 描述 ${entryName}`}>
+          <header><strong>{entryName}</strong><small>{versions.length} 个版本</small></header>
+          {versions.map((row) => <div className={`actor-description-version status-${row.status || 'present'}`} key={actorDescriptionRef(row)} data-ref={actorDescriptionRef(row)}>
+            <div>
+              <strong>{actorDescriptionRef(row)}</strong>
+              <small>class {row.class || '?'} · {row.status === 'retired' ? '已退役' : '可用'}{row.owner ? ` · ${row.owner}` : ''}</small>
+              {row.description && <p>{row.description}</p>}
+              {row.params && Object.keys(row.params).length > 0 && <details><summary>参数</summary><pre>{JSON.stringify(row.params, null, 2)}</pre></details>}
+            </div>
+            {row.status !== 'retired' && <button type="button" className="danger-text" disabled={port.disabled || action.busy} onClick={() => setConfirm(row)}>退役</button>}
+          </div>)}
+        </section>;
+      })}
+      {!names.length && <p className="governance-empty">还没有 Actor 描述。</p>}
+    </PanelCard>
+    <PanelCard as="form" className="governance-form" title="新建 Actor 描述" onSubmit={create}>
+      <p>同名再建就是它的下一个版本；已有版本不会被改。</p>
+      <label>名字<input aria-label="Actor 描述名字" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如 research-claude" /></label>
+      {name.trim() && <small className="field-hint">将建成 {name.trim()}@{nextVersion}</small>}
+      <label>Class<input aria-label="Actor 描述 Class" value={klass} onChange={(event) => setKlass(event.target.value)} placeholder="例如 claude" /></label>
+      <label>说明<input aria-label="Actor 描述说明" value={description} onChange={(event) => setDescription(event.target.value)} /></label>
+      <label>参数 JSON<textarea aria-label="Actor 描述参数 JSON" rows="6" spellCheck={false} value={paramsText} onChange={(event) => setParamsText(event.target.value)} /></label>
+      <small className="field-hint">值写 <code>"$required:说明"</code> 表示要由用到它的成员在自己的配置里填；写 <code>"$global.名称"</code> 引用全局 key。</small>
+      {formError && <p className="field-error" role="alert">{formError}</p>}
+      <button type="submit" className="primary-button" disabled={port.disabled || action.busy || !name.trim() || !klass.trim()}>新建</button>
+    </PanelCard>
+    {confirm && <InlineConfirmation title={`退役 ${actorDescriptionRef(confirm)}？`} description="退役后新成员不能再引用这个版本；已经引用它的成员照旧运行。" tone="danger" onCancel={() => setConfirm(null)} onConfirm={retire} />}
+  </>;
 }
 
-function SpaceDevices({ channel, port }) {
+function SpaceDevices({ port }) {
   const action = useCommand(port.commands, 'space');
   const [name, setName] = useState('');
   const refreshDevices = typeof port.commands?.refresh === 'function'
     ? () => port.commands.refresh('devices')
     : undefined;
-  const refreshAfter = refreshDevices ? { refresh: 'devices' } : {};
   return <>
     {action.error && <p className="governance-error" role="alert">{action.error}</p>}
+    <OperationState operation={action.operation} />
     <PanelCard className="governance-form" title="创建设备身份">
-      <p>只有当前空间命令端口提供写能力时才会提交创建设备；列表始终只显示已收到的目录事实。</p>
-      <label>设备名称<input value={name} onChange={(event) => setName(event.target.value)} /></label>
-      <button type="button" className="primary-button" disabled={port.disabled || action.busy || !name.trim()} onClick={() => action.submit('create_device', { name }, refreshAfter)}>创建设备</button>
+      <label>设备名称<input aria-label="设备名称" value={name} onChange={(event) => setName(event.target.value)} /></label>
+      <button type="button" className="primary-button" disabled={port.disabled || action.busy || !name.trim()} onClick={() => action.submit('create_device', { name }, { submitted: '设备已创建。' })}>创建设备</button>
     </PanelCard>
     <PanelCard title="空间设备列表" action={refreshDevices && <button type="button" className="text-button" disabled={action.busy} onClick={refreshDevices}>刷新</button>}>
-      <p className="governance-empty">绑定状态来自当前空间目录；它不代表频道已经完成挂载或服务收敛。</p>
-      {(port.devices || []).map((row) => <div className="device-row" key={row.id}><div><strong>{row.name || row.id}</strong><small>{row.id} · {row.online === true ? '在线' : row.online === false ? '离线' : '未知'} · {row.attached ? '已绑定' : '未绑定'}</small></div><div><button type="button" disabled={port.disabled || action.busy || row.attached} onClick={() => action.submit('attach_device', { channelId: channel?.id, deviceId: row.id }, refreshAfter)}>绑定当前频道</button><button type="button" disabled={port.disabled || action.busy || !row.attached} onClick={() => action.submit('detach_device', { channelId: channel?.id, deviceId: row.id }, refreshAfter)}>解绑</button><button type="button" className="danger-text" disabled={port.disabled || action.busy || row.protected} onClick={() => action.submit('retire_device', { deviceId: row.id }, refreshAfter)}>退役</button></div></div>)}
+      <p className="governance-empty">把设备挂到某个频道，在那个频道的「频道详情 → 设置」里做。</p>
+      {(port.devices || []).map((row) => <div className="device-row" key={row.id}><div><strong>{row.name || row.id}</strong><small>{row.id} · {row.online === true ? '在线' : row.online === false ? '离线' : '未知'}</small></div><div><button type="button" className="danger-text" disabled={port.disabled || action.busy || row.protected || row.id === LOCAL_DEVICE_ID} onClick={() => action.submit('retire_device', { deviceId: row.id }, { submitted: '设备已退役。' })}>退役</button></div></div>)}
       {!port.devices?.length && <p className="governance-empty">当前空间目录没有可展示的设备。</p>}
     </PanelCard>
   </>;
 }
 
-export function SpaceAdministrationPanel({ channel, port = {}, onClose }) {
-  const [tab, setTab] = useState('actor_templates');
-  const action = useCommand(port.commands, 'space');
-  const tabs = [{ id: 'actor_templates', label: 'Actor 模板' }, { id: 'channel_templates', label: '频道模板' }, { id: 'configuration', label: '频道配置' }, { id: 'devices', label: '设备' }, { id: 'global_keys', label: '全局 key' }];
+export function SpaceAdministrationPanel({ port = {}, onClose }) {
+  const [tab, setTab] = useState('actor_descriptions');
+  const tabs = [{ id: 'actor_descriptions', label: 'Actor 描述' }, { id: 'devices', label: '设备' }, { id: 'global_keys', label: '全局 key' }];
   // 全局 key 走资源面，不走空间治理结果投影；那条"不支持"的说明只属于其余几页。
   const governanceTab = tab !== 'global_keys';
   return <SidePanel className="space-administration" ariaLabel="空间管理" eyebrow="SPACE CONTROL" title="空间管理" tabs={tabs} activeTab={tab} onTabChange={setTab} onClose={onClose}>
     {governanceTab && port.unsupported && <p className="governance-error" role="status">{port.unsupported}</p>}
-    {governanceTab && port.operation && <p className={`operation-state state-${port.operation.state || 'pending'}`} role="status">{port.operation.message || '空间命令已提交'}</p>}
-    {tab === 'actor_templates' && <SpaceTemplates kind={tab} port={port} />}
-    {tab === 'channel_templates' && <SpaceTemplates kind={tab} port={port} />}
-    {tab === 'configuration' && <><JsonEditor title="频道资料与声明覆盖" value={port.configuration || { channelId: channel?.id, profile: {}, overlays: [] }} disabled={port.disabled} actions={[{ id: 'save_configuration', label: '保存配置', primary: true }, { id: 'refresh_configuration', label: '刷新' }]} onSubmit={(name, payload) => action.submit(name, { channelId: channel?.id, ...payload })} />{action.error && <p className="governance-error" role="alert">{action.error}</p>}</>}
-    {tab === 'devices' && <SpaceDevices channel={channel} port={port} />}
+    {tab === 'actor_descriptions' && <SpaceActorDescriptions port={port} />}
+    {tab === 'devices' && <SpaceDevices port={port} />}
     {tab === 'global_keys' && <GlobalKeysPanel port={port.globalKeys} />}
   </SidePanel>;
 }

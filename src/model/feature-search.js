@@ -1,6 +1,7 @@
 import { selectTimelineItems } from './conversation-presentation.js';
 import { terminalResultPayload } from './terminal-result.js';
 import { argsOf } from '../protocol/envelope.js';
+import { isStandardActorIdentity } from './actor-visibility.js';
 
 const READABLE_ACCESS = new Set([
   'member_active',
@@ -10,12 +11,6 @@ const READABLE_ACCESS = new Set([
   'observer_stale',
 ]);
 
-const STANDARD_ACTOR_IDS = new Set(['system']);
-const STANDARD_ACTOR_DECL_IDS = new Set([
-  'atoll-internal:registrar-seat',
-  'atoll-internal:svcactor',
-  'coreactor',
-]);
 
 function string(value) {
   return typeof value === 'string' ? value.trim() : '';
@@ -362,14 +357,14 @@ function fileSearchRow(entry, fallbackChannelId, channelById) {
 
 function participantSearchRow(actor, channel) {
   const actorId = string(actor?.id || actor?.actorId);
-  if (!actorId || STANDARD_ACTOR_IDS.has(actorId) || STANDARD_ACTOR_DECL_IDS.has(actor?.decl_id)) return null;
+  if (!actorId || isStandardActorIdentity({ id: actorId, kind: actor?.kind, body: actor?.body })) return null;
   return Object.freeze({
     key: `search:${channel.id}:participant:${actorId}`,
     id: actorId,
     kind: 'participant',
     objectType: 'participant',
     title: string(actor.name) || actorId,
-    text: normalizeSearchText(actorId, actor.principal, actor.decl_id),
+    text: normalizeSearchText(actorId, actor.principal, actor.body),
     subtitle: string(actor.description || actor.kind),
     updatedAt: timestamp(actor.updatedAt),
     actorId,

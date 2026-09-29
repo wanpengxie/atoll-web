@@ -307,16 +307,7 @@ function isHiddenChannel(profile) {
 
 function createSessionAccess({ principalId }) {
   const states = new Map();
-  let spaceDirectory = Object.freeze({
-    principals: Object.freeze([]),
-    declarations: Object.freeze([]),
-    devices: Object.freeze([]),
-    // Channel templates are registrar facts, not OBS rows. Keep the typed
-    // projection slot explicit so Workspace can consume a future session
-    // owner without making the governance feature read a space store.
-    channelTemplates: null,
-    support: Object.freeze({ principals: false, declarations: false, devices: false }),
-  });
+  let spaceDirectory = emptySpaceDirectory();
   let connected = false;
   let authorityEpoch = 0;
   const ensure = (channelId, profile = null) => {
@@ -370,33 +361,7 @@ function createSessionAccess({ principalId }) {
     },
     directoryObserved(directory) {
       const incoming = directory && typeof directory === 'object' ? directory : {};
-      // OBS refreshes do not own Registrar facts. Preserve the last canonical
-      // template projection until the session/world owner explicitly resets it.
-      spaceDirectory = Object.freeze({
-        ...incoming,
-        channelTemplates: Array.isArray(incoming.channelTemplates)
-          ? incoming.channelTemplates
-          : spaceDirectory.channelTemplates,
-      });
-    },
-    channelTemplatesObserved(rows) {
-      if (!Array.isArray(rows)) return false;
-      spaceDirectory = Object.freeze({
-        ...spaceDirectory,
-        channelTemplates: mergeChannelTemplateRows(spaceDirectory.channelTemplates, rows),
-      });
-      return true;
-    },
-    channelTemplateObserved(value) {
-      const row = normalizeChannelTemplate(value);
-      if (!row) return false;
-      const rows = [...(spaceDirectory.channelTemplates || []), row];
-      const byId = new Map(rows.map((entry) => [entry.id, entry]));
-      spaceDirectory = Object.freeze({
-        ...spaceDirectory,
-        channelTemplates: mergeChannelTemplateRows([], [...byId.values()]),
-      });
-      return true;
+      spaceDirectory = Object.freeze({ ...emptySpaceDirectory(), ...incoming });
     },
     membershipsObserved(rows, { complete = true } = {}) {
       const active = new Set();
@@ -454,11 +419,7 @@ function createSessionAccess({ principalId }) {
     clearSelf(channelId) { const state = ensure(channelId); changeAuthority(state, (next) => { next.selfActorId = ''; }); },
     reset() {
       states.clear(); connected = false; authorityEpoch += 1;
-      spaceDirectory = Object.freeze({
-        principals: Object.freeze([]), declarations: Object.freeze([]), devices: Object.freeze([]),
-        channelTemplates: null,
-        support: Object.freeze({ principals: false, declarations: false, devices: false }),
-      });
+      spaceDirectory = emptySpaceDirectory();
     },
     state(channelId) { return states.get(channelId) || null; },
     directory() { return spaceDirectory; },
@@ -479,11 +440,23 @@ function createSessionAccess({ principalId }) {
   };
 }
 
-function projectDirectoryRows(observation, { withOnline = false } = {}) {
+function emptySpaceDirectory() {
+  return Object.freeze({
+    principals: Object.freeze([]),
+    // Actor 描述：每个版本一行（名字@版本），present 与 retired 都在——空间管理
+    // 要看全部版本；挑成员时只取 present 的。
+    actorDescriptions: Object.freeze([]),
+    devices: Object.freeze([]),
+    support: Object.freeze({ principals: false, actorDescriptions: false, devices: false }),
+  });
+}
+
+function projectDirectoryRows(observation, { withOnline = false, keepRetired = false } = {}) {
   return Object.freeze((observation?.items || []).flatMap((item) => {
     const declared = item?.declared || {};
-    const id = declared.id || item?.key;
-    if (!id || (declared.status && declared.status !== 'present')) return [];
+    const id = declared.id || declared.ref || item?.key;
+    if (!id || (!keepRetired && declared.status && declared.status !== 'present')) return [];
+    if (keepRetired) return [Object.freeze({ ...declared, id })];
     if (!withOnline) return [Object.freeze({ ...declared })];
     const measures = Object.fromEntries((item?.actual?.measures || []).map((measure) => [
       measure.name,
@@ -499,33 +472,6 @@ function projectDirectoryRows(observation, { withOnline = false } = {}) {
   }));
 }
 
-function normalizeChannelTemplate(value) {
-  const row = value?.declared || value;
-  if (!row || typeof row !== 'object' || Array.isArray(row)) return null;
-  const id = String(row?.id || '').trim();
-  if (!id) return null;
-  const { body, ...withoutBody } = row;
-  return Object.freeze({
-    ...withoutBody,
-    id,
-    ...(body && typeof body === 'object' && !Array.isArray(body) ? { body } : {}),
-  });
-}
-
-function mergeChannelTemplateRows(previous, incoming) {
-  const prior = new Map((previous || []).map((row) => [String(row?.id || ''), row]));
-  return Object.freeze((incoming || []).map((value) => {
-    const row = normalizeChannelTemplate(value);
-    if (!row) return null;
-    const old = prior.get(row.id);
-    return normalizeChannelTemplate({
-      ...old,
-      ...row,
-      ...(!row.body && old?.body ? { body: old.body } : {}),
-    });
-  }).filter(Boolean));
-}
-
 async function loadSpaceDirectory(obs) {
   const load = async (request, options) => {
     try { return { rows: projectDirectoryRows(await request(), options), supported: true }; }
@@ -534,21 +480,18 @@ async function loadSpaceDirectory(obs) {
       return { rows: Object.freeze([]), supported: false };
     }
   };
-  const [principals, declarations, devices] = await Promise.all([
+  const [principals, actorDescriptions, devices] = await Promise.all([
     load(() => obs.spacePrincipals()),
-    load(() => obs.spaceDecls()),
+    load(() => obs.spaceActorDescriptions(), { keepRetired: true }),
     load(() => obs.spaceDaemons(), { withOnline: true }),
   ]);
   return Object.freeze({
     principals: principals.rows,
-    declarations: declarations.rows,
+    actorDescriptions: actorDescriptions.rows,
     devices: devices.rows,
-    // No OBS endpoint exists for templates; a registrar command owner may
-    // later publish rows through this same projection slot.
-    channelTemplates: null,
     support: Object.freeze({
       principals: principals.supported,
-      declarations: declarations.supported,
+      actorDescriptions: actorDescriptions.supported,
       devices: devices.supported,
     }),
   });

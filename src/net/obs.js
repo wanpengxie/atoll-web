@@ -31,8 +31,8 @@ export function createObsClient({ fetchImpl = fetch, onUnauthorized } = {}) {
     spaceDaemons() {
       return read('/obs/space/daemons', fetchImpl, onUnauthorized);
     },
-    spaceDecls() {
-      return read('/obs/space/decls', fetchImpl, onUnauthorized);
+    spaceActorDescriptions() {
+      return read('/obs/space/actor-descriptions', fetchImpl, onUnauthorized);
     },
     channelProfile(id) {
       return read(`/obs/channel/${encodeURIComponent(id)}/profile`, fetchImpl, onUnauthorized);
@@ -50,7 +50,7 @@ const obs = createObsClient();
 export const spaceChannels = obs.spaceChannels;
 export const spacePrincipals = obs.spacePrincipals;
 export const spaceDaemons = obs.spaceDaemons;
-export const spaceDecls = obs.spaceDecls;
+export const spaceActorDescriptions = obs.spaceActorDescriptions;
 export const channelProfile = obs.channelProfile;
 export const channelActors = obs.channelActors;
 export const channelDevices = obs.channelDevices;

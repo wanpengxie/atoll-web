@@ -38,7 +38,7 @@ import { terminalResultPayload, terminalResultState } from '../model/terminal-re
 import { argsOf } from '../protocol/envelope.js';
 import { ERROR_CODES } from '../protocol/frame.js';
 import { isCanonicalAgentTimerFire } from '../model/notification-policy.js';
-import { isManageableDeclaration, isVisibleActor } from '../model/actor-visibility.js';
+import { latestActorDescriptions } from '../model/actor-visibility.js';
 import {
   createGlobalKey,
   deleteGlobalKey,
@@ -92,8 +92,6 @@ const GOVERNANCE_TERMINAL_CODES = new Set([
   'permission_denied',
   'protected_actor',
   'receiver_internal_error',
-  'template_body_invalid',
-  'template_id_mismatch',
   'type_unsupported',
 ]);
 
@@ -403,8 +401,6 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const filePickerIDRef = useRef(0);
   const [filePickerRequest, setFilePickerRequest] = useState(null);
   const governanceRequestsRef = useRef(new Map());
-  const templateListRequestRef = useRef('');
-  const templateGetRequestRef = useRef(new Map());
   const governanceEpochRef = useRef(0);
   const [governanceRequestRevision, setGovernanceRequestRevision] = useState(0);
   const [channelCreationRequest, setChannelCreationRequest] = useState(null);
@@ -414,8 +410,6 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     const failure = governanceWorldResetError();
     for (const record of governanceRequestsRef.current.values()) record.reject?.(failure);
     governanceRequestsRef.current.clear();
-    templateListRequestRef.current = '';
-    templateGetRequestRef.current.clear();
     setChannelCreationRequest(null);
     setGovernanceRequestRevision((current) => current + 1);
   }, []);
@@ -696,39 +690,8 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const waitForGovernanceTerminal = useCallback((record) => new Promise((resolve, reject) => {
     trackGovernanceRequest({ ...record, epoch: governanceEpochRef.current, resolve, reject });
   }), [trackGovernanceRequest]);
-  const requestChannelTemplateList = useCallback(async (channelId = navigation.activeChannelId) => {
-    const epoch = governanceEpochRef.current;
-    const requestId = governanceRequestId(await sendSystemCommand(channelId, TYPES.channelTemplate.list, {}));
-    if (epoch !== governanceEpochRef.current) throw governanceWorldResetError();
-    if (!requestId) throw new TypeError('频道模板列表请求没有返回可追踪的请求编号');
-    templateListRequestRef.current = requestId;
-    return waitForGovernanceTerminal({
-      channelId,
-      requestId,
-      msgType: TYPES.channelTemplate.list,
-      kind: 'template-list',
-      epoch,
-    });
-  }, [navigation.activeChannelId, sendSystemCommand, waitForGovernanceTerminal]);
-  const requestChannelTemplate = useCallback(async (channelId, templateId) => {
-    const id = String(templateId || '').trim();
-    if (!id) throw new TypeError('频道模板缺少稳定编号');
-    const epoch = governanceEpochRef.current;
-    const requestId = governanceRequestId(await sendSystemCommand(channelId, TYPES.channelTemplate.get, { id }));
-    if (epoch !== governanceEpochRef.current) throw governanceWorldResetError();
-    if (!requestId) throw new TypeError('频道模板详情请求没有返回可追踪的请求编号');
-    templateGetRequestRef.current.set(id, requestId);
-    return waitForGovernanceTerminal({
-      channelId,
-      requestId,
-      msgType: TYPES.channelTemplate.get,
-      kind: 'template-get',
-      templateId: id,
-      epoch,
-    });
-  }, [sendSystemCommand, waitForGovernanceTerminal]);
-  // 发一个 system 词并等它的终态回到账本，拿回平铺的回复。和模板列表同一条
-  // 追踪路径：请求编号 → 账本上的终态；恒不另起一条旁路。
+  // 发一个 system 词并等它的终态回到账本，拿回平铺的回复。追踪路径恒是
+  // 请求编号 → 账本上的终态；恒不另起一条旁路。
   const requestSystemReply = useCallback(async (channelId, msgType, payload) => {
     const epoch = governanceEpochRef.current;
     const requestId = governanceRequestId(await sendSystemCommand(channelId, msgType, payload));
@@ -768,15 +731,14 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     return result;
   }, [refreshDirectoryFacts, sendSystemCommand, trackGovernanceRequest]);
   const refreshGovernanceDirectory = useCallback(async () => {
-    await refreshDirectoryFacts();
     try {
-      await requestChannelTemplateList(navigation.activeChannelId);
+      await refreshDirectoryFacts();
       return true;
     } catch (failure) {
       showError(failure);
       return false;
     }
-  }, [navigation.activeChannelId, refreshDirectoryFacts, requestChannelTemplateList, showError]);
+  }, [refreshDirectoryFacts, showError]);
   useEffect(() => {
     for (const [requestId, record] of governanceRequestsRef.current) {
       const turn = timelineTurnForRequest(feed.stateFor(record.channelId), requestId);
@@ -806,48 +768,6 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
         continue;
       }
       const value = payload.value;
-      if (record.kind === 'template-list') {
-        if (!Array.isArray(value)) {
-          finishFailure(Object.assign(new TypeError('Registrar 模板列表结果格式无效'), { code: 'template_list_invalid' }));
-          continue;
-        }
-        if (templateListRequestRef.current === requestId) {
-          const observed = wire.accessRef.current?.channelTemplatesObserved?.(value);
-          if (observed !== true) {
-            finishFailure(unavailableError('session.directory.channelTemplates'));
-            continue;
-          }
-          navigation.bump();
-        }
-        governanceRequestsRef.current.delete(requestId);
-        record.resolve?.(value);
-        continue;
-      }
-      if (record.kind === 'template-get') {
-        const templateId = String(record.templateId || '');
-        const returnedId = String(value?.id || '').trim();
-        if (returnedId !== templateId) {
-          finishFailure(Object.assign(new TypeError('Registrar 模板详情返回了错误的模板编号'), { code: 'template_id_mismatch' }));
-          continue;
-        }
-        const validBody = value && typeof value === 'object' && !Array.isArray(value.body)
-          && value.body && typeof value.body === 'object';
-        if (!validBody) {
-          finishFailure(Object.assign(new TypeError('Registrar 模板详情缺少 recipe body'), { code: 'template_body_invalid' }));
-          continue;
-        }
-        if (templateGetRequestRef.current.get(templateId) === requestId) {
-          const observed = wire.accessRef.current?.channelTemplateObserved?.(value);
-          if (observed !== true) {
-            finishFailure(unavailableError('session.directory.channelTemplates'));
-            continue;
-          }
-          navigation.bump();
-        }
-        governanceRequestsRef.current.delete(requestId);
-        record.resolve?.(value);
-        continue;
-      }
       if (record.kind === 'channel-create') {
         const targetId = String(value?.channel_id || value?.channelId || '');
         if (!targetId) {
@@ -1483,9 +1403,8 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     : null;
   const directory = wire.accessRef.current?.directory?.() || {
     principals: EMPTY_ARRAY,
-    declarations: EMPTY_ARRAY,
+    actorDescriptions: EMPTY_ARRAY,
     devices: EMPTY_ARRAY,
-    channelTemplates: null,
     support: {},
   };
   const globalKeysChannelId = memberVisible ? navigation.activeChannelId : '';
@@ -1674,14 +1593,25 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     detailError: selectedActorCapability?.error?.detail || selectedActorCapability?.error?.code || '',
     disabled: !canWrite,
     globalKeys: globalKeysPort,
+    // 这个频道能用的设备（local-device 和描述里外挂的），给成员选 desired_host。
+    devices: attachments.devices,
     commands: {
-      // 成员的 class / 配置 / 两层状态：按需读，一次真人点击发一条 member.get。
+      // 成员的各层（描述条目、这一台的配置、合成值和来源、占位、最近一次构建）
+      // 与两层状态：按需读，一次真人点击发一条 member.get。
       readMember: (actor) => requestSystemReply(selectedActorChannelId, TYPES.member.get, { member: String(actor?.id || '') }),
-      // config 是顶层补丁；class 为空就不发。dry_run 只算不写。
-      setMember: ({ actor, klass = '', config = null, dryRun = false }) => requestSystemReply(selectedActorChannelId, TYPES.member.set, {
+      // 描述条目：body 整个替换，params 是合并补丁，requires 整个替换（null 清空）。
+      setMember: ({ actor, body = null, params = null, requires, dryRun = false }) => requestSystemReply(selectedActorChannelId, TYPES.member.set, {
         member: String(actor?.id || ''),
-        ...(klass ? { class: klass } : {}),
-        ...(config && Object.keys(config).length ? { config } : {}),
+        ...(body ? { body } : {}),
+        ...(params && Object.keys(params).length ? { params } : {}),
+        ...(requires !== undefined ? { requires } : {}),
+        ...(dryRun ? { dry_run: true } : {}),
+      }),
+      // 这一台的配置：desired_host 给了才改（'' 回到 local-device），values 是合并补丁。
+      setMemberConfig: ({ actor, desiredHost, values = null, dryRun = false }) => requestSystemReply(selectedActorChannelId, TYPES.member.configSet, {
+        member: String(actor?.id || ''),
+        ...(desiredHost !== undefined ? { desired_host: String(desiredHost || '') } : {}),
+        ...(values && Object.keys(values).length ? { values } : {}),
         ...(dryRun ? { dry_run: true } : {}),
       }),
       refresh: () => roster.refresh(navigation.activeChannelId, true),
@@ -1741,65 +1671,75 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   useEffect(() => {
     setChannelCreationRequest((current) => current && current.parentId !== navigation.activeChannelId ? null : current);
   }, [navigation.activeChannelId]);
-  const submitGovernance = ({ scope, action, payload }) => {
-    if (scope !== 'channel') return Promise.reject(unavailableError('governance.space'));
+  const submitGovernance = ({ scope, action, payload = {} }) => {
+    if (scope === 'space') return submitSpaceGovernance({ action, payload });
+    if (scope !== 'channel') return Promise.reject(unavailableError(`governance.${scope}`));
     const channelId = String(payload.channelId || navigation.activeChannelId || '');
+    // 说明文字、是否对外服务：频道描述里的两个字段。
     if (action === 'update_profile') return sendGovernanceCommand(channelId, TYPES.channel.set, {
       channel_id: channelId,
-      description: String(payload.description || ''),
+      ...(payload.description !== undefined ? { description: String(payload.description || '') } : {}),
+      ...(payload.serving !== undefined ? { serving: payload.serving ? 1 : 0 } : {}),
     });
     if (action === 'create_child') {
-      const templateId = String(payload.templateId || '').trim();
-      const manageableAgentIds = new Set(channelRoster
-        .filter((row) => row?.kind === 'agent' && row.id && isVisibleActor(row))
-        .map((row) => row.id));
-      const selectedAgentIds = Array.isArray(payload.initialActorIds)
-        ? payload.initialActorIds
-          .map((id) => String(id || '').trim())
-          .filter((id) => manageableAgentIds.has(id))
-        : [];
-      const initialActorIds = [...new Set([selfId, ...selectedAgentIds].filter(Boolean))];
-      let template = null;
-      return (async () => {
-        // ChannelCreateModal performs the public get receipt before calling
-        // this command. Consume that validated body so the Shell does not
-        // issue a duplicate Registrar read; legacy callers that provide only
-        // the stable id still use the existing request owner below.
-        if (templateId && payload.templateBody !== undefined) {
-          const suppliedBody = payload.templateBody;
-          if (!suppliedBody || typeof suppliedBody !== 'object' || Array.isArray(suppliedBody)) {
-            throw unavailableError('governance.channel.template.body');
-          }
-          template = { id: templateId, body: suppliedBody };
-        } else if (templateId) template = await requestChannelTemplate(channelId, templateId);
-        if (templateId && (!template?.body || typeof template.body !== 'object' || Array.isArray(template.body))) {
-          throw unavailableError('governance.channel.template.body');
-        }
-        const body = template?.body || {};
-        return sendGovernanceCommand(channelId, TYPES.channel.create, {
-          name: String(payload.name || '').trim(),
-          recipe: {
-            ...body,
-            declarations: Array.isArray(body.declarations) ? body.declarations : [],
-            profile: {
-              ...(body.profile && typeof body.profile === 'object' && !Array.isArray(body.profile) ? body.profile : {}),
-              ...(attachments.deviceId ? { default_storage_device_id: attachments.deviceId } : {}),
-              ...(String(payload.purpose || '').trim() ? { description: String(payload.purpose).trim() } : {}),
-            },
-          },
-          initial_actor_ids: initialActorIds,
-        });
-      })();
+      // 新频道从三种起点之一开始：空白、复制一个频道的描述（copy_from）、从本频道
+      // 抄几个成员条目；另带进来的人列在 humans 里，自己恒在其中。
+      const humans = [...new Set([principalId, ...(Array.isArray(payload.humans) ? payload.humans : [])]
+        .map((id) => String(id || '').trim()).filter(Boolean))];
+      const copyFrom = String(payload.copyFrom || '').trim();
+      const purpose = String(payload.purpose || '').trim();
+      const members = Array.isArray(payload.members) ? payload.members : [];
+      return sendGovernanceCommand(channelId, TYPES.channel.create, {
+        name: String(payload.name || '').trim(),
+        parent: channelId,
+        humans,
+        ...(copyFrom
+          ? { copy_from: copyFrom }
+          : (purpose || members.length)
+            ? { description: { ...(purpose ? { description: purpose } : {}), members } }
+            : {}),
+      });
     }
     if (action === 'introduce_actor') {
-      const human = payload.candidateType === 'principal';
-      return sendGovernanceCommand(channelId, human ? TYPES.member.admit : TYPES.member.create, human
-        ? { principal: payload.candidateId }
-        : { decl_id: payload.candidateId });
+      if (payload.candidateType === 'principal') {
+        return sendGovernanceCommand(channelId, TYPES.member.admit, { principal: payload.candidateId });
+      }
+      const name = String(payload.name || '').trim();
+      const body = payload.candidateType === 'class'
+        ? { class: String(payload.candidateId || '').trim() }
+        : { actor: String(payload.candidateId || '').trim() };
+      return sendGovernanceCommand(channelId, TYPES.member.create, { name, body });
+    }
+    if (action === 'attach_device' || action === 'detach_device') {
+      return sendGovernanceCommand(channelId, action === 'attach_device' ? TYPES.device.attach : TYPES.device.detach, {
+        channel_id: channelId,
+        device_id: String(payload.deviceId || ''),
+      });
     }
     if (action === 'remove_actor') return sendGovernanceCommand(channelId, TYPES.member.remove, { member: payload.actorId });
     if (action === 'retire') return sendGovernanceCommand(channelId, TYPES.channel.remove, { channel_id: channelId });
     return Promise.reject(unavailableError(`governance.channel.${action}`));
+  };
+  // 空间的词（Actor 描述、设备）同样经当前频道的 system 转交 c0；等终态回来再
+  // 刷新目录，列表只显示目录事实。
+  const submitSpaceGovernance = async ({ action, payload = {} }) => {
+    const channelId = String(navigation.activeChannelId || '');
+    const spaceWords = {
+      actor_description_create: [TYPES.actorDescription.create, () => ({
+        name: String(payload.name || '').trim(),
+        class: String(payload.class || '').trim(),
+        ...(payload.params && Object.keys(payload.params).length ? { params: payload.params } : {}),
+        ...(String(payload.description || '').trim() ? { description: String(payload.description).trim() } : {}),
+      })],
+      actor_description_retire: [TYPES.actorDescription.retire, () => ({ name: String(payload.name || ''), version: Number(payload.version) })],
+      create_device: [TYPES.device.create, () => ({ name: String(payload.name || '').trim() })],
+      retire_device: [TYPES.device.remove, () => ({ device_id: String(payload.deviceId || '') })],
+    };
+    const word = spaceWords[action];
+    if (!word) throw unavailableError(`governance.space.${action}`);
+    const reply = await requestSystemReply(channelId, word[0], word[1]());
+    await refreshDirectoryFacts();
+    return reply;
   };
   const governancePort = {
     channel: {
@@ -1807,17 +1747,19 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       children: navigation.channels.filter((channel) => channel.parent_id === navigation.activeChannelId),
       operation: channelOperation,
       creation: channelCreation,
-      // Templates are a directory projection only when the session owner has
-      // actually supplied them. `null` keeps the unavailable distinction; the
-      // governance feature must not read the space owner or invent rows.
-      channelTemplates: Array.isArray(directory.channelTemplates) ? directory.channelTemplates : null,
       principals: directory.support?.principals
         ? directory.principals.filter((row) => row.id !== principalId && row.kind === 'human')
         : EMPTY_ARRAY,
-      declarations: directory.support?.declarations
-        ? directory.declarations.filter(isManageableDeclaration)
+      // 可以拿来加成员的 Actor 描述：present 的，每个名字的最新版本。
+      actorDescriptions: directory.support?.actorDescriptions
+        ? latestActorDescriptions(directory.actorDescriptions)
         : EMPTY_ARRAY,
-      candidatesUnavailable: !directory.support?.principals || !directory.support?.declarations,
+      candidatesUnavailable: !directory.support?.principals || !directory.support?.actorDescriptions,
+      // 可以复制描述的频道：我是成员的、平台自己搭的（c0、大厅）除外。
+      copyableChannels: navigation.channels.filter((row) => row.id && row.id !== 'c0' && isMemberAccess(row.access)),
+      // 空间里的设备（可挂到本频道）和本频道此刻能用的设备。
+      spaceDevices: directory.devices,
+      channelDevices: attachments.devices,
       roster: channelRoster,
       // Governance receives the canonical roster owner's independent
       // authority.  This must stay separate from waitingRosterAuthority:
@@ -1832,8 +1774,10 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
           return refreshDirectoryFacts();
         },
         selectActor: (actor) => setPanel({ kind: 'actor', actor, channelId: navigation.activeChannelId }),
-        listTemplates: () => requestChannelTemplateList(navigation.activeChannelId),
-        getTemplate: (templateId) => requestChannelTemplate(navigation.activeChannelId, templateId),
+        // 频道的描述、健康、自己和各成员最近一次构建：按需读。
+        readChannel: (channelId = navigation.activeChannelId) => requestSystemReply(channelId, TYPES.channel.get, { channel_id: String(channelId || '') }),
+        // 一个频道的描述（抄成员条目时读本频道的）。
+        readDescription: (channelId = navigation.activeChannelId) => requestSystemReply(navigation.activeChannelId, TYPES.channelDescription.get, { channel: String(channelId || '') }),
         restartActor: ({ channelId, actorId } = {}) => sendGovernanceCommand(
           String(channelId || navigation.activeChannelId || ''),
           TYPES.member.restart,
@@ -1851,15 +1795,14 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       },
     },
     space: {
-      disabled: true,
-      unsupported: '当前 wire/session 没有空间治理结果投影；此版本仅展示 OBS 目录，不会伪造成功。',
-      devices: directory.devices.map((device) => ({
-        ...device,
-        attached: attachments.devices.some((row) => row.id === device.id),
-      })),
+      disabled: !canWrite,
+      actorDescriptions: directory.actorDescriptions || EMPTY_ARRAY,
+      actorDescriptionsUnavailable: !directory.support?.actorDescriptions,
+      devices: directory.devices,
       globalKeys: globalKeysPort,
       commands: {
-        submit: () => Promise.reject(unavailableError('governance.space')),
+        submit: submitGovernance,
+        refresh: () => refreshDirectoryFacts(),
       },
     },
   };

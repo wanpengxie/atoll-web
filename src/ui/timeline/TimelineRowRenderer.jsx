@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { actorNameFromMap } from '../../model/actor-display.js';
 import { isStandardActorIdentity } from '../../model/actor-visibility.js';
+import { buildRecord, buildSummaryText, buildTone } from '../../model/build-record.js';
 import { redactSensitive, terminalContentEnvelope, terminalResultState, turnProcessObservations } from '../../model/terminal-result.js';
 import { isMobileProfile } from '../../model/device-profile.js';
 import { hasReadableTerminalContent } from '../../model/conversation-visibility.js';
@@ -112,7 +113,9 @@ const SYSTEM_OPERATION_LABELS = Object.freeze({
   [TYPES.member.get]: '查看成员状态',
   [TYPES.member.remove]: '移除参与者',
   [TYPES.member.restart]: '重启参与者',
-  [TYPES.member.set]: '编辑成员配置',
+  [TYPES.member.set]: '编辑成员描述',
+  [TYPES.member.configGet]: '查看成员配置',
+  [TYPES.member.configSet]: '编辑成员配置',
   [TYPES.member.restartAll]: '重启频道内全部成员',
   [TYPES.log.recent]: '读取最近账本',
   [TYPES.log.query]: '查询动态',
@@ -122,16 +125,12 @@ const SYSTEM_OPERATION_LABELS = Object.freeze({
   [TYPES.channel.set]: '更新频道配置',
   [TYPES.channel.remove]: '退役频道',
   [TYPES.channelDevice.list]: '查看频道设备',
-  [TYPES.channelTemplate.create]: '创建频道模板',
-  [TYPES.channelTemplate.get]: '查看频道模板',
-  [TYPES.channelTemplate.list]: '查看频道模板',
-  [TYPES.channelTemplate.set]: '更新频道模板',
-  [TYPES.channelTemplate.remove]: '退役频道模板',
-  [TYPES.actorTemplate.create]: '创建参与者模板',
-  [TYPES.actorTemplate.get]: '查看参与者模板',
-  [TYPES.actorTemplate.list]: '查看参与者模板',
-  [TYPES.actorTemplate.set]: '更新参与者模板',
-  [TYPES.actorTemplate.remove]: '退役参与者模板',
+  [TYPES.channelDescription.get]: '查看频道描述',
+  [TYPES.actorDescription.create]: '新建 Actor 描述',
+  [TYPES.actorDescription.get]: '查看 Actor 描述',
+  [TYPES.actorDescription.list]: '查看 Actor 描述',
+  [TYPES.actorDescription.retire]: '退役 Actor 描述',
+  [TYPES.classes.list]: '查看可用 Class',
   [TYPES.principal.create]: '创建账户',
   [TYPES.principal.login]: '登录',
   [TYPES.principal.remove]: '停用账户',
@@ -146,31 +145,33 @@ const SYSTEM_OPERATION_LABELS = Object.freeze({
   [TYPES.narration.memberCreated]: '成员已加入',
   [TYPES.narration.memberDeleted]: '成员已移除',
   [TYPES.narration.channelInbound]: '频道收到新动态',
+  [TYPES.narration.memberUpdated]: '成员已更新',
+  [TYPES.narration.serviceUpdated]: '服务设置已更新',
+  [TYPES.narration.buildStarted]: '开始构建',
+  [TYPES.narration.buildFinished]: '构建结束',
 });
 
 // These are the typed identifier fields accepted by the current protocol
 // owners. Values are displayed only when the operation's own contract names
 // that field; arbitrary payload keys are deliberately ignored.
 const SYSTEM_OPERATION_DETAIL_KEYS = Object.freeze({
-  [TYPES.member.create]: 'decl_id',
+  [TYPES.member.create]: 'name',
   [TYPES.member.admit]: 'principal',
   [TYPES.member.get]: 'member',
   [TYPES.member.remove]: 'member',
   [TYPES.member.restart]: 'member',
   [TYPES.member.set]: 'member',
+  [TYPES.member.configGet]: 'member',
+  [TYPES.member.configSet]: 'member',
   [TYPES.channel.create]: 'name',
   [TYPES.channel.get]: 'channel_id',
   [TYPES.channel.list]: 'parent_id',
   [TYPES.channel.set]: 'channel_id',
   [TYPES.channel.remove]: 'channel_id',
-  [TYPES.actorTemplate.create]: 'id',
-  [TYPES.actorTemplate.get]: 'id',
-  [TYPES.actorTemplate.set]: 'id',
-  [TYPES.actorTemplate.remove]: 'id',
-  [TYPES.channelTemplate.create]: 'id',
-  [TYPES.channelTemplate.get]: 'id',
-  [TYPES.channelTemplate.set]: 'id',
-  [TYPES.channelTemplate.remove]: 'id',
+  [TYPES.channelDescription.get]: 'channel',
+  [TYPES.actorDescription.create]: 'name',
+  [TYPES.actorDescription.get]: 'name',
+  [TYPES.actorDescription.retire]: 'name',
   [TYPES.principal.get]: 'principal',
   [TYPES.principal.remove]: 'principal',
   [TYPES.device.remove]: 'device_id',
@@ -190,7 +191,8 @@ function memberEvent(envelope, kind) {
   return {
     kind,
     memberId,
-    declarationId: textFact(body.decl_id),
+    // 运行时生成成员时写下它的 class（peeractor、svcactor…）。
+    className: textFact(body.class),
     principalId: textFact(body.principal),
     reason: kind === 'member_left' ? textFact(body.reason) : '',
   };
@@ -207,7 +209,17 @@ const SYSTEM_EVENT_DECODERS = new Map([
     if (!fromChannel || !requestType || !localRequestId) return null;
     return { kind: 'channel_inbound', fromChannel, requestType, localRequestId };
   }],
+  [TYPES.narration.buildStarted, (envelope) => {
+    const record = buildRecord(argsOf(envelope));
+    return record ? { kind: 'build_started', record } : null;
+  }],
+  [TYPES.narration.buildFinished, (envelope) => {
+    const record = buildRecord(argsOf(envelope));
+    return record ? { kind: 'build_finished', record } : null;
+  }],
 ]);
+
+const GENERATED_CLASSES = new Set(['peeractor', 'svcactor', 'registrar']);
 
 function decodeSystemEvent(envelope) {
   const type = textFact(envelope?.type);
@@ -259,12 +271,23 @@ function systemEventPresentation(envelope, names) {
 
   const event = decodeSystemEvent(envelope);
   if (event.kind === 'member_joined' || event.kind === 'member_left') {
-    const hidden = isStandardActorIdentity({ id: event.memberId, declarationId: event.declarationId });
+    const hidden = GENERATED_CLASSES.has(event.className)
+      || isStandardActorIdentity({ id: event.memberId, kind: event.memberId.split(':')[0] });
     if (hidden) return { handled: true, hidden: true, text: '', standalone: true, event };
     const name = nameOf(event.memberId, names);
     const title = event.kind === 'member_joined' ? `${name} 已加入频道` : `${name} 已离开频道`;
     const detail = event.kind === 'member_left' && event.reason ? `（原因：${event.reason}）` : '';
     return { handled: true, hidden: false, standalone: true, text: `${title}${detail}`, event };
+  }
+  if (event.kind === 'build_started' || event.kind === 'build_finished') {
+    return {
+      handled: true,
+      hidden: false,
+      standalone: true,
+      text: buildSummaryText(event.record, { started: event.kind === 'build_started' }),
+      tone: event.kind === 'build_started' ? 'pending' : buildTone(event.record),
+      event,
+    };
   }
   if (event.kind === 'channel_inbound') {
     return {
@@ -1438,7 +1461,7 @@ function Narration({ rows, names }) {
     if (presentation?.hidden) return null;
     const text = presentation?.handled ? presentation.text : textOf(envelope, names);
     if (!text) return null;
-    if (presentation?.standalone) return <p key={envelope.id || seq}>{text}</p>;
+    if (presentation?.standalone) return <p key={envelope.id || seq} {...(presentation.tone ? { className: `build-event build-${presentation.tone}` } : {})}>{text}</p>;
     return <p key={envelope.id || seq}><strong>{nameOf(envelope.sender?.id, names)}</strong> {text}</p>;
   })}</div>;
 }

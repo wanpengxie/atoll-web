@@ -5,13 +5,18 @@ import {
   insertGlobalReference,
   isEditableMemberKind,
   MEMBER_LAYER_NAMES,
-  memberConfigForNewClass,
-  memberConfigPatch,
+  memberBodyLabel,
   memberLayerLabel,
-  memberSourceLabel,
+  memberSourceRows,
+  mergePatch,
   missingGlobalReferences,
+  missingPlaceholders,
   parseMemberConfigText,
+  patchAtPath,
+  sameJSON,
 } from '../../../model/member-config.js';
+import { LOCAL_DEVICE_ID } from '../../../protocol/vocab.js';
+import { BuildLine } from '../governance/BuildLine.jsx';
 
 function errorText(error) {
   const detail = error?.detail || error?.message || String(error);
@@ -46,80 +51,180 @@ export function MemberLayers({ member }) {
   </dl>;
 }
 
-function MemberConfigEditor({ actor, info, commands, globalKeys, disabled, onSaved, onCancel }) {
-  const [klass, setKlass] = useState(String(info?.class || ''));
-  const [text, setText] = useState(() => JSON.stringify(info?.config || {}, null, 2));
+function plainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function parseJSONObject(text, label) {
+  try { return { value: parseMemberConfigText(text), error: '' }; }
+  catch (failure) { return { value: null, error: `${label}：${failure.message}` }; }
+}
+
+// 全局 key 名单：打开编辑器是一次真人动作，这时读一次，给插入引用用。只在打开
+// 时读——重连不会让它自己再读一遍（前端恒不自动探测）。
+function useGlobalKeyNames(globalKeys) {
   const [keys, setKeys] = useState(null);
-  const [keysError, setKeysError] = useState('');
-  const [pick, setPick] = useState('');
-  const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
-  const [preview, setPreview] = useState(null);
-  const textRef = useRef(null);
-  const parsed = useMemo(() => {
-    try { return { config: parseMemberConfigText(text), error: '' }; }
-    catch (failure) { return { config: null, error: failure.message }; }
-  }, [text]);
-  const nextClass = klass.trim();
-  const classChanged = Boolean(nextClass) && nextClass !== String(info?.class || '');
-  const patch = !parsed.config ? null
-    : classChanged ? memberConfigForNewClass(parsed.config) : memberConfigPatch(info?.config, parsed.config);
-  const redacted = Boolean(patch && hasRedactedValue(patch));
-  const changed = classChanged || Boolean(patch && Object.keys(patch).length);
-  const missing = parsed.config && Array.isArray(keys) ? missingGlobalReferences(parsed.config, keys) : [];
   const listKeysRef = useRef(null);
   listKeysRef.current = globalKeys?.available === true ? globalKeys?.commands?.list : null;
-
-  // 打开编辑器是一次真人动作：这时读一次全局 key 名单，给插入引用用。只在打开
-  // 时读——重连不会让它自己再读一遍（前端恒不自动探测）。
   useEffect(() => {
     const listKeys = listKeysRef.current;
     if (typeof listKeys !== 'function') return undefined;
     let active = true;
     Promise.resolve(listKeys()).then((names) => {
-      if (!active) return;
-      setKeys(Array.isArray(names) ? names : []);
-      setPick((current) => current || (Array.isArray(names) && names[0]) || '');
-    }).catch((failure) => { if (active) setKeysError(errorText(failure)); });
+      if (active) setKeys(Array.isArray(names) ? names : []);
+    }).catch((failure) => { if (active) setError(errorText(failure)); });
     return () => { active = false; };
   }, []);
+  return { keys, error };
+}
 
+function GlobalReferencePicker({ textRef, text, setText, keys, keysError, globalKeys, disabled }) {
+  const [pick, setPick] = useState('');
+  const chosen = pick || keys?.[0] || '';
   const insert = () => {
-    if (!pick) return;
+    if (!chosen) return;
     const element = textRef.current;
-    const { text: next, cursor } = insertGlobalReference(text, element?.selectionStart, element?.selectionEnd, pick);
+    const { text: next, cursor } = insertGlobalReference(text, element?.selectionStart, element?.selectionEnd, chosen);
     setText(next);
-    setPreview(null);
     requestAnimationFrame(() => {
       if (!element?.isConnected) return;
       element.focus();
       element.setSelectionRange(cursor, cursor);
     });
   };
+  return <>
+    <div className="member-config-global" role="group" aria-label="插入全局 key 引用">
+      <select aria-label="选择全局 key" value={chosen} disabled={disabled || !keys?.length} onChange={(event) => setPick(event.target.value)}>
+        {!keys?.length && <option value="">{keys ? '还没有全局 key' : globalKeys?.available === true && !keysError ? '正在读取全局 key…' : '全局 key 不可用'}</option>}
+        {(keys || []).map((name) => <option key={name} value={name}>{name}</option>)}
+      </select>
+      <button type="button" disabled={disabled || !chosen} onClick={insert}>插入引用</button>
+    </div>
+    {keys && !keys.length && <p className="field-hint">可在「空间管理 → 全局 key」添加；配置里写 <code>"$global.&lt;名称&gt;"</code> 引用。</p>}
+    {keysError && <p className="field-hint">全局 key 名单读取失败：{keysError}</p>}
+    {globalKeys?.available !== true && <p className="field-hint">{globalKeys?.reason || '当前不能读取全局 key。'}</p>}
+  </>;
+}
 
+function EditorActions({ busy, locked, ready, onCancel, onCheck, saveLabel }) {
+  return <div className="form-actions">
+    <button type="button" disabled={Boolean(busy)} onClick={onCancel}>取消</button>
+    <button type="button" disabled={locked || !ready} onClick={onCheck}>{busy === 'dry-run' ? '检查中…' : '检查变更'}</button>
+    <button type="submit" className="primary-button" disabled={locked || !ready}>{busy === 'save' ? '正在保存…' : saveLabel}</button>
+  </div>;
+}
+
+// 描述条目：成员从什么造（class 或 名字@版本）、这个频道给它的 params、它
+// 声明要有的 requires。写在 c0 的频道描述里，发 system.member.set。
+function MemberEntryEditor({ actor, info, commands, disabled, onSaved, onCancel }) {
+  const body = plainObject(info?.body) ? info.body : {};
+  const [mode, setMode] = useState(body.actor ? 'actor' : 'class');
+  const [ref, setRef] = useState(String(body.actor || body.class || ''));
+  const [text, setText] = useState(() => JSON.stringify(plainObject(info?.params) ? info.params : {}, null, 2));
+  const [requiresText, setRequiresText] = useState((Array.isArray(info?.requires) ? info.requires : []).join(', '));
+  const [busy, setBusy] = useState('');
+  const [error, setError] = useState('');
+  const [preview, setPreview] = useState(null);
+  const parsed = useMemo(() => parseJSONObject(text, 'params'), [text]);
+  const nextBody = ref.trim() ? { [mode]: ref.trim() } : null;
+  const bodyChanged = Boolean(nextBody) && !sameJSON(nextBody, plainObject(info?.body) ? info.body : {});
+  const patch = parsed.value ? mergePatch(info?.params, parsed.value) : null;
+  const requires = requiresText.split(/[\s,，]+/).map((word) => word.trim()).filter(Boolean);
+  const requiresChanged = !sameJSON(requires, Array.isArray(info?.requires) ? info.requires : []);
+  const redacted = Boolean(patch && hasRedactedValue(patch));
+  const changed = bodyChanged || requiresChanged || Boolean(patch && Object.keys(patch).length);
   const submit = async (dryRun) => {
-    if (!parsed.config || redacted) return;
+    if (!parsed.value || redacted) return;
     setBusy(dryRun ? 'dry-run' : 'save');
     setError('');
     if (!dryRun) setPreview(null);
     try {
-      const reply = await commands.setMember({ actor, klass: classChanged ? nextClass : '', config: patch, dryRun });
+      const reply = await commands.setMember({
+        actor,
+        body: bodyChanged ? nextBody : null,
+        params: patch,
+        ...(requiresChanged ? { requires: requires.length ? requires : null } : {}),
+        dryRun,
+      });
       if (dryRun) setPreview(reply || {});
-      else onSaved(reply || {});
+      else onSaved(`成员条目已写进频道描述（第 ${reply?.description_revision ?? '?'} 版）；成员会按新描述重建，构建结果点「刷新」查看。`);
     } catch (failure) {
       setError(errorText(failure));
     } finally {
       setBusy('');
     }
   };
+  const locked = disabled || Boolean(busy);
+  return <form className="governance-form member-config-editor" aria-label="编辑成员条目" onSubmit={(event) => { event.preventDefault(); void submit(false); }}>
+    <fieldset className="member-body-mode" disabled={locked}>
+      <legend>从什么造</legend>
+      <label><input type="radio" name="member-body-mode" checked={mode === 'class'} onChange={() => { setMode('class'); setPreview(null); }} /> Class</label>
+      <label><input type="radio" name="member-body-mode" checked={mode === 'actor'} onChange={() => { setMode('actor'); setPreview(null); }} /> Actor 描述（名字@版本）</label>
+    </fieldset>
+    <label>{mode === 'actor' ? 'Actor 描述' : 'Class'}<input aria-label={mode === 'actor' ? '成员 Actor 描述' : '成员 Class'} value={ref} disabled={locked} placeholder={mode === 'actor' ? '例如 research-claude@2' : '例如 claude'} onChange={(event) => { setRef(event.target.value); setPreview(null); }} /></label>
+    <label>params JSON<textarea aria-label="成员 params JSON" rows="8" spellCheck={false} value={text} disabled={locked} aria-invalid={parsed.error ? true : undefined} onChange={(event) => { setText(event.target.value); setPreview(null); }} /></label>
+    {parsed.error && <p className="field-error" role="alert">{parsed.error}</p>}
+    <label>requires<input aria-label="成员 requires" value={requiresText} disabled={locked} placeholder="逗号分隔的词" onChange={(event) => { setRequiresText(event.target.value); setPreview(null); }} /></label>
+    <p className="field-hint">params 的值写 <code>"$required:说明"</code> 就是一个占位：由成员在这一台的配置里填。</p>
+    {redacted && <p className="field-error" role="alert">params 里有“已隐藏”的值（本地缓存脱敏过），不能写回；请点「刷新」重新读取后再改。</p>}
+    {changed && <details className="member-config-patch" open>
+      <summary>将提交的变更</summary>
+      <pre>{JSON.stringify({ ...(bodyChanged ? { body: nextBody } : {}), ...(patch && Object.keys(patch).length ? { params: patch } : {}), ...(requiresChanged ? { requires: requires.length ? requires : null } : {}) }, null, 2)}</pre>
+    </details>}
+    {preview && <div className="member-config-preview" role="status" aria-label="检查结果">
+      <strong>检查通过：描述会是第 {preview.description_revision != null ? Number(preview.description_revision) + 1 : '?'} 版</strong>
+      {preview.entry && <pre>{JSON.stringify(preview.entry, null, 2)}</pre>}
+    </div>}
+    {error && <p className="governance-error" role="alert">{error}</p>}
+    <EditorActions busy={busy} locked={locked} ready={Boolean(parsed.value) && changed && !redacted} onCancel={onCancel} onCheck={() => void submit(true)} saveLabel="保存条目" />
+  </form>;
+}
 
+// 这一台的配置：它跑在哪台设备（desired_host，空 = local-device）和它的 values。
+// 存在本频道的库里，发 system.member.config.set。
+function MemberOwnConfigEditor({ actor, info, commands, devices, globalKeys, disabled, onSaved, onCancel }) {
+  const own = plainObject(info?.own_config) ? info.own_config : {};
+  const ownValues = plainObject(own.values) ? own.values : {};
+  const [host, setHost] = useState(String(own.desired_host || ''));
+  const [text, setText] = useState(() => JSON.stringify(ownValues, null, 2));
+  const [busy, setBusy] = useState('');
+  const [error, setError] = useState('');
+  const [preview, setPreview] = useState(null);
+  const { keys, error: keysError } = useGlobalKeyNames(globalKeys);
+  const textRef = useRef(null);
+  const parsed = useMemo(() => parseJSONObject(text, 'values'), [text]);
+  const patch = parsed.value ? mergePatch(ownValues, parsed.value) : null;
+  const hostChanged = host !== String(own.desired_host || '');
+  const redacted = Boolean(patch && hasRedactedValue(patch));
+  const changed = hostChanged || Boolean(patch && Object.keys(patch).length);
+  const missing = parsed.value && Array.isArray(keys) ? missingGlobalReferences(parsed.value, keys) : [];
+  const hostOptions = [...new Set([String(own.desired_host || ''), ...(devices || []).map((row) => row.id)].filter((id) => id && id !== LOCAL_DEVICE_ID))];
+  const submit = async (dryRun) => {
+    if (!parsed.value || redacted) return;
+    setBusy(dryRun ? 'dry-run' : 'save');
+    setError('');
+    if (!dryRun) setPreview(null);
+    try {
+      const reply = await commands.setMemberConfig({ actor, ...(hostChanged ? { desiredHost: host } : {}), values: patch, dryRun });
+      if (dryRun) setPreview(reply || {});
+      else onSaved(`这一台的配置已保存（第 ${reply?.revision ?? '?'} 版）；成员会按新配置重建，构建结果点「刷新」查看。`);
+    } catch (failure) {
+      setError(errorText(failure));
+    } finally {
+      setBusy('');
+    }
+  };
   const locked = disabled || Boolean(busy);
   return <form className="governance-form member-config-editor" aria-label="编辑成员配置" onSubmit={(event) => { event.preventDefault(); void submit(false); }}>
-    <label>Class<input aria-label="成员 Class" value={klass} disabled={locked} onChange={(event) => { setKlass(event.target.value); setPreview(null); }} /></label>
-    <label>配置 JSON<textarea
+    <label>运行设备<select aria-label="成员运行设备" value={host} disabled={locked} onChange={(event) => { setHost(event.target.value); setPreview(null); }}>
+      <option value="">local-device（默认）</option>
+      {hostOptions.map((id) => <option key={id} value={id}>{(devices || []).find((row) => row.id === id)?.name || id}</option>)}
+    </select></label>
+    <label>values JSON<textarea
       ref={textRef}
       aria-label="成员配置 JSON"
-      rows="12"
+      rows="10"
       spellCheck={false}
       value={text}
       disabled={locked}
@@ -127,51 +232,78 @@ function MemberConfigEditor({ actor, info, commands, globalKeys, disabled, onSav
       onChange={(event) => { setText(event.target.value); setPreview(null); }}
     /></label>
     {parsed.error && <p className="field-error" role="alert">{parsed.error}</p>}
-    <div className="member-config-global" role="group" aria-label="插入全局 key 引用">
-      <select aria-label="选择全局 key" value={pick} disabled={locked || !keys?.length} onChange={(event) => setPick(event.target.value)}>
-        {!keys?.length && <option value="">{keys ? '还没有全局 key' : globalKeys?.available === true && !keysError ? '正在读取全局 key…' : '全局 key 不可用'}</option>}
-        {(keys || []).map((name) => <option key={name} value={name}>{name}</option>)}
-      </select>
-      <button type="button" disabled={locked || !pick} onClick={insert}>插入引用</button>
-    </div>
-    {keys && !keys.length && <p className="field-hint">可在「空间管理 → 全局 key」添加；配置里写 <code>"$global.&lt;名称&gt;"</code> 引用。</p>}
-    {keysError && <p className="field-hint">全局 key 名单读取失败：{keysError}</p>}
-    {globalKeys?.available !== true && <p className="field-hint">{globalKeys?.reason || '当前不能读取全局 key。'}</p>}
+    <GlobalReferencePicker textRef={textRef} text={text} setText={(next) => { setText(next); setPreview(null); }} keys={keys} keysError={keysError} globalKeys={globalKeys} disabled={locked} />
     {missing.length > 0 && <p className="field-hint member-config-missing" role="status">引用的全局 key 不存在：{missing.join('、')}</p>}
-    {redacted && <p className="field-error" role="alert">配置里有“已隐藏”的值（本地缓存脱敏过），不能写回成员；请点「刷新配置」重新读取后再改。</p>}
-    {classChanged && <p className="field-hint">换 Class 时会以新 Class 的默认值为底，提交编辑器里的整份配置。</p>}
-    {patch && changed && <details className="member-config-patch" open>
+    {redacted && <p className="field-error" role="alert">配置里有“已隐藏”的值（本地缓存脱敏过），不能写回成员；请点「刷新」重新读取后再改。</p>}
+    {changed && <details className="member-config-patch" open>
       <summary>将提交的变更</summary>
-      <pre>{JSON.stringify({ ...(classChanged ? { class: nextClass } : {}), ...(Object.keys(patch).length ? { config: patch } : {}) }, null, 2)}</pre>
+      <pre>{JSON.stringify({ ...(hostChanged ? { desired_host: host } : {}), ...(patch && Object.keys(patch).length ? { values: patch } : {}) }, null, 2)}</pre>
     </details>}
     {preview && <div className="member-config-preview" role="status" aria-label="检查结果">
-      <strong>{preview.changed ? '检查通过：会改变配置' : '检查通过：配置不会改变'}</strong>
-      {preview.class && <small>Class {preview.class}</small>}
-      <pre>{JSON.stringify(preview.config ?? {}, null, 2)}</pre>
+      <strong>检查通过</strong>
+      <small>运行设备 {preview.desired_host || 'local-device'}</small>
+      <pre>{JSON.stringify(preview.values ?? {}, null, 2)}</pre>
     </div>}
     {error && <p className="governance-error" role="alert">{error}</p>}
-    <div className="form-actions">
-      <button type="button" disabled={Boolean(busy)} onClick={onCancel}>取消</button>
-      <button type="button" disabled={locked || !parsed.config || !changed || redacted} onClick={() => void submit(true)}>{busy === 'dry-run' ? '检查中…' : '检查变更'}</button>
-      <button type="submit" className="primary-button" disabled={locked || !parsed.config || !changed || redacted}>{busy === 'save' ? '正在保存…' : '保存配置'}</button>
-    </div>
+    <EditorActions busy={busy} locked={locked} ready={Boolean(parsed.value) && changed && !redacted} onCancel={onCancel} onCheck={() => void submit(true)} saveLabel="保存配置" />
   </form>;
 }
 
-// 成员的 class 与配置。按需读取（system.member.get 是一条账本请求，恒不自动发），
-// 只有 agent / tool 可以编辑；保存发 system.member.set，config 是顶层补丁。
+// 还没填的占位：每个给一个输入框，填了直接写进这一台的配置。
+function MissingPlaceholders({ actor, info, commands, disabled, onSaved }) {
+  const missing = missingPlaceholders(info);
+  const [values, setValues] = useState({});
+  const [busy, setBusy] = useState('');
+  const [error, setError] = useState('');
+  if (!missing.length) return null;
+  const fill = async (key) => {
+    const value = String(values[key] ?? '');
+    if (!value) return;
+    setBusy(key);
+    setError('');
+    try {
+      const reply = await commands.setMemberConfig({ actor, values: patchAtPath(key, value) });
+      setValues((current) => ({ ...current, [key]: '' }));
+      onSaved(`已填 ${key}（配置第 ${reply?.revision ?? '?'} 版）；成员会重建，构建结果点「刷新」查看。`);
+    } catch (failure) {
+      setError(errorText(failure));
+    } finally {
+      setBusy('');
+    }
+  };
+  const writable = typeof commands.setMemberConfig === 'function';
+  return <div className="member-missing" role="group" aria-label="还没填的占位">
+    <strong>还缺 {missing.length} 个值</strong>
+    <p className="field-hint">这些键在 Actor 描述或成员条目里是占位（$required），成员要等它们在这一台的配置里填上才能构建。值可以写 <code>$global.名称</code> 引用全局 key。</p>
+    {missing.map((row) => <div className="member-missing-row" key={row.key} data-key={row.key}>
+      <div><code>{row.key}</code>{row.hint && <small>{row.hint}</small>}</div>
+      <input aria-label={`填写 ${row.key}`} value={values[row.key] ?? ''} disabled={disabled || !writable || Boolean(busy)} onChange={(event) => setValues((current) => ({ ...current, [row.key]: event.target.value }))} />
+      <button type="button" disabled={disabled || !writable || Boolean(busy) || !values[row.key]} onClick={() => void fill(row.key)}>{busy === row.key ? '写入中…' : '填入'}</button>
+    </div>)}
+    {error && <p className="governance-error" role="alert">{error}</p>}
+  </div>;
+}
+
+function formatValue(value) {
+  if (value === undefined) return '—';
+  return typeof value === 'string' ? value : JSON.stringify(value);
+}
+
+// 成员的各层。按需读取（system.member.get 是一条账本请求，恒不自动发）：
+// 描述条目（发 member.set）和这一台的配置（发 member.config.set）分两块编辑；
+// 下面是合成后的值、每个键来自哪一层、还缺的占位和最近一次构建。
 export function MemberConfigSection({ actor, port = {} }) {
   const commands = port.commands || {};
   const [info, setInfo] = useState(null);
   const [reading, setReading] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState('');
   const editable = isEditableMemberKind(actor?.kind);
   const readable = typeof commands.readMember === 'function';
   const actorIdRef = useRef(actor?.id);
   actorIdRef.current = actor?.id;
-  useEffect(() => { setInfo(null); setEditing(false); setError(''); setNotice(''); setReading(false); }, [actor?.id]);
+  useEffect(() => { setInfo(null); setEditing(''); setError(''); setNotice(''); setReading(false); }, [actor?.id]);
 
   // 回复回来时如果已经换了成员，它说的是上一个成员：丢掉，恒不显示在这一个下面。
   const read = async () => {
@@ -192,43 +324,58 @@ export function MemberConfigSection({ actor, port = {} }) {
     }
   };
 
-  const saved = async (reply) => {
-    setEditing(false);
-    setNotice(reply.changed === false
-      ? '配置没有变化。'
-      : reply.rebuilt ? '配置已保存，成员已按新配置重建。' : '配置已保存。');
+  const saved = async (message) => {
+    setEditing('');
+    setNotice(message);
     await read();
   };
 
+  const described = Boolean(info) && !info.generated && plainObject(info.body);
+  const sources = info ? memberSourceRows(info) : [];
+  const effective = info?.effective ?? info?.config;
   return <section className="panel-card member-config" aria-label="成员配置">
     <header className="panel-card-header">
-      <h3>配置</h3>
-      <button type="button" className="text-button" disabled={!readable || reading || editing} title={editing ? '编辑中不刷新：改动以打开编辑器时读到的配置为底' : undefined} onClick={() => { setNotice(''); void read(); }}>{reading ? '读取中…' : info ? '刷新配置' : '读取配置'}</button>
+      <h3>描述与配置</h3>
+      <button type="button" className="text-button" disabled={!readable || reading || Boolean(editing)} title={editing ? '编辑中不刷新：改动以打开编辑器时读到的值为底' : undefined} onClick={() => { setNotice(''); void read(); }}>{reading ? '读取中…' : info ? '刷新' : '读取配置'}</button>
     </header>
     {!readable && <p className="governance-empty">当前会话不能读取成员配置。</p>}
-    {readable && !info && !reading && !error && <p className="governance-empty">配置按需读取：点「读取配置」向本频道 system 发一条 system.member.get。</p>}
+    {readable && !info && !reading && !error && <p className="governance-empty">按需读取：点「读取配置」向本频道 system 发一条 system.member.get。</p>}
     {error && <p className="governance-error" role="alert">{error}</p>}
     {notice && <p className="operation-state state-completed" role="status">{notice}</p>}
     {info && <>
       <dl className="work-item-metadata member-config-facts">
         <dt>Class</dt><dd>{info.class || '—'}</dd>
-        <dt>来源</dt><dd>{memberSourceLabel(info.source) || '—'}</dd>
-        {info.desired_host && <><dt>部署设备</dt><dd>{info.desired_host}</dd></>}
+        <dt>来源</dt><dd>{info.generated ? '运行时生成（不在频道描述里）' : memberBodyLabel(info.body) || '—'}</dd>
+        <dt>运行设备</dt><dd>{info.desired_host || 'local-device'}</dd>
       </dl>
-      {!editing && <pre className="member-config-json" aria-label="当前配置">{JSON.stringify(info.config ?? {}, null, 2)}</pre>}
-      {!editing && editable && <button type="button" className="secondary-button" disabled={port.disabled || typeof commands.setMember !== 'function'} onClick={() => { setNotice(''); setEditing(true); }}>编辑配置</button>}
-      {!editable && <p className="governance-empty">只有 Agent 和工具成员有可编辑的配置。</p>}
-      {editing && <MemberConfigEditor
-        actor={actor}
-        info={info}
-        commands={commands}
-        globalKeys={port.globalKeys}
-        disabled={port.disabled}
-        onCancel={() => setEditing(false)}
-        onSaved={saved}
-      />}
-      {info.config && Object.values(info.config).some((value) => typeof value === 'string' && value.startsWith('$global.')) && !editing
-        && <p className="field-hint">以 <code>$global.</code> 开头的是对 {GLOBAL_PREFIX}&lt;名称&gt; 的引用，不是值。</p>}
+      {info.note && <p className="field-hint member-note" role="status">{info.note}</p>}
+      {info.build && <div className="member-build" aria-label="最近一次构建"><BuildLine record={info.build} label="最近一次构建" /></div>}
+      {!editing && <MissingPlaceholders actor={actor} info={info} commands={commands} disabled={port.disabled || !editable} onSaved={saved} />}
+      {described && <section className="member-block" aria-label="描述条目">
+        <h4>描述条目 <small>频道描述里，所有这个频道的实例共用</small></h4>
+        {editing !== 'entry' && <pre className="member-config-json" aria-label="当前 params">{JSON.stringify(info.params ?? {}, null, 2)}</pre>}
+        {editing !== 'entry' && Array.isArray(info.requires) && info.requires.length > 0 && <p className="field-hint">requires：{info.requires.join('、')}</p>}
+        {!editing && editable && <button type="button" className="secondary-button" disabled={port.disabled || typeof commands.setMember !== 'function'} onClick={() => { setNotice(''); setEditing('entry'); }}>编辑条目</button>}
+        {editing === 'entry' && <MemberEntryEditor actor={actor} info={info} commands={commands} disabled={port.disabled} onCancel={() => setEditing('')} onSaved={saved} />}
+      </section>}
+      {described && <section className="member-block" aria-label="这一台的配置">
+        <h4>这一台的配置 <small>本频道的库里，只属于这个成员</small></h4>
+        {editing !== 'config' && <pre className="member-config-json" aria-label="当前配置">{JSON.stringify(info.own_config?.values ?? {}, null, 2)}</pre>}
+        {editing !== 'config' && info.own_config?.revision > 0 && <p className="field-hint">第 {info.own_config.revision} 版{info.own_config.desired_host ? ` · 运行设备 ${info.own_config.desired_host}` : ''}</p>}
+        {!editing && editable && <button type="button" className="secondary-button" disabled={port.disabled || typeof commands.setMemberConfig !== 'function'} onClick={() => { setNotice(''); setEditing('config'); }}>编辑配置</button>}
+        {editing === 'config' && <MemberOwnConfigEditor actor={actor} info={info} commands={commands} devices={port.devices} globalKeys={port.globalKeys} disabled={port.disabled} onCancel={() => setEditing('')} onSaved={saved} />}
+      </section>}
+      {!editable && <p className="governance-empty">只有 Agent 和工具成员有可编辑的描述和配置。</p>}
+      <section className="member-block" aria-label="合成后的值">
+        <h4>合成后的值 <small>Class 默认值 ← Actor 描述 ← 成员条目 ← 这一台的配置</small></h4>
+        {sources.length > 0
+          ? <table className="member-sources"><thead><tr><th>键</th><th>值</th><th>来自</th></tr></thead><tbody>
+            {sources.map((row) => <tr key={row.path} data-layer={row.layer}><td><code>{row.path}</code></td><td>{formatValue(row.value)}</td><td>{row.label}</td></tr>)}
+          </tbody></table>
+          : <pre className="member-config-json" aria-label="合成配置">{JSON.stringify(effective ?? {}, null, 2)}</pre>}
+        {JSON.stringify(effective ?? {}).includes('"$global.')
+          && <p className="field-hint">以 <code>$global.</code> 开头的是对 {GLOBAL_PREFIX}&lt;名称&gt; 的引用，不是值。</p>}
+      </section>
     </>}
   </section>;
 }
