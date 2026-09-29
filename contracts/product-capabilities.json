@@ -418,11 +418,11 @@
       "implementation": "complete"
     },
     {
-      "id": "channel.overlay-profile",
+      "id": "channel.profile",
       "stage": "E",
-      "user_task": "配置频道 overlay、描述、serving 和 endpoints",
+      "user_task": "配置频道描述和 serving",
       "ui_region": "空间管理与频道设置",
-      "backend": [{"surface": "ws-submit", "operation": "actor.overlay.set|clear|channel.profile.set via registrar"}],
+      "backend": [{"surface": "ws-submit", "operation": "channel.set via registrar"}],
       "preconditions": ["空间治理权限", "目标频道存在"],
       "accepted_evidence": "submit receipt.message_id",
       "completed_evidence": "结构化结果入账且 OBS profile/actors 收敛",

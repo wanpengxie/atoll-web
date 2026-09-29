@@ -96,10 +96,6 @@ export const TYPES = Object.freeze({
     set: 'system.actor.template.set',
     remove: 'system.actor.template.delete',
   }),
-  actorOverlay: Object.freeze({
-    set: 'system.actor.overlay.set',
-    clear: 'system.actor.overlay.delete',
-  }),
   principal: Object.freeze({
     create: 'system.principal.create',
     login: 'system.principal.login',

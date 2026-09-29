@@ -1172,18 +1172,6 @@ export function createMockServer({
             later(80, () => domain.retireChannel(targetChannelId));
             return;
           }
-          case 'system.actor.overlay.set': {
-            assertClosedPayload(body, ['decl_id', 'channel_id', 'config']);
-            if (body.channel_id !== channelId) throw new TypeError('overlay must target the source channel');
-            complete(domain.setOverlay(channelId, body.decl_id, body.config));
-            return;
-          }
-          case 'system.actor.overlay.delete': {
-            assertClosedPayload(body, ['decl_id', 'channel_id']);
-            if (body.channel_id !== channelId) throw new TypeError('overlay must target the source channel');
-            complete(domain.clearOverlay(channelId, body.decl_id));
-            return;
-          }
           case 'system.actor.template.list':
             assertClosedPayload(body, []);
             complete([...domain.declarations.values()].filter((row) => row.status === 'present').map((row) => ({ ...row })));

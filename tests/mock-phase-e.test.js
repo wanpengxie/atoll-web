@@ -35,7 +35,6 @@ describe('phase E stateful mock', () => {
     const list = await submitTerminal(h, 'system.actor.template.list', {});
     expect(list.payload.body.value.map((row) => row.id)).toContain('demo:assistant');
     expect((await submitTerminal(h, 'system.channel.template.create', { id: 'demo:channel', name: 'Demo channel', visibility: 'private', body: { declarations: [{ decl_id: 'demo:assistant' }] } })).payload.body.status).toBe('completed');
-    expect((await submitTerminal(h, 'system.actor.overlay.set', { channel_id: 'c0', decl_id: 'demo:assistant', config: { model: 'overlay' } })).payload.body.value.applied).toBe(true);
     // system.channel.set 的字段闭集不含 endpoints。
     expect((await submitTerminal(h, 'system.channel.set', { channel_id: 'c0', description: 'Configured', serving: 1 })).payload.body.status).toBe('completed');
     const devices = await submitTerminal(h, 'system.channel.device.list', {});

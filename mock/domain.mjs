@@ -168,7 +168,6 @@ export class MockDomain {
     this.channelTemplates = new Map([
       ['mock:team', { id: 'mock:team', name: 'Team channel', description: 'Mock team template', visibility: 'private', body: { declarations: [{ decl_id: 'mock:steward' }], profile: { default_storage_device_id: 'local-device' } }, status: 'present' }],
     ]);
-    this.overlays = new Map();
     this.profiles = new Map([...this.channels.values()].map((channel) => [channel.id, { channel_id: channel.id, description: channel.description || '', serving: channel.open ? 1 : 0, default_storage_device_id: 'local-device', endpoints: {} }]));
     // Device id is authority/routing identity; its canonical name spells the
     // human-readable daemon:// namespace.
@@ -596,17 +595,6 @@ export class MockDomain {
     row.status = 'revoked'; return { id, revoked: true };
   }
 
-  setOverlay(channelId, declId, config) {
-    if (!this.channel(channelId) || !this.declarations.get(declId)) throw new TypeError('channel or declaration does not exist');
-    this.overlays.set(`${channelId}:${declId}`, { channel_id: channelId, decl_id: declId, config: structuredClone(config) });
-    return { channel_id: channelId, decl_id: declId, applied: true };
-  }
-
-  clearOverlay(channelId, declId) {
-    this.overlays.delete(`${channelId}:${declId}`);
-    return { channel_id: channelId, decl_id: declId, cleared: true };
-  }
-
   setProfile(channelId, profile) {
     const channel = this.channel(channelId);
     if (!channel) throw new TypeError('channel does not exist');
@@ -825,7 +813,6 @@ export class MockDomain {
       faults: structuredClone(this.faults),
       declarations: [...this.declarations.values()].map(({ config, ...row }) => ({ ...row, has_config: Boolean(config && Object.keys(config).length) })),
       channel_templates: [...this.channelTemplates.values()].map((row) => ({ id: row.id, name: row.name, status: row.status })),
-      overlays: [...this.overlays.values()].map((row) => ({ channel_id: row.channel_id, decl_id: row.decl_id })),
       devices: [...this.devices.values()].map(({ key, ...row }) => row),
       bindings: [...this.bindings],
       resources: Object.fromEntries([...this.resources].map(([id, rows]) => [id, [...rows.values()].map((row) => ({ id: row.id, kind: row.kind, address: row.address }))])),
