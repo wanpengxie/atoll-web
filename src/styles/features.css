@@ -524,7 +524,7 @@ button.channel-file-row { font: inherit; }
 .member-config-preview { display: grid; gap: 4px; padding: 9px; border-radius: var(--radius-control); background: var(--success-bg); font-size: 10px; }
 .member-config-preview strong { color: var(--online); }
 .member-config-preview pre { margin: 0; background: white; }
-.member-config > .field-hint { margin: 8px 0 0; color: var(--text-dim); font-size: 9px; line-height: 1.5; }
+.member-config > .field-hint, .member-block > .field-hint, .member-missing .field-hint, .member-config-editor .field-hint { margin: 4px 0 0; color: var(--text-dim); font-size: 9px; line-height: 1.5; }
 .member-config .field-hint code, .member-config-editor .field-hint code { font: 9px var(--mono); }
 
 /* 构建记录：成员详情、频道设置、时间线共用。 */

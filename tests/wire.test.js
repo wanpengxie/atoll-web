@@ -300,6 +300,28 @@ describe('wire client', () => {
     wire.close();
   });
 
+  it('resync re-attaches at once so a new membership arrives with the attach receipt', () => {
+    const states = [];
+    const wire = createWire({
+      WebSocketImpl: FakeWebSocket,
+      since: () => ({ c0: 3 }),
+      focus: () => 'c0',
+      onState: (state, detail) => states.push([state, detail]),
+    });
+    const first = FakeWebSocket.instances[0];
+    first.open();
+    receipt(first, first.sent[0]);
+
+    wire.resync('channel created');
+
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    const second = FakeWebSocket.instances[1];
+    second.open();
+    expect(second.sent[0]).toMatchObject({ frame_type: 'attach' });
+    expect(states).toContainEqual(['reconnecting', { delay: 0, reason: 'channel created', generation: 1 }]);
+    wire.close();
+  });
+
   it('ignores a late callback from an obsolete socket after a new generation opens', () => {
     const states = [];
     const wire = createWire({

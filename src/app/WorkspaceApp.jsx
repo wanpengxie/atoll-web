@@ -789,6 +789,8 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
         setChannelCreationRequest((current) => current?.requestId === requestId
           ? { ...current, ledger: true, targetId, error: '', failed: false }
           : current);
+        // 新频道把自己放了进去；成员关系只随 attach 到达，重新 attach 一次。
+        wire.wireRef.current?.resync?.('channel created');
       }
     }
   }, [feed, governanceRequestRevision, navigation, wire]);

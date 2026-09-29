@@ -522,6 +522,11 @@ export function createWire({
 		generation: requestedGeneration,
 	  });
     },
+    // 重新经过 attach：成员关系只在 attach 回执里（服务端不推成员变更），自己刚
+    // 得到一个新频道的成员身份时，由调用方请求一次。
+    resync(reason = 'resync') {
+      wakeNow(reason);
+    },
     close() {
       if (stopped) return;
       stopped = true;
