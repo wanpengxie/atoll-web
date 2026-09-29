@@ -30,7 +30,9 @@ export function UiFormModal({ form, requesterName = '', channelName = '', onSubm
     }
   };
 
-  useModalFocus({ dialogRef, onClose: () => { void cancel(); }, closeDisabled: Boolean(busy) });
+  // 这张表是别人弹过来的，人可能正打着字：焦点落在对话框本身，不落在 × 或
+  // 任何按钮上，下一个空格或回车不会替人取消或提交。
+  useModalFocus({ dialogRef, initialFocusRef: dialogRef, onClose: () => { void cancel(); }, closeDisabled: Boolean(busy) });
 
   const submit = async (event) => {
     event.preventDefault();

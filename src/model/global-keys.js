@@ -61,12 +61,34 @@ function conflict(error) {
   return code === 'conflict_exists' || code === 'already_exists' || /already exists/i.test(String(error?.detail || error?.message || ''));
 }
 
+const REJECT_TEXT = Object.freeze({
+  already_exists: '这个名字已经存在',
+  resource_not_found: '这个全局 key 不存在',
+  access_denied: '当前身份不能读写全局 key',
+  driver_error: '全局 key 现在读写不了（c0 没有打开）',
+});
+
+// 资源门拒绝一次操作时不回错误帧，而是回一张 status:"rejected" 的正常回执，
+// detail 是原因（already_exists / resource_not_found / access_denied …）。这里把它
+// 变成异常：调用方只要 await 成功，就是这次操作真的做了。
+async function call(resource, payload) {
+  const receipt = await resource(payload);
+  if (receipt?.status === 'rejected') {
+    const code = String(receipt.detail || 'rejected');
+    const error = new Error(`${REJECT_TEXT[code] || '操作被拒绝'}（${code}）`);
+    error.code = code;
+    error.detail = error.message;
+    throw error;
+  }
+  return receipt;
+}
+
 // `resource` 是已绑定频道的发送端：(payload without channel_id) => Promise<receipt>。
 export async function listGlobalKeys(resource) {
   const items = [];
   let cursor = '';
   for (let page = 0; page < LIST_PAGE_MAX; page += 1) {
-    const receipt = await resource({
+    const receipt = await call(resource, {
       op: 'list',
       query: { prefix: GLOBAL_PREFIX, limit: LIST_PAGE_LIMIT, ...(cursor ? { cursor } : {}) },
     });
@@ -82,17 +104,17 @@ export async function listGlobalKeys(resource) {
 export async function writeGlobalValue(resource, name, value) {
   const resourceId = globalResourceId(name);
   if (typeof value !== 'string') throw new TypeError('全局 key 的值必须是字符串');
-  const stat = await resource({ op: 'stat', resource_id: resourceId });
+  const stat = await call(resource, { op: 'stat', resource_id: resourceId });
   if (stat?.exists === true) {
-    await resource({ op: 'write', resource_id: resourceId, args: value });
+    await call(resource, { op: 'write', resource_id: resourceId, args: value });
     return Object.freeze({ resourceId, created: false });
   }
   try {
-    await resource({ op: 'create', resource_id: resourceId, args: value });
+    await call(resource, { op: 'create', resource_id: resourceId, args: value });
     return Object.freeze({ resourceId, created: true });
   } catch (error) {
     if (!conflict(error)) throw error;
-    await resource({ op: 'write', resource_id: resourceId, args: value });
+    await call(resource, { op: 'write', resource_id: resourceId, args: value });
     return Object.freeze({ resourceId, created: false });
   }
 }
@@ -100,7 +122,7 @@ export async function writeGlobalValue(resource, name, value) {
 export async function createGlobalKey(resource, name, value) {
   const resourceId = globalResourceId(name);
   if (typeof value !== 'string' || !value) throw new TypeError('全局 key 的值不能为空');
-  await resource({ op: 'create', resource_id: resourceId, args: value });
+  await call(resource, { op: 'create', resource_id: resourceId, args: value });
   return resourceId;
 }
 
@@ -108,12 +130,12 @@ export async function createGlobalKey(resource, name, value) {
 export async function overwriteGlobalKey(resource, name, value) {
   const resourceId = globalResourceId(name);
   if (typeof value !== 'string' || !value) throw new TypeError('全局 key 的值不能为空');
-  await resource({ op: 'write', resource_id: resourceId, args: value });
+  await call(resource, { op: 'write', resource_id: resourceId, args: value });
   return resourceId;
 }
 
 export async function deleteGlobalKey(resource, name) {
   const resourceId = globalResourceId(name);
-  await resource({ op: 'delete', resource_id: resourceId });
+  await call(resource, { op: 'delete', resource_id: resourceId });
   return resourceId;
 }

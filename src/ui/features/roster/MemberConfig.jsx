@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { GLOBAL_PREFIX } from '../../../model/global-keys.js';
 import {
+  hasRedactedValue,
   insertGlobalReference,
   isEditableMemberKind,
   MEMBER_LAYER_NAMES,
+  memberConfigForNewClass,
   memberConfigPatch,
   memberLayerLabel,
   memberSourceLabel,
@@ -58,16 +60,21 @@ function MemberConfigEditor({ actor, info, commands, globalKeys, disabled, onSav
     try { return { config: parseMemberConfigText(text), error: '' }; }
     catch (failure) { return { config: null, error: failure.message }; }
   }, [text]);
-  const patch = parsed.config ? memberConfigPatch(info?.config, parsed.config) : null;
   const nextClass = klass.trim();
   const classChanged = Boolean(nextClass) && nextClass !== String(info?.class || '');
+  const patch = !parsed.config ? null
+    : classChanged ? memberConfigForNewClass(parsed.config) : memberConfigPatch(info?.config, parsed.config);
+  const redacted = Boolean(patch && hasRedactedValue(patch));
   const changed = classChanged || Boolean(patch && Object.keys(patch).length);
   const missing = parsed.config && Array.isArray(keys) ? missingGlobalReferences(parsed.config, keys) : [];
-  const listKeys = globalKeys?.commands?.list;
+  const listKeysRef = useRef(null);
+  listKeysRef.current = globalKeys?.available === true ? globalKeys?.commands?.list : null;
 
-  // 打开编辑器是一次真人动作：这时读一次全局 key 名单，给插入引用用。
+  // 打开编辑器是一次真人动作：这时读一次全局 key 名单，给插入引用用。只在打开
+  // 时读——重连不会让它自己再读一遍（前端恒不自动探测）。
   useEffect(() => {
-    if (globalKeys?.available !== true || typeof listKeys !== 'function') return undefined;
+    const listKeys = listKeysRef.current;
+    if (typeof listKeys !== 'function') return undefined;
     let active = true;
     Promise.resolve(listKeys()).then((names) => {
       if (!active) return;
@@ -75,7 +82,7 @@ function MemberConfigEditor({ actor, info, commands, globalKeys, disabled, onSav
       setPick((current) => current || (Array.isArray(names) && names[0]) || '');
     }).catch((failure) => { if (active) setKeysError(errorText(failure)); });
     return () => { active = false; };
-  }, [globalKeys?.available, listKeys]);
+  }, []);
 
   const insert = () => {
     if (!pick) return;
@@ -91,7 +98,7 @@ function MemberConfigEditor({ actor, info, commands, globalKeys, disabled, onSav
   };
 
   const submit = async (dryRun) => {
-    if (!parsed.config) return;
+    if (!parsed.config || redacted) return;
     setBusy(dryRun ? 'dry-run' : 'save');
     setError('');
     if (!dryRun) setPreview(null);
@@ -131,6 +138,8 @@ function MemberConfigEditor({ actor, info, commands, globalKeys, disabled, onSav
     {keysError && <p className="field-hint">全局 key 名单读取失败：{keysError}</p>}
     {globalKeys?.available !== true && <p className="field-hint">{globalKeys?.reason || '当前不能读取全局 key。'}</p>}
     {missing.length > 0 && <p className="field-hint member-config-missing" role="status">引用的全局 key 不存在：{missing.join('、')}</p>}
+    {redacted && <p className="field-error" role="alert">配置里有“已隐藏”的值（本地缓存脱敏过），不能写回成员；请点「刷新配置」重新读取后再改。</p>}
+    {classChanged && <p className="field-hint">换 Class 时会以新 Class 的默认值为底，提交编辑器里的整份配置。</p>}
     {patch && changed && <details className="member-config-patch" open>
       <summary>将提交的变更</summary>
       <pre>{JSON.stringify({ ...(classChanged ? { class: nextClass } : {}), ...(Object.keys(patch).length ? { config: patch } : {}) }, null, 2)}</pre>
@@ -143,8 +152,8 @@ function MemberConfigEditor({ actor, info, commands, globalKeys, disabled, onSav
     {error && <p className="governance-error" role="alert">{error}</p>}
     <div className="form-actions">
       <button type="button" disabled={Boolean(busy)} onClick={onCancel}>取消</button>
-      <button type="button" disabled={locked || !parsed.config || !changed} onClick={() => void submit(true)}>{busy === 'dry-run' ? '检查中…' : '检查变更'}</button>
-      <button type="submit" className="primary-button" disabled={locked || !parsed.config || !changed}>{busy === 'save' ? '正在保存…' : '保存配置'}</button>
+      <button type="button" disabled={locked || !parsed.config || !changed || redacted} onClick={() => void submit(true)}>{busy === 'dry-run' ? '检查中…' : '检查变更'}</button>
+      <button type="submit" className="primary-button" disabled={locked || !parsed.config || !changed || redacted}>{busy === 'save' ? '正在保存…' : '保存配置'}</button>
     </div>
   </form>;
 }
@@ -160,21 +169,26 @@ export function MemberConfigSection({ actor, port = {} }) {
   const [editing, setEditing] = useState(false);
   const editable = isEditableMemberKind(actor?.kind);
   const readable = typeof commands.readMember === 'function';
-  useEffect(() => { setInfo(null); setEditing(false); setError(''); setNotice(''); }, [actor?.id]);
+  const actorIdRef = useRef(actor?.id);
+  actorIdRef.current = actor?.id;
+  useEffect(() => { setInfo(null); setEditing(false); setError(''); setNotice(''); setReading(false); }, [actor?.id]);
 
+  // 回复回来时如果已经换了成员，它说的是上一个成员：丢掉，恒不显示在这一个下面。
   const read = async () => {
     if (!readable) return null;
+    const target = actor?.id;
     setReading(true);
     setError('');
     try {
       const value = await commands.readMember(actor);
+      if (actorIdRef.current !== target) return null;
       setInfo(value || {});
       return value;
     } catch (failure) {
-      setError(errorText(failure));
+      if (actorIdRef.current === target) setError(errorText(failure));
       return null;
     } finally {
-      setReading(false);
+      if (actorIdRef.current === target) setReading(false);
     }
   };
 
@@ -189,7 +203,7 @@ export function MemberConfigSection({ actor, port = {} }) {
   return <section className="panel-card member-config" aria-label="成员配置">
     <header className="panel-card-header">
       <h3>配置</h3>
-      <button type="button" className="text-button" disabled={!readable || reading} onClick={() => { setNotice(''); void read(); }}>{reading ? '读取中…' : info ? '刷新配置' : '读取配置'}</button>
+      <button type="button" className="text-button" disabled={!readable || reading || editing} title={editing ? '编辑中不刷新：改动以打开编辑器时读到的配置为底' : undefined} onClick={() => { setNotice(''); void read(); }}>{reading ? '读取中…' : info ? '刷新配置' : '读取配置'}</button>
     </header>
     {!readable && <p className="governance-empty">当前会话不能读取成员配置。</p>}
     {readable && !info && !reading && !error && <p className="governance-empty">配置按需读取：点「读取配置」向本频道 system 发一条 system.member.get。</p>}

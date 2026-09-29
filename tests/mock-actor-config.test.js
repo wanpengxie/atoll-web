@@ -92,7 +92,8 @@ describe('actor-config mock', () => {
     await resource('c0', { op: 'create', resource_id: 'global/deepseek_prod', args: 'sk-deep-1234' });
     // 另一个频道的资源面看见的是同一份。
     expect(await resource('c0.project', { op: 'stat', resource_id: 'global/deepseek_prod' })).toMatchObject({ exists: true, meta: { kind: 'kv' } });
-    await expect(resource('c0', { op: 'create', resource_id: 'global/deepseek_prod', args: 'again' })).rejects.toMatchObject({ code: 'conflict_exists' });
+    // 和真后端的资源门一样：拒绝是一张 status:"rejected" 的回执，不是错误帧。
+    expect(await resource('c0', { op: 'create', resource_id: 'global/deepseek_prod', args: 'again' })).toMatchObject({ status: 'rejected', detail: 'already_exists' });
     await expect(resource('c0', { op: 'create', resource_id: 'global/Bad Name', args: 'x' })).rejects.toMatchObject({ code: 'bad_payload' });
     await resource('c0.project', { op: 'write', resource_id: 'global/deepseek_prod', args: 'sk-deep-5678' });
     // 频道自己的 KV 列表里没有全局 key。

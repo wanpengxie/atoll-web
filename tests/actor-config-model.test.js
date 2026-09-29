@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  createGlobalKey,
+  deleteGlobalKey,
   globalKeyNames,
   globalNameOf,
   globalResourceId,
@@ -9,7 +11,9 @@ import {
 } from '../src/model/global-keys.js';
 import { initialFormValues, schemaFields, validateFormValues } from '../src/model/json-schema-form.js';
 import {
+  hasRedactedValue,
   insertGlobalReference,
+  memberConfigForNewClass,
   memberConfigPatch,
   memberLayerFromMeasure,
   memberLayerIssue,
@@ -124,6 +128,12 @@ describe('member layers and config patch', () => {
     expect(memberConfigPatch(undefined, { a: 1 })).toEqual({ a: 1 });
   });
 
+  it('sends the whole config on a class change, and never a redacted placeholder', () => {
+    expect(memberConfigForNewClass({ model: 'x', api_key: '$global.k', reset: null })).toEqual({ model: 'x', api_key: '$global.k' });
+    expect(hasRedactedValue({ nested: { token: '已隐藏' } })).toBe(true);
+    expect(hasRedactedValue({ model: 'x', list: ['a'] })).toBe(false);
+  });
+
   it('parses config text and inserts a $global reference at the cursor', () => {
     expect(parseMemberConfigText('')).toEqual({});
     expect(() => parseMemberConfigText('[1]')).toThrow('配置必须是 JSON 对象');
@@ -180,6 +190,24 @@ describe('global keys', () => {
     });
     await expect(writeGlobalValue(raced, 'k', 'sk-3')).resolves.toMatchObject({ created: false });
     expect(raced.mock.calls.at(-1)[0]).toEqual({ op: 'write', resource_id: 'global/k', args: 'sk-3' });
+  });
+
+  it('treats a rejected receipt as a failure — the resource door refuses with status:"rejected", not an error frame', async () => {
+    // create lost a race: the door answers already_exists, and the value is then written
+    const racedReceipt = vi.fn(async (payload) => {
+      if (payload.op === 'stat') return { exists: false };
+      if (payload.op === 'create') return { status: 'rejected', detail: 'already_exists' };
+      return { status: 'ok' };
+    });
+    await expect(writeGlobalValue(racedReceipt, 'k', 'sk-4')).resolves.toMatchObject({ created: false });
+    expect(racedReceipt.mock.calls.at(-1)[0]).toEqual({ op: 'write', resource_id: 'global/k', args: 'sk-4' });
+    // a refused write is never reported as stored
+    const refused = vi.fn(async (payload) => (payload.op === 'stat' ? { exists: true } : { status: 'rejected', detail: 'access_denied' }));
+    await expect(writeGlobalValue(refused, 'k', 'sk-5')).rejects.toMatchObject({ code: 'access_denied' });
+    const exists = vi.fn(async () => ({ status: 'rejected', detail: 'already_exists' }));
+    await expect(createGlobalKey(exists, 'k', 'sk-6')).rejects.toMatchObject({ code: 'already_exists' });
+    const gone = vi.fn(async () => ({ status: 'rejected', detail: 'resource_not_found' }));
+    await expect(deleteGlobalKey(gone, 'k')).rejects.toMatchObject({ code: 'resource_not_found' });
   });
 });
 

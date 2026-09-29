@@ -659,13 +659,14 @@ export class MockDomain {
     if (op === 'create') {
       if (payload.address) throw new TypeError('global resources are kv only');
       if (!GLOBAL_NAME.test(name)) throw new TypeError('a global resource is named global/<name>, name matching [a-z0-9_-]{1,64}');
-      if (this.globals.has(id)) throw new TypeError('resource already exists');
+      // 资源门的拒绝是一张 status:"rejected" 的回执，不是错误帧。
+      if (this.globals.has(id)) return { status: 'rejected', resource_id: id, detail: 'already_exists' };
       this.globals.set(id, { value: structuredClone(args ?? null), created_by: creator, created_at: this.clock });
       return { status: 'ok', resource_id: id };
     }
     const row = this.globals.get(id);
     if (op === 'stat') return { exists: Boolean(row), ...(row ? { meta: { kind: 'kv', created_at: row.created_at, created_by: row.created_by } } : {}) };
-    if (!row) throw new TypeError('resource does not exist');
+    if (!row) return { status: 'rejected', resource_id: id, detail: 'resource_not_found' };
     if (op === 'read') return { status: 'ok', resource_id: id, value: structuredClone(row.value) };
     if (op === 'write') { row.value = structuredClone(args ?? null); return { status: 'ok', resource_id: id }; }
     if (op === 'delete') { this.globals.delete(id); return { status: 'ok', resource_id: id, deleted: true }; }

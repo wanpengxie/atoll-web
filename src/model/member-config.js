@@ -108,6 +108,25 @@ export function memberConfigPatch(before, after) {
   return patch;
 }
 
+// 换 class 时后端以新 class 的默认值为底（旧 class 的配置对它没有意义），所以
+// 补丁必须是编辑器里的整份配置，而不是"和旧配置比变了的键"——否则没动的键就
+// 丢了。值为 null 的键本来就是"用默认值"，不发。
+export function memberConfigForNewClass(config) {
+  const next = plainObject(config) ? config : {};
+  return Object.fromEntries(Object.entries(next).filter(([, value]) => value !== null));
+}
+
+// 本地缓存会把名叫 key、token、secret 之类的字段替换成"已隐藏"。这样的值绝不能
+// 被当成配置写回成员。
+export const REDACTED_PLACEHOLDER = '已隐藏';
+
+export function hasRedactedValue(value) {
+  if (value === REDACTED_PLACEHOLDER) return true;
+  if (Array.isArray(value)) return value.some(hasRedactedValue);
+  if (plainObject(value)) return Object.values(value).some(hasRedactedValue);
+  return false;
+}
+
 export function parseMemberConfigText(text) {
   let value;
   try {

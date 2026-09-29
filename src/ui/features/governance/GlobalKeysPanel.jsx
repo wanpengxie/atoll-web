@@ -79,8 +79,11 @@ export function GlobalKeysPanel({ port = {} }) {
     }
   }, [available, commands.list]);
 
-  // 打开这个标签页就是读名单的动作；换了频道（读写经过的资源面）再读一次。
-  useEffect(() => { void refresh(); }, [port.channelId, refresh]);
+  // 打开这个标签页就是读名单的动作；换了频道（读写经过的资源面）再读一次。重连
+  // 不会让它自己再读（前端恒不自动探测）：要读就点刷新。
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  useEffect(() => { void refreshRef.current(); }, [port.channelId]);
 
   const run = async (label, operation, success) => {
     setBusy(label);

@@ -49,6 +49,9 @@ describe('JsonSchemaForm', () => {
     expect(screen.getByLabelText('重试次数').getAttribute('aria-invalid')).toBe('true');
     expect(screen.getByRole('alert').textContent).toBe('请输入整数');
     fireEvent.change(key, { target: { value: 'sk-1' } });
+    // a secret never lands in the DOM: no value attribute, nothing in the markup
+    expect(key.getAttribute('value')).toBe(null);
+    expect(document.body.innerHTML.includes('sk-1')).toBe(false);
     fireEvent.click(screen.getByLabelText('详细日志'));
     fireEvent.change(screen.getByLabelText('模型'), { target: { value: '"deepseek-reasoner"' } });
     expect(onChange.mock.calls).toEqual([['api_key', 'sk-1'], ['verbose', true], ['model', '"deepseek-reasoner"']]);
@@ -77,6 +80,11 @@ describe('UiFormModal', () => {
     expect(within(dialog).getByLabelText('API Key').value).toBe('sk-secret-1234');
     fireEvent.click(within(dialog).getByRole('button', { name: '提交' }));
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2));
+  });
+
+  it('opens with focus on the dialog itself, not on a button a stray key would press', () => {
+    render(<UiFormModal form={uiForm()} onSubmit={vi.fn()} onCancel={vi.fn()} />);
+    expect(document.activeElement?.getAttribute('role')).toBe('dialog');
   });
 
   it('cancels through onCancel, also on Escape', async () => {

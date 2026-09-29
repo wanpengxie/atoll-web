@@ -1,5 +1,16 @@
-import React, { useId } from 'react';
+import React, { useEffect, useId, useRef } from 'react';
 import { enumOptionValue } from '../../model/json-schema-form.js';
+
+// 密码框不受控：受控输入会把值同步到 DOM 的 value 属性上，密钥就留在了页面结构
+// 里（任何序列化 DOM 的东西都读得到）。这里只把输入交给调用方；调用方把值清空
+// 时（提交成功、重置），框里的字也跟着清掉。
+function SecretInput({ value, onChange, ...props }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    if (value === '' && ref.current && ref.current.value !== '') ref.current.value = '';
+  }, [value]);
+  return <input {...props} ref={ref} type="password" onChange={(event) => onChange(event.target.value)} />;
+}
 
 // 按 schemaFields() 的字段表画一组受控输入。值、校验、提交都在调用方：这里只负责
 // "每个字段长什么样"。secret 字段恒是密码框，而且不带任何回显。
@@ -35,13 +46,21 @@ export function JsonSchemaForm({ fields = [], values = {}, errors = {}, onChange
         </select>;
       } else if (field.control === 'json') {
         control = <textarea {...common} rows="4" spellCheck={false} value={typeof value === 'string' ? value : ''} onChange={(event) => change(field.name, event.target.value)} />;
+      } else if (field.control === 'password') {
+        control = <SecretInput
+          {...common}
+          autoComplete="new-password"
+          spellCheck={false}
+          placeholder={placeholder}
+          value={typeof value === 'string' ? value : ''}
+          onChange={(next) => change(field.name, next)}
+        />;
       } else {
         control = <input
           {...common}
-          type={field.control === 'password' ? 'password' : field.control === 'number' ? 'number' : 'text'}
+          type={field.control === 'number' ? 'number' : 'text'}
           step={field.control === 'number' ? (field.type === 'integer' ? '1' : 'any') : undefined}
-          autoComplete={field.control === 'password' ? 'new-password' : 'off'}
-          spellCheck={field.control === 'password' ? false : undefined}
+          autoComplete="off"
           placeholder={placeholder}
           value={typeof value === 'string' ? value : ''}
           onChange={(event) => change(field.name, event.target.value)}
