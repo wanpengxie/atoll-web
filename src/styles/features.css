@@ -585,3 +585,12 @@ button.channel-file-row { font: inherit; }
 .actor-description-version button { padding: 4px 6px; border: 1px solid var(--line-control); border-radius: 5px; background: var(--surface-control); cursor: pointer; font-size: 9px; }
 .member-build-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 6px; }
 .member-build-row > .text-button { margin-top: 8px; }
+
+/* 小字说明：各面板里的 field-hint 一律是小号暗色。 */
+.field-hint { color: var(--text-dim); font-size: 9px; line-height: 1.5; }
+.member-sources { table-layout: fixed; }
+.member-sources th:nth-child(1), .member-sources td:nth-child(1) { width: 32%; }
+.member-sources th:nth-child(3), .member-sources td:nth-child(3) { width: 24%; white-space: nowrap; }
+.member-sources td:nth-child(1) code { overflow-wrap: anywhere; }
+.member-sources td:nth-child(2) { max-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.actor-description-version summary { color: var(--text-muted); font-size: 9px; cursor: pointer; }

@@ -371,7 +371,7 @@ export function MemberConfigSection({ actor, port = {} }) {
         <h4>合成后的值 <small>Class 默认值 ← Actor 描述 ← 成员条目 ← 这一台的配置</small></h4>
         {sources.length > 0
           ? <table className="member-sources"><thead><tr><th>键</th><th>值</th><th>来自</th></tr></thead><tbody>
-            {sources.map((row) => <tr key={row.path} data-layer={row.layer}><td><code>{row.path}</code></td><td>{formatValue(row.value)}</td><td>{row.label}</td></tr>)}
+            {sources.map((row) => <tr key={row.path} data-layer={row.layer}><td><code>{row.path}</code></td><td title={formatValue(row.value)}>{formatValue(row.value)}</td><td>{row.label}</td></tr>)}
           </tbody></table>
           : <pre className="member-config-json" aria-label="合成配置">{JSON.stringify(effective ?? {}, null, 2)}</pre>}
         {JSON.stringify(effective ?? {}).includes('"$global.')
