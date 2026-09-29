@@ -68,7 +68,8 @@ test('UI-VIS-01 桌面三栏工作台视觉基线', async ({ page, request }) =>
   await expect(page).toHaveScreenshot('desktop-workspace.png', pageScreenshotOptions(page));
 });
 
-for (const [tab, filename] of [['概览', 'channel-overview.png'], ['成员', 'channel-members.png'], ['危险操作', 'channel-danger.png']]) {
+// 原来的「概览」页改成了「设置」（频道状态、说明与服务、设备、子频道），截图文件名沿用。
+for (const [tab, filename] of [['设置', 'channel-overview.png'], ['成员', 'channel-members.png'], ['危险操作', 'channel-danger.png']]) {
   test(`UI-VIS-02 频道管理 ${tab} 视觉基线`, async ({ page, request }) => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await reset(request, 'actor-governance', 902);
@@ -86,7 +87,8 @@ test('UI-VIS-03 新建频道独立任务视觉基线', async ({ page, request })
   const panel = page.getByRole('dialog', { name: '新建频道' });
   await expect(panel).toBeVisible();
   await expect(panel.getByRole('heading', { name: '新建频道', exact: true })).toBeVisible();
-  await expect(panel.getByLabel('频道模板')).toBeVisible();
+  // 频道模板退役了：新频道从三种起点之一开始，默认空白。
+  await expect(panel.getByRole('radio', { name: '起点 空白', exact: true })).toBeChecked();
   await expect(panel).toHaveScreenshot('channel-create.png', SCREENSHOT_OPTIONS);
 });
 
@@ -188,21 +190,21 @@ test('UI-VIS-08 600px 选择用户菜单视觉基线', async ({ page, request })
   const listbox = panel.getByRole('listbox', { name: '选择参与者选项' });
   await expect(listbox).toBeVisible();
   await expect(panel.getByRole('option', { name: /Alice · 用户/ })).toBeVisible();
-  await expect(panel.getByRole('option', { name: /Analyst Agent · Agent/ })).toBeVisible();
+  await expect(panel.getByRole('option', { name: /analyst@1 · Actor 描述/ })).toBeVisible();
   await expect(panel.getByRole('option', { name: /svcactor/ })).toHaveCount(0);
-  // fae8b70's public directory owner sorted principal/declaration candidates by
-  // display name. Preserve that observable order: current receipt insertion
-  // order places Steward before Analyst/Search Tool, which changes discovery
-  // even though the same buttons remain clickable.
+  // fae8b70's public directory owner sorted candidates by display name. Keep
+  // that observable order: users first, then Actor 描述 (名字@版本, the latest
+  // present version of each name) by name, then the direct-Class entry.
   const optionLabels = await listbox.getByRole('option').allTextContents();
   expect(optionLabels.map((label) => label.trim())).toEqual([
-    '搜索用户、Agent 或工具',
+    '搜索用户或 Actor 描述',
     'Alice · 用户',
     'Bob · 用户',
-    'Analyst Agent · Agent',
-    'Claude · Agent',
-    'Search Tool · 工具',
-    'Steward · Agent',
+    'analyst@1 · Actor 描述（class codex-agent）',
+    'claude@1 · Actor 描述（class claude）',
+    'search@1 · Actor 描述（class mcp-tool）',
+    'steward@1 · Actor 描述（class codex）',
+    '直接按 Class 新建…',
   ]);
   const geometry = await page.evaluate(() => ({
     viewport: { width: window.innerWidth, height: window.innerHeight },
@@ -288,16 +290,19 @@ test('UI-VIS-08 600px 成员菜单保留键盘选择与点击选择路径', asyn
 
   await select.click();
   await expect(listbox).toBeVisible();
-  await panel.getByRole('option', { name: /Analyst Agent · Agent/ }).click();
+  await panel.getByRole('option', { name: /analyst@1 · Actor 描述/ }).click();
   await expect(select).toBeFocused();
-  await expect(panel.getByRole('status')).toContainText('Analyst Agent');
-  await expect(panel.locator('[data-participant-id="mock:analyst"]')).toBeVisible();
+  await expect(panel.getByRole('status')).toContainText('analyst@1');
+  await expect(panel.locator('[data-participant-id="analyst@1"][data-participant-kind="actor"]')).toBeVisible();
+  // 选了描述，成员名默认取描述的名字。
+  await expect(panel.getByLabel('成员名')).toHaveValue('analyst');
 
   await select.click();
-  await panel.getByRole('option', { name: /Steward · Agent/ }).click();
+  await panel.getByRole('option', { name: /steward@1 · Actor 描述/ }).click();
   await expect(select).toBeFocused();
-  await expect(panel.getByRole('status')).toContainText('Steward');
-  await expect(panel.locator('[data-participant-id="mock:steward"]')).toBeVisible();
+  await expect(panel.getByRole('status')).toContainText('steward@1');
+  await expect(panel.locator('[data-participant-id="steward@1"]')).toBeVisible();
+  await expect(panel.getByLabel('成员名')).toHaveValue('steward');
 });
 
 test('UI-VIS-09 用户消息与 Agent 答案气泡视觉基线', async ({ page, request }) => {

@@ -2,10 +2,12 @@ import { expect, test } from '@playwright/test';
 import { MOCK_ORIGIN as MOCK } from './mock-origin.js';
 
 // Successor for fae8b70:tests/browser/phase-d.spec.js D-BR-07/08/09.
-// Keep the historical member-panel contract public: adding a declaration
-// creates an observable Agent row, that row exposes restart, and removal
-// clears that exact instance.  A Composer /restart command is a different
-// user path and cannot stand in for this member-management affordance.
+// Keep the historical member-panel contract public: adding a member entry
+// (from an Actor 描述 name@version) creates an observable Agent row, that row
+// exposes restart, and removal clears that exact instance.  A Composer
+// /restart command is a different user path and cannot stand in for this
+// member-management affordance.
+// c0 的成员是平台固定的（member.create 在 c0 被拒），所以这条流程走 c0.project。
 
 async function reset(request) {
   const response = await request.post(`${MOCK}/mock/control/reset`, {
@@ -33,18 +35,35 @@ async function openMemberGovernance(page) {
 }
 
 test('TC-0328 D-BR-07/08/09 member Agent lifecycle keeps restart and instance removal public', async ({ page, request }) => {
+  const submits = [];
+  page.on('websocket', (socket) => socket.on('framesent', (frame) => {
+    try {
+      let outer = typeof frame === 'string' ? JSON.parse(frame) : frame;
+      if (typeof outer?.payload === 'string') outer = JSON.parse(outer.payload);
+      if (outer?.frame_type === 'submit') submits.push(outer.payload);
+    } catch { /* not a protocol frame */ }
+  }));
   await reset(request);
   await login(page);
+  await page.getByRole('button', { name: /c0\.project/ }).click();
+  await expect(page.locator('main h1')).toHaveText('c0.project');
   const panel = await openMemberGovernance(page);
 
   const candidates = panel.getByRole('combobox', { name: '选择参与者' });
   await candidates.click();
-  await panel.getByRole('option', { name: /Analyst Agent · Agent/ }).click();
+  await panel.getByRole('option', { name: /analyst@1 · Actor 描述/ }).click();
+  // 选了描述，成员名默认取描述的名字。
+  await expect(panel.getByLabel('成员名')).toHaveValue('analyst');
   await panel.getByRole('button', { name: '添加到频道' }).click();
+  await expect.poll(() => submits.find((payload) => payload?.msg_type === 'system.member.create')).toMatchObject({
+    channel_id: 'c0.project',
+    payload: { name: 'analyst', body: { actor: 'analyst@1' } },
+  });
 
-  const agentRow = panel.locator('.managed-actor').filter({ hasText: 'Analyst Agent' }).last();
-  await expect(agentRow).toBeVisible();
-  await expect(agentRow.locator('small')).toContainText('agent-actor-205-1');
+  const agentRow = panel.locator('.managed-actor').filter({ hasText: 'agent:analyst:' });
+  await expect(agentRow).toHaveCount(1);
+  await expect(agentRow.locator('small').first()).toContainText('actor analyst@1');
+  await expect(panel.locator('.roster-ready')).toHaveText('成员已就绪');
 
   // D-BR-07 requires lifecycle control on the managed member row itself;
   // Composer /restart is a distinct public path and cannot substitute here.
@@ -60,9 +79,11 @@ test('TC-0328 D-BR-07/08/09 member Agent lifecycle keeps restart and instance re
   await remove.click();
   await panel.getByRole('button', { name: '确认操作' }).click();
   await expect(agentRow).toHaveCount(0);
+  const removal = submits.find((payload) => payload?.msg_type === 'system.member.delete');
+  expect(removal?.payload?.member).toMatch(/^agent:analyst:/);
 
   await candidates.click();
   const options = panel.getByRole('listbox', { name: '选择参与者选项' });
-  await expect(options.getByRole('option', { name: /Analyst Agent · Agent/ })).toHaveCount(1);
-  await expect(options.getByRole('option', { name: /Search Tool · 工具/ })).toHaveCount(1);
+  await expect(options.getByRole('option', { name: /analyst@1 · Actor 描述/ })).toHaveCount(1);
+  await expect(options.getByRole('option', { name: /search@1 · Actor 描述（class mcp-tool）/ })).toHaveCount(1);
 });

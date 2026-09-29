@@ -36,27 +36,30 @@ test('AD-351 missing @ recipient stays visible, explains refusal, and sends no f
   await reset(request);
   await login(page);
 
+  // c0 的成员是平台固定的（移除会被拒）；在 c0.project 里移除一个描述里的成员。
+  await page.getByRole('button', { name: /c0\.project/ }).click();
+  await expect(page.locator('main h1')).toHaveText('c0.project');
   const editor = page.getByLabel('消息');
-  await editor.fill('@Cl');
-  await page.getByRole('option', { name: /Claude/ }).click();
+  await editor.fill('@proj');
+  await page.getByRole('option', { name: /project-agent/ }).click();
   await editor.pressSequentially('收件人消失后仍保留草稿');
 
   await page.getByRole('button', { name: '频道操作' }).click();
   await page.getByRole('menuitem', { name: '频道详情' }).click();
   const panel = page.getByRole('complementary', { name: '频道治理' });
   await expect(panel).toBeVisible();
-  const claude = panel.locator('.managed-actor').filter({ hasText: 'Claude' }).first();
-  await expect(claude).toBeVisible();
-  await claude.getByRole('button', { name: '移除' }).click();
+  const agent = panel.locator('.managed-actor').filter({ hasText: 'project-agent' }).first();
+  await expect(agent).toBeVisible();
+  await agent.getByRole('button', { name: '移除' }).click();
   const confirmation = panel.locator('.inline-confirmation');
-  await expect(confirmation).toContainText('确认移除 Claude');
+  await expect(confirmation).toContainText('确认移除 project-agent');
   await confirmation.getByRole('button', { name: '确认操作' }).click();
-  await expect(panel.locator('.managed-actor').filter({ hasText: 'Claude' })).toHaveCount(0);
+  await expect(panel.locator('.managed-actor').filter({ hasText: 'project-agent' })).toHaveCount(0);
   await page.getByRole('button', { name: '关闭频道详情' }).click();
 
   const recipients = page.getByRole('status', { name: '收件人' });
-  await expect(recipients.locator('.composer-target-pill.is-picked')).toContainText('@Claude');
-  await expect(page.getByRole('alert')).toContainText(/@Claude.*已不在频道.*不可投递/);
+  await expect(recipients.locator('.composer-target-pill.is-picked')).toContainText('@project-agent');
+  await expect(page.getByRole('alert')).toContainText(/@project-agent.*已不在频道.*不可投递/);
   await expect(editor).toContainText('收件人消失后仍保留草稿');
 
   const beforeSend = submits.filter((frame) => frame?.msg_type === 'agent.ask').length;

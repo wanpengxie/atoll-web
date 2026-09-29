@@ -13,6 +13,12 @@ function envelopeSeq(envelope) {
 }
 
 function boundsOf(entry) {
+  if (entry?.kind === 'narration') {
+    // 一段叙事从第一条排到最后一条：后面再来一条（比如构建开始之后的构建结束），
+    // 这一段的内容就变了，要重画。
+    const seq = finiteSeq(entry.seq);
+    return { low: seq, high: Math.max(seq, finiteSeq(entry.lastSeq)) };
+  }
   if (entry?.kind !== 'turn') {
     const seq = finiteSeq(entry?.seq);
     return { low: seq, high: seq };
@@ -907,7 +913,7 @@ export function selectTimelineItems(state, {
     || latestTransient.get(`${entry.envelope?.sender?.id || ''}:${entry.envelope?.type || ''}`) === entry), state);
   if (showNarration && state?.narration?.length) {
     const narrationSeq = state.narration[0].seq;
-    const narration = { kind: 'narration', seq: narrationSeq };
+    const narration = { kind: 'narration', seq: narrationSeq, lastSeq: state.narration.at(-1).seq };
     const insertion = items.findIndex((entry) => entry.seq > narrationSeq);
     items = insertion < 0 ? [...items, narration] : [...items.slice(0, insertion), narration, ...items.slice(insertion)];
   }

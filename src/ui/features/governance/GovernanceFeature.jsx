@@ -250,6 +250,8 @@ function ChannelMembers({ channel, port }) {
   const action = useCommand(port.commands, 'channel');
   const commandPort = port.commands || {};
   const roster = (port.roster || []).filter(isVisibleActor);
+  // c0 没有描述：它的 agent / 工具由平台固定，只能改配置，不能移除。
+  const fixedMembers = channel?.id === 'c0';
   // A submitted command is only a ledger-side receipt.  Readiness is a
   // separate projection: the canonical roster owner must report a complete
   // authority for this channel and the requested actor must be present in
@@ -354,7 +356,7 @@ function ChannelMembers({ channel, port }) {
           <button type="button" disabled={typeof commandPort.selectActor !== 'function'} onClick={() => commandPort.selectActor?.(row)} aria-label={`查看 ${actorDisplayName(row)}`}>查看</button>
           {canBind || canUnbind ? <button type="button" disabled={port.disabled || directOperation?.state === 'pending'} onClick={() => runDirectCommand(row.bound ? '解绑' : '绑定', row.bound ? unbindCommand : bindCommand, row)}>{row.bound ? '解绑' : '绑定'}</button> : <button type="button" disabled title="当前治理端口未提供绑定命令">绑定</button>}
           {canRestart ? <button type="button" disabled={port.disabled || directOperation?.state === 'pending'} onClick={() => setConfirm({ kind: 'restart', row })}>重启</button> : <button type="button" disabled title={row.kind === 'human' ? '用户成员不支持 Agent 重启' : '当前治理端口未提供重启命令'}>重启</button>}
-          <button type="button" className="danger-text" disabled={port.disabled || row.id === port.selfId || ownerActor || row.protected} onClick={() => setConfirm({ kind: 'remove', row })}>{ownerActor ? 'Owner' : '移除'}</button>
+          <button type="button" className="danger-text" disabled={port.disabled || row.id === port.selfId || ownerActor || row.protected || (fixedMembers && row.kind !== 'human')} title={fixedMembers && row.kind !== 'human' ? 'c0 的成员由平台固定，不能移除' : undefined} onClick={() => setConfirm({ kind: 'remove', row })}>{ownerActor ? 'Owner' : '移除'}</button>
         </div>;
       })}
       {!roster.length && <p className="governance-empty">暂无可管理的业务 Actor</p>}

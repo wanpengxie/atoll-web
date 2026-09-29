@@ -58,7 +58,9 @@ test('320px workspace remains a single returnable surface', async ({ page, reque
   await page.getByRole('button', { name: '空间管理', exact: true }).click();
   const space = page.getByRole('complementary', { name: '空间管理' });
   await expect(space).toBeVisible();
-  await expect(space.getByRole('tab')).toHaveCount(5);
+  // 空间管理只剩 Actor 描述、设备、全局 key 三页（频道模板、频道配置已退役）。
+  await expect(space.getByRole('tab')).toHaveCount(3);
+  await expect(space.getByRole('tab', { name: 'Actor 描述', exact: true })).toHaveAttribute('aria-selected', 'true');
 });
 
 test('@成员 menu stays within the input area at 320px', async ({ page, request }) => {

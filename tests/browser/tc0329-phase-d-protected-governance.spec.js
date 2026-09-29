@@ -37,7 +37,7 @@ test('TC-0329 D-BR-10 protected actors and denied governance keep context unders
   await login(page);
 
   const panel = await openMemberGovernance(page);
-  await expect(panel.getByText(/标准系统 Actor.*已隐藏/)).toBeVisible();
+  await expect(panel.getByText(/运行时自己生成的成员.*已隐藏/)).toBeVisible();
   const ownerRow = panel.locator('.managed-actor').filter({ hasText: 'root' }).first();
   await expect(ownerRow).toBeVisible();
   await expect(ownerRow.getByRole('button', { name: 'Owner', exact: true })).toBeDisabled();

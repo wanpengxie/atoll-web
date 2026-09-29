@@ -34,7 +34,7 @@ test('TC-0325 D-BR-03 delayed channel projection keeps ledger success and conver
   const progress = creation.getByRole('region', { name: '频道创建进度' });
   await expect(progress.getByText('账本确认', { exact: true }).locator('..'))
     .toContainText('已确认');
-  await expect(progress.getByText('频道已经可以打开和协作。', { exact: true }))
+  await expect(progress.getByText(/^频道已经可以打开和协作。/))
     .toBeVisible({ timeout: 15_000 });
   await expect(progress.getByText('创建失败', { exact: true })).toHaveCount(0);
 });

@@ -23,12 +23,12 @@ async function login(page) {
   await expect(page.locator('main h1')).toHaveText('c0');
 }
 
-async function openGovernanceOverview(page) {
+async function openGovernanceSettings(page) {
   await page.getByRole('button', { name: '频道操作', exact: true }).click();
   await page.getByRole('menuitem', { name: '频道详情', exact: true }).click();
   const panel = page.getByRole('complementary', { name: '频道治理' });
   await expect(panel).toBeVisible();
-  await panel.getByRole('tab', { name: '概览', exact: true }).click();
+  await panel.getByRole('tab', { name: '设置', exact: true }).click();
   return panel;
 }
 
@@ -42,7 +42,9 @@ test('TC-0324 D-BR-01/02/04 c0 child creation converges and exposes detail', asy
   await expect(creation.getByText(/在.*c0.*下创建子频道/)).toBeVisible();
   await creation.getByLabel('新频道名称').fill('design-room');
   await creation.getByLabel('频道用途').fill('集中讨论产品设计');
-  await expect(creation.getByRole('combobox', { name: '频道模板', exact: true })).toBeVisible();
+  // 频道模板退役了：新频道从三种起点之一开始，默认是空白。
+  await expect(creation.getByRole('combobox', { name: '频道模板', exact: true })).toHaveCount(0);
+  await expect(creation.getByRole('radio', { name: '起点 空白', exact: true })).toBeChecked();
   await creation.getByRole('button', { name: '创建频道', exact: true }).click();
 
   const progress = creation.getByRole('region', { name: '频道创建进度' });
@@ -50,7 +52,7 @@ test('TC-0324 D-BR-01/02/04 c0 child creation converges and exposes detail', asy
     await expect(progress.getByText(label, { exact: true })).toBeVisible();
   }
   await expect(progress.getByText('已确认', { exact: true })).toHaveCount(4);
-  await expect(progress.getByText('频道已经可以打开和协作。', { exact: true })).toBeVisible();
+  await expect(progress.getByText(/^频道已经可以打开和协作。/)).toBeVisible();
   await expect(page.locator('.channel-rail').getByText('c0.design-room', { exact: true })).toBeVisible();
 
   await creation.getByRole('button', { name: '关闭新建频道', exact: true }).click();
@@ -72,11 +74,13 @@ test('TC-0324 D-BR-01/02/04 c0 child creation converges and exposes detail', asy
   // Current Governance is the canonical detail projection.  It must expose
   // the created child and its serving status under the c0 parent, not invent a
   // second channel-get surface or rely on the retired operation button.
-  const governance = await openGovernanceOverview(page);
+  const governance = await openGovernanceSettings(page);
   const child = governance.locator('.child-channel').filter({ hasText: 'design-room' });
   await expect(child).toHaveCount(1);
   await expect(child).toContainText('服务中');
   await expect(governance.getByRole('heading', { name: /^子频道/ })).toBeVisible();
   await expect(governance.locator('.channel-facts')).toContainText('c0');
-  await expect(governance.getByRole('heading', { name: '创建子频道', exact: true })).toBeVisible();
+  // 建子频道只在独立的新建频道框里；频道设置不再带一份创建表单。
+  await expect(governance.getByRole('heading', { name: '创建子频道', exact: true })).toHaveCount(0);
+  await expect(governance.getByLabel('新频道名称')).toHaveCount(0);
 });

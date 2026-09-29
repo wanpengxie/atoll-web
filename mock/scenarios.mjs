@@ -126,9 +126,9 @@ export const SCENARIOS = Object.freeze({
   'agent-tree': standard({ history: false, behavior: { capabilities: true, message: 'agent-tree' } }),
   'control-conflict': standard({ history: false, behavior: { capabilities: true, message: 'long-running' } }),
   'actor-lifecycle': standard({ history: false, behavior: { capabilities: true } }),
-  // 成员两层 + 配置编辑 + 全局 key + ui.form：c0 里多一个缺全局 key 卡住的 agent
-  // （deepseek）和一个连不上端点正在重试的 tool（search-tool），并预置一把
-  // global/openai_prod。@steward 提到 deepseek 或 ui.form 时它会向发问的屏发表单。
+  // 成员两层 + 描述与配置编辑 + 全局 key + ui.form：c0.project 里多一个缺全局 key
+  // 卡住的 agent（deepseek）、一个连不上端点正在重试的 tool（search-tool）和一个
+  // 占位没填、构建已停下的 agent（writer），并预置一把 global/openai_prod。@steward 提到 deepseek 或 ui.form 时它会向发问的屏发表单。
   'actor-config': standard({ files: DEMO_FILES, behavior: { actor_layers_demo: true } }),
   'approval-schema': standard(),
   'approval-expired': standard({ behavior: { approval_expired: true } }),

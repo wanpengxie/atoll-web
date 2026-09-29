@@ -16,7 +16,7 @@ import { ChannelAdministrationPanel } from '../src/ui/features/governance/Govern
 // frame emitted by the existing Composer submission owner rather than a
 // hand-written governance helper.
 const workspaceFixture = vi.hoisted(() => {
-  const channelId = 'c0';
+  const channelId = 'c0.project';
   const selfId = 'human:root:1';
   const workerId = 'agent:worker:1';
   const transportFrames = [];
@@ -211,7 +211,7 @@ describe('TC-0484 public governance member command port', () => {
     const refresh = vi.fn().mockResolvedValue(undefined);
 
     render(<ChannelAdministrationPanel
-      channel={{ id: 'c0', owner_principal: 'root' }}
+      channel={{ id: 'c0.project', owner_principal: 'root' }}
       initialTab="members"
       port={{
         selfId: 'human:root:1',
@@ -232,10 +232,32 @@ describe('TC-0484 public governance member command port', () => {
     await waitFor(() => expect(submit).toHaveBeenCalledWith({
       scope: 'channel',
       action: 'remove_actor',
-      payload: { channelId: 'c0', actorId: 'agent:worker:1' },
+      payload: { channelId: 'c0.project', actorId: 'agent:worker:1' },
     }));
     expect(submit).toHaveBeenCalledTimes(1);
     expect(refresh).not.toHaveBeenCalled();
+  });
+});
+
+describe('c0 members are fixed', () => {
+  it('offers no removal for c0\'s agents; people can still be removed', () => {
+    render(<ChannelAdministrationPanel
+      channel={{ id: 'c0', owner_principal: 'root' }}
+      initialTab="members"
+      port={{
+        selfId: 'human:root:1',
+        roster: [
+          { id: 'agent:steward:1', kind: 'agent', name: 'Steward', bound: true },
+          { id: 'human:alice:1', kind: 'human', name: 'Alice', principal: 'alice', bound: true },
+        ],
+        commands: { submit: vi.fn(), refresh: vi.fn() },
+      }}
+      onClose={vi.fn()}
+    />);
+    const steward = screen.getByText('Steward').closest('.managed-actor');
+    expect(within(steward).getByRole('button', { name: '移除' }).disabled).toBe(true);
+    const alice = screen.getByText('Alice').closest('.managed-actor');
+    expect(within(alice).getByRole('button', { name: '移除' }).disabled).toBe(false);
   });
 });
 

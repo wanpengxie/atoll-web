@@ -39,9 +39,9 @@ test('TC-0323 D-BR-00 channel creation and management remain separate public ent
   await page.getByRole('menuitem', { name: '频道详情', exact: true }).click();
   const management = page.getByRole('complementary', { name: '频道治理' });
   await expect(management).toBeVisible();
-  await management.getByRole('tab', { name: '概览', exact: true }).click();
+  await management.getByRole('tab', { name: '设置', exact: true }).click();
   await expect(management.getByRole('tablist')).toBeVisible();
-  await expect(management.getByRole('tab', { name: '概览', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(management.getByRole('tab', { name: '设置', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(management.getByRole('tab', { name: '成员', exact: true })).toHaveAttribute('aria-selected', 'false');
   await expect(management.getByLabel('新频道名称')).toHaveCount(0);
   await expect(management.getByRole('button', { name: '关闭频道详情' })).toBeVisible();

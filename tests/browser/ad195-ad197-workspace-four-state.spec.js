@@ -52,7 +52,8 @@ async function submitCreate(modal, name) {
 async function expectReady(modal, childName) {
   const progress = modal.getByRole('region', { name: '频道创建进度' });
   await expect(progress).toBeVisible();
-  await expect(progress.getByText('频道已经可以打开和协作。', { exact: true })).toBeVisible();
+  // 就绪句后面还跟着一句"成员的构建结果在频道设置和时间线上"，只认开头。
+  await expect(progress.getByText(/^频道已经可以打开和协作。/)).toBeVisible();
   await expect(progress.getByText('已确认', { exact: true })).toHaveCount(4);
   await expect(modal.getByRole('button', { name: '进入新频道', exact: true })).toBeVisible();
   await expect(modal.locator('header').getByText('已就绪', { exact: true })).toBeVisible();
@@ -71,7 +72,7 @@ async function expectMobileRail(page, childName) {
 async function expectError(modal) {
   await expect(modal.getByRole('alert').first()).toBeVisible();
   await expect(modal.getByRole('alert').first()).toContainText(/失败|拒绝|unauthorized|active channel member/i);
-  await expect(modal.getByText('频道已经可以打开和协作。', { exact: true })).toHaveCount(0);
+  await expect(modal.getByText(/^频道已经可以打开和协作。/)).toHaveCount(0);
   await expect(modal.getByRole('button', { name: '进入新频道', exact: true })).toHaveCount(0);
 }
 
@@ -119,20 +120,25 @@ function describeViewport(profile) {
 describeViewport('desktop');
 describeViewport('mobile');
 
-test.describe('mobile unavailable owner boundary', () => {
+test.describe('mobile denied space owner boundary', () => {
   test.use({ viewport: VIEWPORTS.mobile });
 
-  test('AD-195/197 successor exposes a bounded public unavailable owner state', async ({ page, request }) => {
-    await reset(request, 'channel-governance', 19530);
+  // 空间管理现在真能写了（Actor 描述、设备），原来那条"没有空间治理结果投影"
+  // 的不可用说明随之退役。这里守它的后继：服务端拒绝一个空间命令时，面板给出
+  // 一条有边界的公开错误，不伪造成功，列表里也不多出那一行。
+  test('AD-195/197 successor keeps a denied space command a bounded public error', async ({ page, request }) => {
+    await reset(request, 'space-administration-denied', 19530);
     await login(page, 'mobile');
     await page.getByRole('button', { name: '打开频道列表', exact: true }).click();
     await page.getByRole('button', { name: '空间管理', exact: true }).click();
     const panel = page.getByRole('complementary', { name: '空间管理' });
     await expect(panel).toBeVisible();
-    // This is the real AppShell/Workspace unavailable owner surface.  The
-    // AD-195/197 compact-result copy remains covered by blocked-round26's
-    // focused unit contract; no private terminal fixture is invented here.
-    await expect(panel.getByRole('status')).toContainText('当前 wire/session 没有空间治理结果投影');
+    await expect(panel.getByRole('tab', { name: 'Actor 描述', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await panel.getByLabel('Actor 描述名字').fill('denied-writer');
+    await panel.getByLabel('Actor 描述 Class').fill('claude');
+    await panel.getByRole('button', { name: '新建', exact: true }).click();
+    await expect(panel.getByRole('alert').first()).toContainText(/unauthorized_sender|active channel member/);
+    await expect(panel.getByRole('region', { name: 'Actor 描述 denied-writer' })).toHaveCount(0);
+    await expect(panel.getByText('Actor 描述已新建。')).toHaveCount(0);
   });
 });
-
