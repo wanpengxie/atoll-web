@@ -13,12 +13,17 @@ import { initialFormValues, schemaFields, validateFormValues } from '../src/mode
 import {
   hasRedactedValue,
   insertGlobalReference,
-  memberConfigForNewClass,
-  memberConfigPatch,
+  MEMBER_SOURCE_LABELS,
+  memberBodyLabel,
   memberLayerFromMeasure,
   memberLayerIssue,
+  memberSourceRows,
+  mergePatch,
   missingGlobalReferences,
+  missingPlaceholders,
   parseMemberConfigText,
+  patchAtPath,
+  valueAtPath,
 } from '../src/model/member-config.js';
 import {
   answerUiForm,
@@ -54,11 +59,21 @@ function formRequest(body = {}, extra = {}) {
 }
 
 describe('vocab', () => {
-  it('registers ui.form among the words a client answers and member.set among member words', () => {
+  it('registers ui.form among the words a client answers and the member entry / own-config words', () => {
     expect(TYPES.uiForm).toBe('ui.form');
     expect(CLIENT_UI_WORDS).toEqual(['ui.state', 'ui.navigate', 'ui.open', 'ui.form']);
     expect(CLIENT_UI_WORDS).not.toContain(TYPES.uiSessionList);
     expect(TYPES.member.set).toBe('system.member.set');
+    expect(TYPES.member.configSet).toBe('system.member.config.set');
+    expect(TYPES.actorDescription).toEqual({
+      create: 'system.actor.description.create',
+      get: 'system.actor.description.get',
+      list: 'system.actor.description.list',
+      retire: 'system.actor.description.retire',
+    });
+    expect(TYPES.narration.buildFinished).toBe('system.build.finished');
+    expect(TYPES).not.toHaveProperty('channelTemplate');
+    expect(TYPES).not.toHaveProperty('actorTemplate');
   });
 });
 
@@ -119,18 +134,66 @@ describe('member layers and config patch', () => {
     expect(memberLayerIssue({ business: { state: 'retrying' } }).text).toBe('业务层重试中');
   });
 
-  it('computes a top-level patch: changed keys replace, removed keys reset to null, untouched keys stay out', () => {
+  it('computes an RFC 7396 merge patch: nested objects recurse, removed keys become null, untouched keys stay out', () => {
     const before = { model: 'a', api_key: '$global.k', nested: { x: 1, y: [1, 2] }, redacted: '已隐藏' };
     const after = { model: 'b', nested: { y: [1, 2], x: 1 }, redacted: '已隐藏', temperature: 0.2 };
-    expect(memberConfigPatch(before, after)).toEqual({ model: 'b', api_key: null, temperature: 0.2 });
-    expect(memberConfigPatch(before, { ...before, nested: { x: 2, y: [1, 2] } })).toEqual({ nested: { x: 2, y: [1, 2] } });
-    expect(memberConfigPatch(before, before)).toEqual({});
-    expect(memberConfigPatch(undefined, { a: 1 })).toEqual({ a: 1 });
+    // 没动的键（包括脱敏过的"已隐藏"）不发；删掉的键发 null。
+    expect(mergePatch(before, after)).toEqual({ model: 'b', api_key: null, temperature: 0.2 });
+    // 对象逐层比：只发变了的那个内层键，不整个替换。
+    expect(mergePatch(before, { ...before, nested: { x: 2, y: [1, 2] } })).toEqual({ nested: { x: 2 } });
+    expect(mergePatch({ a: { b: { c: 1, d: 2 } } }, { a: { b: { c: 1 } } })).toEqual({ a: { b: { d: null } } });
+    // 数组不是对象：变了就整个替换。
+    expect(mergePatch({ list: [1, 2] }, { list: [2] })).toEqual({ list: [2] });
+    // 对象换成标量、标量换成对象：给新值。
+    expect(mergePatch({ a: { b: 1 } }, { a: 'x' })).toEqual({ a: 'x' });
+    expect(mergePatch({ a: 'x' }, { a: { b: 1 } })).toEqual({ a: { b: 1 } });
+    expect(mergePatch(before, before)).toEqual({});
+    expect(mergePatch(undefined, { a: 1 })).toEqual({ a: 1 });
+    expect(mergePatch({ a: 1 }, null)).toEqual({ a: null });
   });
 
-  it('sends the whole config on a class change, and never a redacted placeholder', () => {
-    expect(memberConfigForNewClass({ model: 'x', api_key: '$global.k', reset: null })).toEqual({ model: 'x', api_key: '$global.k' });
+  it('builds a one-key patch for a dotted path and reads a nested value back', () => {
+    expect(patchAtPath('service.api_key', '$global.k')).toEqual({ service: { api_key: '$global.k' } });
+    expect(patchAtPath('model', 'x')).toEqual({ model: 'x' });
+    expect(patchAtPath('a..b', 1)).toEqual({ a: { b: 1 } });
+    expect(() => patchAtPath('', 1)).toThrow('键路径为空');
+    const value = { service: { api_key: 'k', region: 'cn' }, list: [1] };
+    expect(valueAtPath(value, 'service.region')).toBe('cn');
+    expect(valueAtPath(value, 'service')).toEqual({ api_key: 'k', region: 'cn' });
+    expect(valueAtPath(value, 'service.missing')).toBeUndefined();
+    expect(valueAtPath(value, 'list.0')).toBeUndefined();
+  });
+
+  it('lists every effective key with the layer it came from, sorted by path', () => {
+    const rows = memberSourceRows({
+      effective: { model: 'claude-opus', service: { api_key: '$required:key', region: 'cn' }, temperature: 0.3 },
+      sources: { temperature: 'member', model: 'actor', 'service.region': 'actor', 'service.api_key': 'config', other: 'future' },
+    });
+    expect(rows.map((row) => [row.path, row.layer, row.label, row.value])).toEqual([
+      ['model', 'actor', MEMBER_SOURCE_LABELS.actor, 'claude-opus'],
+      ['other', 'future', 'future', undefined],
+      ['service.api_key', 'config', '这一台的配置', '$required:key'],
+      ['service.region', 'actor', 'Actor 描述', 'cn'],
+      ['temperature', 'member', '成员条目', 0.3],
+    ]);
+    expect(MEMBER_SOURCE_LABELS.default).toBe('Class 默认值');
+    expect(memberSourceRows({})).toEqual([]);
+    expect(memberSourceRows(null)).toEqual([]);
+  });
+
+  it('labels a member body and lists unfilled placeholders', () => {
+    expect(memberBodyLabel({ actor: 'writer@1' })).toBe('Actor 描述 writer@1');
+    expect(memberBodyLabel({ class: 'codex' })).toBe('Class codex');
+    expect(memberBodyLabel({})).toBe('');
+    expect(memberBodyLabel('class codex')).toBe('');
+    expect(missingPlaceholders({ missing: [{ key: 'service.api_key', hint: '写作服务的 API key' }, { key: 'model' }, { hint: 'no key' }, null] }))
+      .toEqual([{ key: 'service.api_key', hint: '写作服务的 API key' }, { key: 'model', hint: '' }]);
+    expect(missingPlaceholders({})).toEqual([]);
+  });
+
+  it('never writes back a redacted placeholder', () => {
     expect(hasRedactedValue({ nested: { token: '已隐藏' } })).toBe(true);
+    expect(hasRedactedValue(['a', ['已隐藏']])).toBe(true);
     expect(hasRedactedValue({ model: 'x', list: ['a'] })).toBe(false);
   });
 

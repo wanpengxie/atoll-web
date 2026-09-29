@@ -24,8 +24,10 @@ describe('F5 成员与全局表面', () => {
         roster: [
           { id: 'root', name: 'Root', kind: 'human', principal: 'root' },
           { id: 'system', name: 'system', kind: 'system' },
-          { id: 'registrar', name: 'registrar', kind: 'system', decl_id: 'registrar' },
-          { id: 'svcactor', name: 'svcactor', kind: 'peer', decl_id: 'svcactor' },
+          { id: 'registrar', name: 'registrar', kind: 'system', body: 'generated' },
+          { id: 'svcactor', name: 'svcactor', kind: 'peer', body: 'generated' },
+          // 运行时生成的 handle：kind 是 agent，但 body 说它不在频道描述里。
+          { id: 'agent:c0-child:2', name: 'child-handle', kind: 'agent', body: 'generated' },
         ],
         commands: {},
       }}
@@ -38,20 +40,18 @@ describe('F5 成员与全局表面', () => {
     expect(screen.queryByText('system')).toBeNull();
     expect(screen.queryByText('registrar')).toBeNull();
     expect(screen.queryByText('svcactor')).toBeNull();
+    expect(screen.queryByText('child-handle')).toBeNull();
   });
 
-  it('添加流程的候选人不包含 genesis 铸出的系统声明', async () => {
+  it('添加流程：从 Actor 描述或 Class 写成员条目，人直接邀请', async () => {
     const user = userEvent.setup();
     const submit = vi.fn().mockResolvedValue({ accepted: true });
     render(<ChannelAdministrationPanel
-      channel={{ id: 'c0' }}
+      channel={{ id: 'c0.project' }}
       port={{
         roster: [{ id: 'system', kind: 'system' }],
         principals: [{ id: 'alice', display_name: 'Alice' }],
-        declarations: [
-          { id: 'demo:agent', name: 'Analyst' },
-          { id: 'svcactor', name: 'svcactor' },
-        ],
+        actorDescriptions: [{ name: 'analyst', version: 2, class: 'codex-agent', description: '分析资料' }],
         commands: { submit },
       }}
       onClose={vi.fn()}
@@ -59,11 +59,47 @@ describe('F5 成员与全局表面', () => {
     // Baseline action: the member admission selector is available immediately.
     expect(screen.getByRole('tab', { name: '成员' }).getAttribute('aria-selected')).toBe('true');
     await user.click(screen.getByRole('combobox', { name: '选择参与者' }));
-    // genesis 铸出的系统声明不该出现在候选里。
-    expect(screen.queryByRole('option', { name: /svcactor/ })).toBeNull();
-    await user.click(screen.getByRole('option', { name: /Analyst · Agent/ }));
-    expect(screen.getByText('demo:agent')).toBeTruthy();
-    expect(screen.getByText(/归属 principal 由声明本身决定/)).toBeTruthy();
+    await user.click(screen.getByRole('option', { name: 'analyst@2 · Actor 描述（class codex-agent）' }));
+    const selection = screen.getByRole('status');
+    expect(selection.getAttribute('data-participant-id')).toBe('analyst@2');
+    expect(selection.textContent).toContain('class codex-agent · 分析资料');
+    // 成员名默认取描述的名字，可以改。
+    const name = screen.getByLabelText('成员名');
+    expect(name.value).toBe('analyst');
+    await user.clear(name);
+    await user.type(name, 'Bad Name');
+    expect(screen.getByText('成员名须为 1–63 位小写字母、数字或连字符')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '添加到频道' }).disabled).toBe(true);
+    await user.clear(name);
+    await user.type(name, 'analyst-2');
+    await user.click(screen.getByRole('button', { name: '添加到频道' }));
+    expect(submit).toHaveBeenLastCalledWith({
+      scope: 'channel', action: 'introduce_actor',
+      payload: { channelId: 'c0.project', candidateType: 'description', candidateId: 'analyst@2', name: 'analyst-2' },
+    });
+
+    // 直接按 Class：要填 Class 和成员名。
+    await user.click(screen.getByRole('combobox', { name: '选择参与者' }));
+    await user.click(screen.getByRole('option', { name: '直接按 Class 新建…' }));
+    expect(screen.getByLabelText('成员名').value).toBe('');
+    await user.type(screen.getByLabelText('成员 Class'), 'codex');
+    expect(screen.getByRole('button', { name: '添加到频道' }).disabled).toBe(true);
+    await user.type(screen.getByLabelText('成员名'), 'helper');
+    await user.click(screen.getByRole('button', { name: '添加到频道' }));
+    expect(submit).toHaveBeenLastCalledWith({
+      scope: 'channel', action: 'introduce_actor',
+      payload: { channelId: 'c0.project', candidateType: 'class', candidateId: 'codex', name: 'helper' },
+    });
+
+    // 人：不要成员名，发 principal。
+    await user.click(screen.getByRole('combobox', { name: '选择参与者' }));
+    await user.click(screen.getByRole('option', { name: 'Alice · 用户' }));
+    expect(screen.queryByLabelText('成员名')).toBeNull();
+    await user.click(screen.getByRole('button', { name: '添加到频道' }));
+    expect(submit).toHaveBeenLastCalledWith({
+      scope: 'channel', action: 'introduce_actor',
+      payload: { channelId: 'c0.project', candidateType: 'principal', candidateId: 'alice' },
+    });
   });
 
   it('候选目录按显示名排序，并用稳定 ID 打破同名而不依赖到达顺序', async () => {
@@ -76,9 +112,9 @@ describe('F5 成员与全局表面', () => {
           { id: 'alice', display_name: 'Alice' },
           { id: 'principal-a', display_name: 'Same' },
         ],
-        declarations: [
-          { id: 'decl-z', name: 'Same', kind: 'tool' },
-          { id: 'decl-a', name: 'Same', kind: 'tool' },
+        actorDescriptions: [
+          { name: 'same', version: 2, class: 'mcp-tool' },
+          { name: 'same', version: 1, class: 'mcp-tool' },
         ],
         commands: {},
       }}
@@ -89,18 +125,19 @@ describe('F5 成员与全局表面', () => {
     await user.click(select);
     const options = screen.getAllByRole('option');
     expect(options.map((option) => option.textContent.trim())).toEqual([
-      '搜索用户、Agent 或工具',
+      '搜索用户或 Actor 描述',
       'Alice · 用户',
       'Same · 用户',
       'Same · 用户',
-      'Same · 工具',
-      'Same · 工具',
+      'same@1 · Actor 描述（class mcp-tool）',
+      'same@2 · Actor 描述（class mcp-tool）',
+      '直接按 Class 新建…',
     ]);
     await user.click(options[2]);
     expect(screen.getByRole('status').getAttribute('data-participant-id')).toBe('principal-a');
     await user.click(select);
     await user.click(screen.getAllByRole('option')[4]);
-    expect(screen.getByRole('status').getAttribute('data-participant-id')).toBe('decl-a');
+    expect(screen.getByRole('status').getAttribute('data-participant-id')).toBe('same@1');
   });
 
   it('全局搜索返回规范 SourceRef 并可用其打开结果', async () => {

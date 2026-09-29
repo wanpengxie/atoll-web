@@ -1,11 +1,7 @@
 // @vitest-environment jsdom
-// 旧 src/model/space-administration.js（actorTemplateCommand/channelTemplateCommand/
-// deviceCommand/isProtectedDeclaration/overlayCommand/parseJSONObject/
-// profileCommand/safeChannelDeviceRows/safeDaemonRows/terminalValue）整体删除，
-// 无任何独立可导出的替代模块。
-//
-// 命令构造、保护声明和 overlay 写路径属于产品缺口（详见 S-Z 账本）；
-// safeDaemonRows 的公开能力仍有对应入口：WorkspaceApp 使用的
+// 旧 src/model/space-administration.js 整体删除，无任何独立可导出的替代模块。
+// 空间命令（Actor 描述、设备）的映射在 WorkspaceApp.submitSpaceGovernance
+// （见 workspace-real-runtime-composition）；safeDaemonRows 的公开能力仍有对应入口：WorkspaceApp 使用的
 // useWireConnection -> accessRef.directory()。本测从该公开 port 驱动 OBS，
 // 不导入 useWireSession.js 的私有投影 helper。
 import { cleanup, renderHook, waitFor } from '@testing-library/react';
@@ -27,7 +23,7 @@ function publicConnectionHarness() {
   const obs = {
     spaceChannels: vi.fn(async () => ({ complete: true, items: [] })),
     spacePrincipals: vi.fn(async () => ({ complete: true, items: [] })),
-    spaceDecls: vi.fn(async () => ({ complete: true, items: [] })),
+    spaceActorDescriptions: vi.fn(async () => ({ complete: true, items: [] })),
     spaceDaemons: vi.fn(async () => ({
       complete: true,
       items: [{

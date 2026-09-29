@@ -32,69 +32,87 @@ describe('创建子频道（GovernanceFeature public owner）', () => {
     fireEvent.click(screen.getByRole('button', { name: '创建频道' }));
     await waitFor(() => expect(submit).toHaveBeenCalledWith(expect.objectContaining({
       scope: 'channel', action: 'create_child',
-      payload: { name: 'research', purpose: '分析资料', parentId: 'c0' },
+      payload: { name: 'research', purpose: '分析资料', parentId: 'c0', humans: [] },
     })));
 
     expect(screen.getByRole('region', { name: '频道创建进度' }).textContent).toContain('正在收敛');
     expect(screen.queryByRole('button', { name: '进入新频道' })).toBeNull();
   });
 
-  it('[AD-151] reads the selected template body before submitting the recipe', async () => {
-    const getTemplate = vi.fn().mockResolvedValue({
-      id: 'team',
-      body: { declarations: [{ decl_id: 'mock:steward' }], profile: { serving: 1 } },
-    });
-    const submit = vi.fn().mockResolvedValue('request-ad151');
+  it('[AD-151] copies another channel\'s description with copy_from and brings the chosen humans', async () => {
+    const submit = vi.fn().mockResolvedValue('request-copy');
     render(<WorkspaceRightPanel
       panel={{ kind: 'channel-administration', initialTab: 'overview' }}
       channel={{ id: 'c0', qualified_name: 'c0' }}
       governance={{ channel: {
-        channelTemplates: [{ id: 'team', name: 'Team' }],
-        commands: { getTemplate, submit },
+        commands: { submit },
         children: [],
+        selfId: 'human:root:1',
+        copyableChannels: [{ id: 'c0.project', qualified_name: 'c0.project' }, { id: 'c0.public', qualified_name: 'c0.public' }],
+        principals: [{ id: 'alice', kind: 'human', display_name: 'Alice' }, { id: 'retired', kind: 'human', status: 'retired' }, { declared: { id: 'bob', kind: 'human', email: 'bob@x' } }],
       } }}
       onClose={vi.fn()}
     />);
 
-    fireEvent.change(screen.getByLabelText('新频道名称'), { target: { value: 'templated-room' } });
-    fireEvent.click(screen.getByRole('combobox', { name: '频道模板' }));
-    fireEvent.click(screen.getByRole('option', { name: 'Team' }));
+    fireEvent.change(screen.getByLabelText('新频道名称'), { target: { value: 'copied-room' } });
+    fireEvent.click(screen.getByLabelText('起点 复制一个频道'));
+    // 复制时说明随源频道的描述一起来，不再单独填。
+    expect(screen.queryByLabelText('频道用途')).toBeNull();
+    // 还没选源频道：不能提交。
+    expect(screen.getByRole('button', { name: '创建频道' }).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('combobox', { name: '复制的频道' }));
+    fireEvent.click(screen.getByRole('option', { name: 'c0.project' }));
+
+    // 带进来的人：自己恒在（固定一行），退役的人不列出。
+    const humans = screen.getByRole('region', { name: '带进来的人' });
+    expect(within(humans).getByText('human:root:1')).toBeTruthy();
+    expect(within(humans).queryByLabelText(/retired/)).toBeNull();
+    fireEvent.click(within(humans).getByLabelText('带上用户 bob@x'));
     fireEvent.click(screen.getByRole('button', { name: '创建频道' }));
 
-    await waitFor(() => expect(getTemplate).toHaveBeenCalledWith('team'));
-    await waitFor(() => expect(submit).toHaveBeenCalledWith(expect.objectContaining({
+    await waitFor(() => expect(submit).toHaveBeenCalledWith({
       scope: 'channel', action: 'create_child',
-      payload: expect.objectContaining({
-        name: 'templated-room', parentId: 'c0', templateId: 'team',
-        templateBody: { declarations: [{ decl_id: 'mock:steward' }], profile: { serving: 1 } },
-      }),
-    })));
-    expect(getTemplate.mock.invocationCallOrder[0]).toBeLessThan(submit.mock.invocationCallOrder[0]);
+      payload: { name: 'copied-room', parentId: 'c0', humans: ['bob'], copyFrom: 'c0.project' },
+    }));
   });
 
-  it('[AD-152] shows unavailable detail and does not submit when the template body is missing', async () => {
-    const getTemplate = vi.fn().mockResolvedValue({ id: 'team', name: 'Team' });
-    const submit = vi.fn().mockResolvedValue('should-not-submit');
+  it('[AD-152] reads this channel\'s description on demand and submits only the picked member entries', async () => {
+    const entries = [
+      { name: 'writer', body: { actor: 'writer@1' }, params: { temperature: 0.3 } },
+      { name: 'helper', body: { class: 'codex' } },
+    ];
+    const readDescription = vi.fn()
+      .mockRejectedValueOnce(new Error('this channel is built by the platform and has no description'))
+      .mockResolvedValueOnce({ body: { members: entries }, revision: 3 });
+    const submit = vi.fn().mockResolvedValue('request-pick');
     render(<WorkspaceRightPanel
       panel={{ kind: 'channel-administration', initialTab: 'overview' }}
-      channel={{ id: 'c0', qualified_name: 'c0' }}
-      governance={{ channel: {
-        channelTemplates: [{ id: 'team', name: 'Team' }],
-        commands: { getTemplate, submit },
-        children: [],
-      } }}
+      channel={{ id: 'c0.project', qualified_name: 'c0.project' }}
+      governance={{ channel: { commands: { readDescription, submit }, children: [], principals: [] } }}
       onClose={vi.fn()}
     />);
 
-    fireEvent.change(screen.getByLabelText('新频道名称'), { target: { value: 'templated-room' } });
-    fireEvent.click(screen.getByRole('combobox', { name: '频道模板' }));
-    fireEvent.click(screen.getByRole('option', { name: 'Team' }));
-    fireEvent.click(screen.getByRole('button', { name: '创建频道' }));
+    fireEvent.change(screen.getByLabelText('新频道名称'), { target: { value: 'picked' } });
+    fireEvent.change(screen.getByLabelText('频道用途'), { target: { value: '挑几个成员' } });
+    fireEvent.click(screen.getByLabelText('起点 从本频道挑成员'));
+    // 手动挡：选中这个起点不会自己去读描述。
+    expect(readDescription).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: '创建频道' }).disabled).toBe(true);
 
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('终态详情不可用，请刷新或重新进入频道'));
-    expect(getTemplate).toHaveBeenCalledWith('team');
-    expect(submit).not.toHaveBeenCalled();
-    expect(screen.getByLabelText('新频道名称').value).toBe('templated-room');
+    fireEvent.click(screen.getByRole('button', { name: '读取 c0.project 的成员条目' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('has no description'));
+    fireEvent.click(screen.getByRole('button', { name: '读取 c0.project 的成员条目' }));
+    await screen.findByLabelText('抄成员条目 writer');
+    expect(readDescription).toHaveBeenCalledWith('c0.project');
+    expect(screen.getByText('actor writer@1')).toBeTruthy();
+    expect(screen.getByText('class codex')).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText('抄成员条目 writer'));
+    fireEvent.click(screen.getByRole('button', { name: '创建频道' }));
+    await waitFor(() => expect(submit).toHaveBeenCalledWith({
+      scope: 'channel', action: 'create_child',
+      payload: { name: 'picked', parentId: 'c0.project', humans: [], purpose: '挑几个成员', members: [entries[0]] },
+    }));
   });
 
   it('[AD-153] renders typed convergence and enters only after every fact is ready', async () => {

@@ -119,16 +119,28 @@ function renderHarness(overrides = {}) {
 }
 
 describe('channel file browser (FilesFeature + useAttachmentTransactions)', () => {
-  it('opens the configured storage device instead of the first daemon row', async () => {
+  it('opens local-device, every channel\'s default, instead of the first attached device row', async () => {
     const wireResource = vi.fn(async () => ({ items: [] }));
     renderHarness({
-      activeChannel: { id: 'project', qualified_name: 'c0.project', default_storage_device_id: 'remote-id' },
-      devices: [{ id: 'first-id', name: 'first-device' }, { id: 'remote-id', name: 'mac-mbp', defaultStorage: true }],
+      activeChannel: { id: 'project', qualified_name: 'c0.project' },
+      // 频道描述里外挂的设备排在前面也不抢默认；local-device 不需要任何设置。
+      devices: [{ id: 'first-id', name: 'first-device' }, { id: 'local-device', name: 'local-device' }],
+      wireResource,
+    });
+    await screen.findByText('当前目录为空');
+    expect(wireResource).toHaveBeenCalledWith(expect.objectContaining({ query: expect.objectContaining({ prefix: 'daemon://local-device/c0.project/' }) }));
+    expect(wireResource).not.toHaveBeenCalledWith(expect.objectContaining({ query: expect.objectContaining({ prefix: 'daemon://first-device/c0.project/' }) }));
+  });
+
+  it('opens the device the channel device list marks default', async () => {
+    const wireResource = vi.fn(async () => ({ items: [] }));
+    renderHarness({
+      activeChannel: { id: 'project', qualified_name: 'c0.project' },
+      devices: [{ id: 'first-id', name: 'first-device' }, { id: 'node-own', name: 'mac-mbp', defaultStorage: true }],
       wireResource,
     });
     await screen.findByText('当前目录为空');
     expect(wireResource).toHaveBeenCalledWith(expect.objectContaining({ query: expect.objectContaining({ prefix: 'daemon://mac-mbp/c0.project/' }) }));
-    expect(wireResource).not.toHaveBeenCalledWith(expect.objectContaining({ query: expect.objectContaining({ prefix: 'daemon://first-device/c0.project/' }) }));
   });
 
   it('opens a directory with one row click without previewing it', async () => {

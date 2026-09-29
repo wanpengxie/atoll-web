@@ -97,12 +97,12 @@ describe('current timeline message presentation', () => {
     expect(screen.getAllByText('已隐藏').length).toBeGreaterThan(0);
   });
 
-  it('renders the protocol label and declaration for system.member.create', () => {
+  it('renders the protocol label and member name for system.member.create', () => {
     // Current-owner contract: the canonical body shape is rendered through
     // the public timeline presentation path, including its operation label.
     render(React.createElement(Harness, {
-      row: standalone('message-member-create', { decl_id: 'demo:agent' }, 'system.member.create'),
+      row: standalone('message-member-create', { name: 'writer', body: { actor: 'writer@1' } }, 'system.member.create'),
     }));
-    expect(screen.getByText('添加参与者：demo:agent')).toBeTruthy();
+    expect(screen.getByText('添加参与者：writer')).toBeTruthy();
   });
 });

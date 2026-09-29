@@ -34,7 +34,7 @@ const workspaceFixture = vi.hoisted(() => {
   const access = {
     state: vi.fn(() => accessState),
     directory: vi.fn(() => ({
-      principals: [], declarations: [], devices: [], channelTemplates: null, support: {},
+      principals: [], actorDescriptions: [], devices: [], support: {},
     })),
   };
   const navigation = {

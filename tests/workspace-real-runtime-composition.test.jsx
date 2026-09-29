@@ -50,7 +50,7 @@ const mocks = vi.hoisted(() => {
       unavailable: false,
     })),
     live: vi.fn(() => false),
-    directory: vi.fn(() => ({ principals: [], declarations: [], devices: [], support: {} })),
+    directory: vi.fn(() => ({ principals: [], actorDescriptions: [], devices: [], support: {} })),
   };
   const wire = {
     state: 'open',
@@ -302,49 +302,194 @@ afterEach(async () => {
 });
 
 describe('真实 Workspace owner composition', () => {
-  it.skip('maps the selected current-channel Agent to the existing initial actor seat field', async () => {
+  async function openGovernance() {
     render(<WorkspaceApp />);
     await waitFor(() => expect(mocks.feedRuntime).toBeTruthy());
-    await makeCurrentFeed();
-    mocks.connectionProps.accessActionsRef.current = {
-      refresh: vi.fn().mockResolvedValue(undefined),
-    };
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    mocks.connectionProps.accessActionsRef.current = { refresh, schedule: vi.fn() };
     act(() => mocks.layoutProps.navigation.openChannelAdministration('overview'));
     await waitFor(() => expect(mocks.layoutProps?.rightPanel?.props?.governance?.channel).toBeTruthy());
+    return { refresh, props: mocks.layoutProps.rightPanel.props };
+  }
 
-    const governance = mocks.layoutProps.rightPanel.props.governance.channel;
+  function submitted(msgType, predicate = () => true) {
+    return mocks.transportSubmissions.filter((frame) => frame.msg_type === msgType && predicate(frame));
+  }
+
+  // 给一条已发出的请求补上请求行和终态行，让 Workspace 的治理追踪收到终态。
+  async function answer(request, body, seq = 1) {
     await act(async () => {
-      await governance.commands.submit({
-        scope: 'channel', action: 'create_child',
-        payload: {
-          name: 'agent-room', purpose: '', parentId: mocks.channelId,
-          initialActorIds: [mocks.agentId],
-        },
+      await mocks.feedRuntime.getSnapshot().setHistoryGrants([
+        { channel_id: mocks.channelId, head_seq: seq + 1, has_rows: true },
+      ], { generation: 1, boot: 'world-real', focus: mocks.channelId });
+      enqueue(seq, requestEnvelope(request.id, request.msg_type));
+      enqueue(seq + 1, responseEnvelope(`${request.id}-done`, request.id, request.msg_type, body));
+    });
+  }
+
+  it('maps the three create starting points to system.channel.create, always bringing self', async () => {
+    const { props } = await openGovernance();
+    const governance = props.governance.channel;
+    const create = async (payload) => {
+      await act(async () => {
+        await governance.commands.submit({ scope: 'channel', action: 'create_child', payload: { parentId: mocks.channelId, ...payload } });
       });
+      return submitted(TYPES.channel.create, (frame) => frame.payload?.name === payload.name).at(-1)?.payload;
+    };
+
+    // 空白：没有说明就不带 description。
+    expect(await create({ name: 'blank-room', purpose: '', humans: [] })).toEqual({
+      name: 'blank-room', parent: mocks.channelId, humans: [mocks.principalId],
+    });
+    // 复制：只带 copy_from，说明随源频道的描述来；自己恒在 humans 里且不重复。
+    expect(await create({ name: 'copy-room', copyFrom: 'c0.project', purpose: '会被忽略', humans: ['alice', mocks.principalId] })).toEqual({
+      name: 'copy-room', parent: mocks.channelId, humans: [mocks.principalId, 'alice'], copy_from: 'c0.project',
+    });
+    // 挑成员：把挑出来的条目和说明写成新频道的描述。
+    const entry = { name: 'writer', body: { actor: 'writer@1' }, params: { temperature: 0.3 } };
+    expect(await create({ name: 'pick-room', purpose: '写作', members: [entry], humans: [] })).toEqual({
+      name: 'pick-room', parent: mocks.channelId, humans: [mocks.principalId],
+      description: { description: '写作', members: [entry] },
+    });
+    for (const frame of submitted(TYPES.channel.create)) {
+      expect(frame.payload).not.toHaveProperty('recipe');
+      expect(frame.payload).not.toHaveProperty('initial_actor_ids');
+    }
+  });
+
+  it('maps channel governance actions to member entries, description fields and device attach', async () => {
+    const { props, refresh } = await openGovernance();
+    const governance = props.governance.channel;
+    const run = (action, payload) => act(async () => {
+      await governance.commands.submit({ scope: 'channel', action, payload: { channelId: mocks.channelId, ...payload } });
     });
 
-    await waitFor(() => expect(mocks.transportSubmissions.some((frame) => (
-      frame.msg_type === TYPES.channel.create && frame.payload?.name === 'agent-room'
-    ))).toBe(true));
-    const create = mocks.transportSubmissions.find((frame) => (
-      frame.msg_type === TYPES.channel.create && frame.payload?.name === 'agent-room'
-    ));
-    expect(create?.payload?.initial_actor_ids).toEqual([mocks.humanId, mocks.agentId]);
+    await run('introduce_actor', { candidateType: 'description', candidateId: 'writer@2', name: ' writer ' });
+    await run('introduce_actor', { candidateType: 'class', candidateId: 'codex', name: 'helper' });
+    expect(submitted(TYPES.member.create).map((frame) => frame.payload)).toEqual([
+      { name: 'writer', body: { actor: 'writer@2' } },
+      { name: 'helper', body: { class: 'codex' } },
+    ]);
+    await run('introduce_actor', { candidateType: 'principal', candidateId: 'alice' });
+    expect(submitted(TYPES.member.admit).at(-1).payload).toEqual({ principal: 'alice' });
+
+    await run('update_profile', { description: '新说明', serving: true });
+    await run('update_profile', { serving: false });
+    expect(submitted(TYPES.channel.set).map((frame) => frame.payload)).toEqual([
+      { channel_id: mocks.channelId, description: '新说明', serving: 1 },
+      { channel_id: mocks.channelId, serving: 0 },
+    ]);
+
+    await run('attach_device', { deviceId: 'laptop' });
+    await run('detach_device', { deviceId: 'laptop' });
+    expect(submitted(TYPES.device.attach).at(-1).payload).toEqual({ channel_id: mocks.channelId, device_id: 'laptop' });
+    expect(submitted(TYPES.device.detach).at(-1).payload).toEqual({ channel_id: mocks.channelId, device_id: 'laptop' });
+    // 每条治理命令提交后都刷新目录事实。
+    expect(refresh.mock.calls.length).toBeGreaterThanOrEqual(7);
+    await expect(governance.commands.submit({ scope: 'channel', action: 'no_such_action', payload: {} })).rejects.toMatchObject({ code: 'owner_unavailable' });
+  });
+
+  it('maps space actions to actor description and device words and refreshes the directory after the terminal', async () => {
+    const { props, refresh } = await openGovernance();
+    const space = props.governance.space;
+    expect(space.disabled).toBe(false);
+    expect(space.unsupported).toBeUndefined();
+
+    const pending = space.commands.submit({ scope: 'space', action: 'actor_description_create', payload: { name: ' reviewer ', class: 'claude ', description: ' ', params: {} } });
+    await waitFor(() => expect(submitted(TYPES.actorDescription.create)).toHaveLength(1));
+    const request = submitted(TYPES.actorDescription.create)[0];
+    // 空的说明和参数不发。
+    expect(request.payload).toEqual({ name: 'reviewer', class: 'claude' });
+    refresh.mockClear();
+    await answer(request, { status: 'completed', value: { ref: 'reviewer@1', version: 1 } });
+    await expect(pending).resolves.toEqual({ ref: 'reviewer@1', version: 1 });
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    const others = [
+      space.commands.submit({ scope: 'space', action: 'actor_description_create', payload: { name: 'r2', class: 'claude', description: '审稿', params: { a: 1 } } }),
+      space.commands.submit({ scope: 'space', action: 'actor_description_retire', payload: { name: 'reviewer', version: '1' } }),
+      space.commands.submit({ scope: 'space', action: 'create_device', payload: { name: ' laptop ' } }),
+      space.commands.submit({ scope: 'space', action: 'retire_device', payload: { deviceId: 'device-9' } }),
+    ];
+    // 这几条不等终态；卸载时被拒，接住。
+    for (const promise of others) promise.catch(() => {});
+    await waitFor(() => expect(submitted(TYPES.device.remove)).toHaveLength(1));
+    expect(submitted(TYPES.actorDescription.create).at(-1).payload).toEqual({ name: 'r2', class: 'claude', params: { a: 1 }, description: '审稿' });
+    expect(submitted(TYPES.actorDescription.retire)[0].payload).toEqual({ name: 'reviewer', version: 1 });
+    expect(submitted(TYPES.device.create)[0].payload).toEqual({ name: 'laptop' });
+    expect(submitted(TYPES.device.remove)[0].payload).toEqual({ device_id: 'device-9' });
+    await expect(space.commands.submit({ scope: 'space', action: 'channel_template_create', payload: {} })).rejects.toMatchObject({ code: 'owner_unavailable' });
+  });
+
+  it('maps the member entry and own-config editors to member.set and member.config.set', async () => {
+    const { props } = await openGovernance();
+    const commands = props.roster.commands;
+    const actor = { id: 'agent:writer:1', kind: 'agent' };
+    const pending = [
+      commands.setMember({ actor, body: null, params: { temperature: null, effort: 'high' }, requires: null, dryRun: true }),
+      commands.setMember({ actor, body: { class: 'codex' }, params: {} }),
+      commands.setMemberConfig({ actor, desiredHost: '', values: {} }),
+      commands.setMemberConfig({ actor, values: { service: { api_key: '$global.k' } }, dryRun: true }),
+    ];
+    for (const promise of pending) promise.catch(() => {});
+    await waitFor(() => expect(submitted(TYPES.member.configSet)).toHaveLength(2));
+    expect(submitted(TYPES.member.set).map((frame) => frame.payload)).toEqual([
+      { member: 'agent:writer:1', params: { temperature: null, effort: 'high' }, requires: null, dry_run: true },
+      { member: 'agent:writer:1', body: { class: 'codex' } },
+    ]);
+    // desired_host 给了才发（'' = 回到 local-device）；空的 values 不发。
+    expect(submitted(TYPES.member.configSet).map((frame) => frame.payload)).toEqual([
+      { member: 'agent:writer:1', desired_host: '' },
+      { member: 'agent:writer:1', values: { service: { api_key: '$global.k' } }, dry_run: true },
+    ]);
+    for (const frame of [...submitted(TYPES.member.set), ...submitted(TYPES.member.configSet)]) {
+      expect(frame.audience).toEqual(['system']);
+    }
+  });
+
+  it('resolves member.config.set with its flat reply and rejects a failed one with its code', async () => {
+    const { props } = await openGovernance();
+    const actor = { id: 'agent:writer:1', kind: 'agent' };
+    const first = props.roster.commands.setMemberConfig({ actor, values: { a: 1 } });
+    await waitFor(() => expect(submitted(TYPES.member.configSet)).toHaveLength(1));
+    await answer(submitted(TYPES.member.configSet)[0], { status: 'completed', member: 'writer', values: { a: 1 }, revision: 3 });
+    await expect(first).resolves.toEqual({ member: 'writer', values: { a: 1 }, revision: 3 });
+
+    const second = props.roster.commands.setMemberConfig({ actor, values: { a: 2 } });
+    const secondRejection = expect(second).rejects.toMatchObject({ code: 'invalid_args', message: 'invalid_args：values must be a JSON object' });
+    await waitFor(() => expect(submitted(TYPES.member.configSet)).toHaveLength(2));
+    await answer(submitted(TYPES.member.configSet)[1], { status: 'failed', error_code: 'invalid_args', detail: 'values must be a JSON object' }, 3);
+    await secondRejection;
+  });
+
+  // system.channel.get / system.channel.description.get 是 registrar 的空间词，
+  // 终态形如 {status, value:{...}}；读出来的是 value 本身。
+  it('resolves readChannel and readDescription with the registrar value, not its wrapper', async () => {
+    const { props } = await openGovernance();
+    const commands = props.governance.channel.commands;
+    const view = { id: mocks.channelId, description: { body: { members: [], serving: 0 }, revision: 2 } };
+    // 不给频道就读当前频道。
+    const reading = commands.readChannel();
+    await waitFor(() => expect(submitted(TYPES.channel.get)).toHaveLength(1));
+    expect(submitted(TYPES.channel.get)[0].payload).toEqual({ channel_id: mocks.channelId });
+    await answer(submitted(TYPES.channel.get)[0], { status: 'completed', value: view });
+    await expect(reading).resolves.toEqual(view);
+
+    // 读别的频道的描述也从当前频道的 system 发。
+    const described = commands.readDescription('c0.project');
+    await waitFor(() => expect(submitted(TYPES.channelDescription.get)).toHaveLength(1));
+    expect(submitted(TYPES.channelDescription.get)[0].channel_id).toBe(mocks.channelId);
+    expect(submitted(TYPES.channelDescription.get)[0].payload).toEqual({ channel: 'c0.project' });
+    await answer(submitted(TYPES.channelDescription.get)[0], { status: 'completed', value: { body: { members: [] }, revision: 2 } }, 3);
+    await expect(described).resolves.toEqual({ body: { members: [] }, revision: 2 });
   });
 
   it('rejects governance waiters and clears channel creation on a world reset', async () => {
-    render(<WorkspaceApp />);
-    await waitFor(() => expect(mocks.feedRuntime).toBeTruthy());
-    mocks.connectionProps.accessActionsRef.current = {
-      refresh: vi.fn().mockResolvedValue(undefined),
-    };
-    act(() => mocks.layoutProps.navigation.openChannelAdministration('overview'));
-    await waitFor(() => expect(mocks.layoutProps?.rightPanel?.props?.governance?.channel).toBeTruthy());
-
-    const governance = mocks.layoutProps.rightPanel.props.governance.channel;
-    const pendingTemplates = governance.commands.listTemplates();
-    const pendingTemplatesRejection = expect(pendingTemplates).rejects.toMatchObject({ code: 'governance_world_changed' });
-    await waitFor(() => expect(mocks.transportSubmissions.some((frame) => frame.msg_type === TYPES.channelTemplate.list)).toBe(true));
+    const { props } = await openGovernance();
+    const governance = props.governance.channel;
+    const pendingRead = governance.commands.readChannel();
+    const pendingReadRejection = expect(pendingRead).rejects.toMatchObject({ code: 'governance_world_changed' });
+    await waitFor(() => expect(mocks.transportSubmissions.some((frame) => frame.msg_type === TYPES.channel.get)).toBe(true));
 
     await act(async () => {
       await governance.commands.submit({
@@ -360,37 +505,8 @@ describe('真实 Workspace owner composition', () => {
     }));
 
     await act(async () => { await mocks.connectionProps.onWorldChanged(); });
-    await pendingTemplatesRejection;
+    await pendingReadRejection;
     await waitFor(() => expect(mocks.layoutProps.rightPanel.props.governance.channel.creation).toBeNull());
-  });
-
-  it('rejects a Registrar template receipt whose returned id is not the requested id', async () => {
-    render(<WorkspaceApp />);
-    await waitFor(() => expect(mocks.feedRuntime).toBeTruthy());
-    act(() => mocks.layoutProps.navigation.openChannelAdministration('overview'));
-    await waitFor(() => expect(mocks.layoutProps?.rightPanel?.props?.governance?.channel).toBeTruthy());
-
-    const governance = mocks.layoutProps.rightPanel.props.governance.channel;
-    const pendingTemplate = governance.commands.getTemplate('mock:team');
-    const pendingTemplateRejection = expect(pendingTemplate).rejects.toMatchObject({ code: 'template_id_mismatch' });
-    await waitFor(() => expect(mocks.transportSubmissions.some((frame) => (
-      frame.msg_type === TYPES.channelTemplate.get && frame.payload?.id === 'mock:team'
-    ))).toBe(true));
-    const request = mocks.transportSubmissions.find((frame) => (
-      frame.msg_type === TYPES.channelTemplate.get && frame.payload?.id === 'mock:team'
-    ));
-
-    await act(async () => {
-      await mocks.feedRuntime.getSnapshot().setHistoryGrants([
-        { channel_id: mocks.channelId, head_seq: 2, has_rows: true },
-      ], { generation: 1, boot: 'world-real', focus: mocks.channelId });
-      enqueue(1, requestEnvelope(request.id, TYPES.channelTemplate.get));
-      enqueue(2, responseEnvelope(`${request.id}-done`, request.id, TYPES.channelTemplate.get, {
-        status: 'completed',
-        value: { id: 'mock:other', body: { declarations: [] } },
-      }));
-    });
-    await pendingTemplateRejection;
   });
 
   it('does not bind a create result to a child with a different parent', async () => {

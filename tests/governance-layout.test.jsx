@@ -12,7 +12,7 @@ function governancePort(overrides = {}) {
   return {
     roster: [],
     principals: [],
-    declarations: [],
+    actorDescriptions: [],
     commands: {},
     ...overrides,
   };

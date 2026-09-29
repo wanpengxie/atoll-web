@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { WorkspaceFeatureOverlays, WorkspaceRightPanel } from '../src/ui/features/WorkspaceFeatures.jsx';
-import { ChannelAdministrationPanel } from '../src/ui/features/governance/GovernanceFeature.jsx';
+import { ChannelCreateModal } from '../src/ui/features/governance/GovernanceFeature.jsx';
 
 afterEach(cleanup);
 
@@ -111,70 +111,64 @@ describe('N-R round 34 public picker/governance owner contracts', () => {
     await waitFor(() => expect(onRequestSettled).toHaveBeenCalledWith(null, 'picker-1'));
   });
 
-  it('carries the selected channel template through the public governance command port', async () => {
+  it('carries the chosen humans through the public governance command port by stable principal id', async () => {
     const submit = vi.fn().mockResolvedValue('create-request');
-    const refresh = vi.fn().mockResolvedValue(undefined);
-    render(<ChannelAdministrationPanel
+    render(<ChannelCreateModal
       channel={{ id: 'c0', qualified_name: 'c0', parent_id: null }}
-      initialTab="overview"
       port={{
         children: [],
-        channelTemplates: [{ id: 'team', name: 'Team' }],
-        commands: { submit, refresh },
+        principals: [{ id: 'principal:alice-7', kind: 'human', display_name: 'Alice（显示名）' }],
+        commands: { submit },
       }}
       onClose={vi.fn()}
     />);
 
-    fireEvent.change(screen.getByLabelText('名称'), { target: { value: 'research' } });
-    fireEvent.click(screen.getByRole('combobox', { name: '频道模板' }));
-    fireEvent.click(screen.getByRole('option', { name: 'Team' }));
-    fireEvent.click(screen.getByRole('button', { name: '创建子频道' }));
+    fireEvent.change(screen.getByLabelText('新频道名称'), { target: { value: 'research' } });
+    fireEvent.click(screen.getByLabelText('带上用户 Alice（显示名）'));
+    fireEvent.click(screen.getByRole('button', { name: '创建频道' }));
 
     await waitFor(() => expect(submit).toHaveBeenCalledWith({
       scope: 'channel',
       action: 'create_child',
       payload: {
         name: 'research',
-        purpose: '',
-        templateId: 'team',
         parentId: 'c0',
+        humans: ['principal:alice-7'],
+        purpose: '',
       },
     }));
-    await waitFor(() => expect(refresh).toHaveBeenCalledWith('directory'));
   });
 
-  it('uses the stable template id and canonical parent id, never display names, for child creation', async () => {
+  it('uses the stable copy-source id and canonical parent id, never display names, for child creation', async () => {
     const submit = vi.fn().mockResolvedValue('create-request-parent-id');
-    const refresh = vi.fn().mockResolvedValue(undefined);
-    render(<ChannelAdministrationPanel
+    render(<ChannelCreateModal
       channel={{ id: 'channel:parent-7', qualified_name: '研究父频道' }}
-      initialTab="overview"
       port={{
         children: [],
-        channelTemplates: [{ id: 'registrar:team-v2', name: 'Team 模板（显示名）' }],
-        commands: { submit, refresh },
+        copyableChannels: [{ id: 'channel:team-v2', qualified_name: 'Team 频道（显示名）' }],
+        commands: { submit },
       }}
       onClose={vi.fn()}
     />);
 
-    fireEvent.change(screen.getByLabelText('名称'), { target: { value: 'child-room' } });
-    fireEvent.click(screen.getByRole('combobox', { name: '频道模板' }));
-    fireEvent.click(screen.getByRole('option', { name: 'Team 模板（显示名）' }));
-    fireEvent.click(screen.getByRole('button', { name: '创建子频道' }));
+    fireEvent.change(screen.getByLabelText('新频道名称'), { target: { value: 'child-room' } });
+    fireEvent.click(screen.getByLabelText('起点 复制一个频道'));
+    fireEvent.click(screen.getByRole('combobox', { name: '复制的频道' }));
+    fireEvent.click(screen.getByRole('option', { name: 'Team 频道（显示名）' }));
+    fireEvent.click(screen.getByRole('button', { name: '创建频道' }));
 
     await waitFor(() => expect(submit).toHaveBeenCalledWith({
       scope: 'channel',
       action: 'create_child',
       payload: {
         name: 'child-room',
-        purpose: '',
-        templateId: 'registrar:team-v2',
         parentId: 'channel:parent-7',
+        humans: [],
+        copyFrom: 'channel:team-v2',
       },
     }));
     const payload = submit.mock.calls[0][0].payload;
     expect(payload.parentName).toBeUndefined();
-    expect(payload.templateName).toBeUndefined();
-    await waitFor(() => expect(refresh).toHaveBeenCalledWith('directory'));
+    expect(payload.copyFromName).toBeUndefined();
   });
 });

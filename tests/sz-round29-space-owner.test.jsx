@@ -17,8 +17,6 @@ describe('round 29 current channel-device owner', () => {
       activeChannel: {
         id: 'c0',
         qualified_name: 'c0',
-        // A space-inventory id must not become a channel mount by fallback.
-        default_storage_device_id: 'space-only-device',
       },
       channelDevices,
     });
@@ -36,13 +34,12 @@ describe('round 29 current channel-device owner', () => {
     mounted.view.unmount();
   });
 
-  it('[SZ-019] does not invent a channel device from a space-only configured id', async () => {
+  it('[SZ-019] does not invent local-device when the channel device authority lists none', async () => {
     const channelDevices = vi.fn().mockResolvedValue(deviceObservation([]));
     const mounted = mountAttachmentTransactions({
       activeChannel: {
         id: 'c0',
         qualified_name: 'c0',
-        default_storage_device_id: 'space-only-device',
       },
       channelDevices,
     });

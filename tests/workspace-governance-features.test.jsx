@@ -7,41 +7,62 @@ import { ChannelAdministrationPanel, ChannelAutomationPanel } from '../src/ui/fe
 afterEach(cleanup);
 
 describe('workspace governance feature ports', () => {
-  it('opens the create entry on the overview tab', () => {
+  it('opens the settings tab (the old overview) with the on-demand channel state card', () => {
     render(<ChannelAdministrationPanel
       channel={{ id: 'c1' }}
       initialTab="overview"
-      port={{ commands: {}, children: [] }}
+      port={{ commands: { readChannel: vi.fn() }, children: [] }}
       onClose={() => {}}
     />);
 
-    expect(screen.getByRole('tab', { name: '概览' }).getAttribute('aria-selected')).toBe('true');
-    const heading = screen.getByRole('heading', { name: '创建子频道' });
-    expect(heading).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '设置' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.queryByRole('tab', { name: '概览' })).toBeNull();
+    const heading = screen.getByRole('heading', { name: '频道状态' });
     expect(heading.closest('[hidden]')).toBeNull();
+    // 新建频道是 Workspace 的弹窗，不在频道详情里。
+    expect(screen.queryByRole('heading', { name: '创建子频道' })).toBeNull();
   });
 
   it('reports a queued profile command and requests a directory refresh', async () => {
     const submit = vi.fn().mockResolvedValue('message-1');
     const refresh = vi.fn().mockResolvedValue(undefined);
+    const readChannel = vi.fn().mockResolvedValue({ description: { revision: 1, body: { members: [], description: 'old', serving: 0 } } });
     render(<ChannelAdministrationPanel
-      channel={{ id: 'c1', description: 'old' }}
-      port={{ commands: { submit, refresh }, children: [] }}
+      channel={{ id: 'c1' }}
+      port={{ commands: { submit, refresh, readChannel }, children: [] }}
       onClose={() => {}}
     />);
 
-    fireEvent.click(screen.getByRole('tab', { name: '概览' }));
-    fireEvent.change(screen.getByLabelText('说明'), { target: { value: 'new' } });
-    fireEvent.click(screen.getByRole('button', { name: '保存频道资料' }));
+    fireEvent.click(screen.getByRole('tab', { name: '设置' }));
+    fireEvent.click(screen.getByRole('button', { name: '读取' }));
+    fireEvent.change(await screen.findByLabelText('频道说明'), { target: { value: 'new' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
 
     await waitFor(() => expect(submit).toHaveBeenCalledWith({
       scope: 'channel',
       action: 'update_profile',
-      payload: { channelId: 'c1', description: 'new' },
+      payload: { channelId: 'c1', description: 'new', serving: false },
     }));
     expect(refresh).toHaveBeenCalledWith('directory');
-    expect(screen.getByRole('status').textContent).toContain('已进入提交队列');
-    expect(screen.getByRole('status').textContent).toContain('最终以账本与目录投影为准');
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('频道描述已写入'));
+    expect(screen.getByRole('status').textContent).toContain('构建结果重新读取频道状态查看');
+  });
+
+  it('reports a partial result when the directory refresh after a write fails', async () => {
+    const submit = vi.fn().mockResolvedValue('message-1');
+    const refresh = vi.fn().mockRejectedValue(new Error('obs offline'));
+    const readChannel = vi.fn().mockResolvedValue({ description: { revision: 1, body: { members: [], serving: 0 } } });
+    render(<ChannelAdministrationPanel
+      channel={{ id: 'c1' }}
+      initialTab="overview"
+      port={{ commands: { submit, refresh, readChannel }, children: [] }}
+      onClose={() => {}}
+    />);
+    fireEvent.click(screen.getByRole('button', { name: '读取' }));
+    await screen.findByLabelText('频道说明');
+    fireEvent.click(screen.getByRole('button', { name: '保存' }));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('目录刷新失败：obs offline'));
+    expect(screen.getByRole('status').className).toContain('state-partial');
   });
 
   it('uses after/list/cancel ports without claiming a server timer inventory', async () => {

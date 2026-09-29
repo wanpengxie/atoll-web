@@ -236,8 +236,12 @@ function governanceTerminalError(payload, fallback = '治理命令未完成') {
 // system actor 自己答的词（member.get / member.set …）用 sys.Reply 把回复平铺在
 // status 旁边；失败是 {status:'failed', error_code, detail}。这两个函数只把这一种
 // 形状读成值或错误，不做 registrar {value} 那一套。
+// 频道面的词（system actor 自己答）把回复平铺在 status 旁边；空间面的词（转交
+// c0 的 registrar）回的是 {status, value}。两种形状读成同一个值。
 function systemReplyValue(payload) {
   const { status: _status, ...value } = payload || {};
+  const keys = Object.keys(value);
+  if (keys.length === 1 && keys[0] === 'value') return value.value;
   return value;
 }
 

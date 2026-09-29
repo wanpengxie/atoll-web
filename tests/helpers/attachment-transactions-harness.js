@@ -14,7 +14,8 @@ export function deviceObservation(devices = []) {
       declared: {
         device_id: device.id,
         name: device.name || device.id,
-        default_storage: device.defaultStorage === true,
+        // 频道设备行上的 default:true 标着默认位置（local-device）。
+        default: device.defaultStorage === true,
       },
       actual: { measures: [{ name: 'online', unknown: device.online === undefined, value: device.online }] },
     })),

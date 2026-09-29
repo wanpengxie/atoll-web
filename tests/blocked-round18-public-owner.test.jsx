@@ -6,7 +6,7 @@
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { ChannelAdministrationPanel } from '../src/ui/features/governance/GovernanceFeature.jsx';
+import { ChannelAdministrationPanel, ChannelCreateModal } from '../src/ui/features/governance/GovernanceFeature.jsx';
 import { WorkspaceLayout } from '../src/app/WorkspaceLayout.jsx';
 
 afterEach(() => {
@@ -174,33 +174,6 @@ describe('A-D round 18 public owner evidence: create failure and governance', ()
     expect(document.activeElement).toBe(screen.getByLabelText('新频道名称'));
   });
 
-  it.fails('[AD-150] includes a selected current-channel Agent as an initial seat', () => {
-    // 用户能力：创建时可带入当前频道 Agent seat。
-    // 不变量：seat 来源是公开 roster；公共 owner：GovernanceFeature。
-    governance({ commands: { submit: vi.fn() }, roster: [{ id: 'agent:worker:1', kind: 'agent', name: 'Worker' }] });
-    expect(screen.getByRole('checkbox', { name: /Worker/ })).toBeTruthy();
-  });
-
-  it.fails('[AD-151] reads a template body before submitting the public recipe', () => {
-    // 用户能力：模板 body 先从账本读取再用于 create。
-    // 不变量：create 不得只发送模板 ID；公共 owner：GovernanceFeature。
-    const submit = vi.fn().mockResolvedValueOnce('template-request').mockResolvedValueOnce('create-request');
-    governance({ commands: { submit }, space: { channelTemplates: [{ id: 'team', name: 'Team' }] } });
-    fireEvent.change(screen.getByLabelText('名称'), { target: { value: 'templated' } });
-    fireEvent.click(screen.getByRole('combobox', { name: '频道模板' }));
-    fireEvent.click(screen.getByRole('option', { name: 'Team' }));
-    fireEvent.click(screen.getByRole('button', { name: '创建子频道' }));
-    expect(submit).toHaveBeenNthCalledWith(1, expect.objectContaining({ action: 'get_template' }));
-  });
-
-  it.fails('[AD-152] treats a template compact closure as unavailable detail, not a business failure', () => {
-    // 用户能力：模板终态缺 body 时稳定提示不可用。
-    // 不变量：缺详情不能伪造失败或 recipe；公共 owner：GovernanceFeature。
-    governance({ commands: { submit: vi.fn().mockResolvedValue('template-request') } });
-    fireEvent.change(screen.getByLabelText('名称'), { target: { value: 'templated' } });
-    expect(screen.getByRole('alert').textContent).toContain('终态详情不可用，请刷新或重新进入频道');
-  });
-
   it.fails('[AD-153] exposes four-step convergence and enters only after ready', () => {
     // 用户能力：创建过程分别展示账本/OBS/membership/serving，ready 后进入。
     // 不变量：ready 不是单一 command receipt；公共 owner：GovernanceFeature。
@@ -212,26 +185,36 @@ describe('A-D round 18 public owner evidence: create failure and governance', ()
 
   it('[AD-154] preserves input and permits retry after submit and ledger failure facts', async () => {
     // 用户能力：提交失败/账本失败后仍可重试且保留输入。
-    // 不变量：失败生命周期不清空用户输入；公共 owner：ChannelAdministrationPanel。
-    const submit = vi.fn().mockRejectedValueOnce(new Error('网络不可用')).mockResolvedValueOnce('request-2');
-    const { rerender } = governance({ commands: { submit }, operation: null });
-    fireEvent.click(screen.getByRole('tab', { name: '概览' }));
-    fireEvent.change(screen.getByLabelText('名称'), { target: { value: 'backend' } });
-    fireEvent.change(screen.getByLabelText('用途'), { target: { value: '后端协作' } });
-    fireEvent.click(screen.getByRole('button', { name: '创建子频道' }));
+    // 不变量：失败生命周期不清空用户输入；公共 owner：ChannelCreateModal（频道创建弹窗）。
+    const submit = vi.fn()
+      .mockRejectedValueOnce(new Error('网络不可用'))
+      .mockResolvedValueOnce('request-2')
+      .mockResolvedValueOnce('request-3');
+    const port = { commands: { submit }, children: [], creation: null };
+    const { rerender } = render(<ChannelCreateModal channel={{ id: 'c0', qualified_name: 'c0' }} port={port} onClose={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText('新频道名称'), { target: { value: 'backend' } });
+    fireEvent.change(screen.getByLabelText('频道用途'), { target: { value: '后端协作' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建频道' }));
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('网络不可用'));
-    expect(screen.getByLabelText('名称').value).toBe('backend');
-    rerender(<ChannelAdministrationPanel
+    expect(screen.getByLabelText('新频道名称').value).toBe('backend');
+    expect(screen.getByLabelText('频道用途').value).toBe('后端协作');
+
+    fireEvent.click(screen.getByRole('button', { name: '创建频道' }));
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(2));
+    rerender(<ChannelCreateModal
       channel={{ id: 'c0', qualified_name: 'c0' }}
-      port={{ commands: { submit }, children: [], operation: { state: 'failed', message: '账本失败：名称已存在' } }}
+      port={{ ...port, creation: { requestId: 'request-2', accepted: true, failed: true, error: '账本失败：名称已存在' } }}
       onClose={vi.fn()}
     />);
-    expect(screen.getByText('账本失败：名称已存在')).toBeTruthy();
-    expect(screen.getByLabelText('名称').value).toBe('backend');
-    const retry = screen.getByRole('button', { name: '创建子频道' });
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('账本失败：名称已存在'));
+    expect(screen.getByLabelText('新频道名称').value).toBe('backend');
+    const retry = screen.getByRole('button', { name: '重新创建' });
     expect(retry.disabled).toBe(false);
     fireEvent.click(retry);
-    await waitFor(() => expect(submit).toHaveBeenCalledTimes(2));
+    expect(screen.getByLabelText('频道用途').value).toBe('后端协作');
+    fireEvent.click(screen.getByRole('button', { name: '创建频道' }));
+    await waitFor(() => expect(submit).toHaveBeenCalledTimes(3));
+    expect(submit.mock.calls[2][0].payload).toMatchObject({ name: 'backend', purpose: '后端协作', parentId: 'c0' });
   });
 
   it.fails('[AD-155] provides dialog Escape/backdrop/focus-trap and returns focus after close', () => {
@@ -242,20 +225,20 @@ describe('A-D round 18 public owner evidence: create failure and governance', ()
     expect(document.querySelector('.channel-create-backdrop')).toBeTruthy();
   });
 
-  it('[AD-191] filters standard/foundation actors from roster and declaration candidates', () => {
-    // 用户能力：治理成员列表不暴露 system/genesis seats。
-    // 不变量：标准 actor/内部 declaration 与业务成员分离；公共 owner：ChannelAdministrationPanel。
+  it('[AD-191] filters standard/foundation actors from roster and actor description candidates', () => {
+    // 用户能力：治理成员列表不暴露 system 和运行时生成的成员。
+    // 不变量：运行时生成的成员（body = generated）与描述里的成员分离；候选只来自
+    // Actor 描述；公共 owner：ChannelAdministrationPanel。
     governance({
       commands: { submit: vi.fn(), refresh: vi.fn() },
       roster: [
         { id: 'human:root:1', kind: 'human', name: 'Root' },
-        { id: 'agent:worker:1', kind: 'agent', name: 'Worker' },
+        { id: 'agent:worker:1', kind: 'agent', name: 'Worker', body: 'class codex' },
         { id: 'system', kind: 'system', name: 'System' },
-        { id: 'registrar', kind: 'tool', decl_id: 'atoll-internal:registrar-seat' },
+        { id: 'registrar', kind: 'system', name: 'Registrar', body: 'generated' },
       ],
-      declarations: [
-        { id: 'demo:worker', name: 'Worker declaration', status: 'present' },
-        { id: 'registrar', name: 'Registrar', decl_id: 'atoll-internal:registrar-seat', status: 'present' },
+      actorDescriptions: [
+        { name: 'worker-desc', version: 1, class: 'codex', status: 'present' },
       ],
     });
     fireEvent.click(screen.getByRole('tab', { name: '成员' }));
@@ -264,8 +247,8 @@ describe('A-D round 18 public owner evidence: create failure and governance', ()
     expect(screen.queryByText('System')).toBeNull();
     expect(screen.queryByText('Registrar')).toBeNull();
     fireEvent.click(screen.getByRole('combobox', { name: '选择参与者' }));
-    expect(screen.getByRole('option', { name: /Worker declaration/ })).toBeTruthy();
-    expect(screen.queryByRole('option', { name: /Registrar/ })).toBeNull();
+    expect(screen.getByRole('option', { name: /worker-desc@1/ })).toBeTruthy();
+    expect(screen.queryByRole('option', { name: /Registrar|registrar/ })).toBeNull();
   });
 
   it('[AD-192] accepts only real human principals in the user selector', () => {

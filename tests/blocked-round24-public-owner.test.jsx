@@ -604,21 +604,26 @@ describe('A-D round 24 public-owner evidence', () => {
   it('[AD-316] refreshes the authoritative device projection after create_device reaches terminal', async () => {
     // 用户能力：创建设备完成后，列表重新读取权威 projection，而非停留在旧清单。
     // 不变量：terminal 事实是命令完成边界；submit 回执不能冒充设备已落地。
-    // 公开 owner：SpaceAdministrationPanel → SpaceDevices 的 space.commands port。
-    const submit = vi.fn().mockResolvedValue('request-1');
+    // 公开 owner：space.commands.submit 由 WorkspaceApp.submitSpaceGovernance 提供——它
+    // 等到终态、刷新目录后才 resolve（见 workspace-real-runtime-composition）；
+    // SpaceDevices 在那之前只显示"提交中"，之后只显示 port 给的新投影。
+    let finish;
+    const submit = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
     const refresh = vi.fn().mockResolvedValue(undefined);
-    render(<SpaceAdministrationPanel
-      channel={{ id: 'channel-a', qualified_name: 'c0.channel-a' }}
-      port={{ disabled: false, devices: [], commands: { submit, refresh } }}
-      onClose={vi.fn()}
-    />);
+    const port = { disabled: false, devices: [], commands: { submit, refresh } };
+    const view = render(<SpaceAdministrationPanel port={port} onClose={vi.fn()} />);
     fireEvent.click(screen.getByRole('tab', { name: '设备' }));
     fireEvent.change(screen.getByLabelText('设备名称'), { target: { value: 'laptop' } });
     fireEvent.click(screen.getByRole('button', { name: '创建设备' }));
     await waitFor(() => expect(submit).toHaveBeenCalledWith(expect.objectContaining({
       scope: 'space', action: 'create_device', payload: { name: 'laptop' },
     })));
-    await waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole('status').textContent).toBe('正在提交命令…');
+    expect(screen.queryByText('设备已创建。')).toBeNull();
+    view.rerender(<SpaceAdministrationPanel port={{ ...port, devices: [{ id: 'device-1', name: 'laptop', online: false }] }} onClose={vi.fn()} />);
+    finish({ value: { device_id: 'device-1' } });
+    await screen.findByText('设备已创建。');
+    expect(screen.getByText('device-1 · 离线')).toBeTruthy();
   });
 
   it('[AD-331] supports desktop copy and mobile short-reply/long-copy gestures without accidental cross-action', async () => {

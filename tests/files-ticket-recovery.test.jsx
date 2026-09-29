@@ -30,7 +30,7 @@ function Harness({ wireResource }) {
     channelDevices: vi.fn(async () => ({
       items: [{
         key: 'local-device',
-        declared: { device_id: 'local-device', name: 'local-device', default_storage: true },
+        declared: { device_id: 'local-device', name: 'local-device', default: true },
         actual: { measures: [{ name: 'online', value: true }] },
       }],
     })),

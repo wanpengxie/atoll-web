@@ -157,36 +157,6 @@ describe('A-D round 19 public owner evidence: create-channel governance', () => 
     expect(document.activeElement).toBe(screen.getByLabelText('新频道名称'));
   });
 
-  it.fails('[AD-150] includes a selected current-channel Agent as an initial seat', () => {
-    // 用户能力：创建时把当前频道 Agent 作为真实 actor seat 带入。
-    // 不变量：seat 来源只能是公开 roster；公开 owner：GovernanceFeature。
-    governance({
-      commands: { submit: vi.fn() },
-      roster: [{ id: 'agent:worker:1', kind: 'agent', name: 'Worker' }],
-    });
-    expect(screen.getByRole('checkbox', { name: /Worker/ })).toBeTruthy();
-  });
-
-  it.fails('[AD-151] reads template body before submitting a public recipe', () => {
-    // 用户能力：模板 body 先读账本再用于 create。
-    // 不变量：create 不能只发送 template ID；公开 owner：GovernanceFeature。
-    const submit = vi.fn().mockResolvedValueOnce('template-request').mockResolvedValueOnce('create-request');
-    governance({ commands: { submit }, space: { channelTemplates: [{ id: 'team', name: 'Team' }] } });
-    fireEvent.change(screen.getByLabelText('名称'), { target: { value: 'templated' } });
-    fireEvent.click(screen.getByRole('combobox', { name: '频道模板' }));
-    fireEvent.click(screen.getByRole('option', { name: 'Team' }));
-    fireEvent.click(screen.getByRole('button', { name: '创建子频道' }));
-    expect(submit).toHaveBeenNthCalledWith(1, expect.objectContaining({ action: 'get_template' }));
-  });
-
-  it.fails('[AD-152] treats a template compact closure as unavailable detail, not business failure', () => {
-    // 用户能力：模板终态缺 body 时稳定提示不可用。
-    // 不变量：缺失详情不能伪造 recipe 或业务失败；公开 owner：GovernanceFeature。
-    governance({ commands: { submit: vi.fn().mockResolvedValue('template-request') } });
-    fireEvent.change(screen.getByLabelText('名称'), { target: { value: 'templated' } });
-    expect(screen.getByRole('alert').textContent).toContain('终态详情不可用，请刷新或重新进入频道');
-  });
-
   it.fails('[AD-153] exposes four-step convergence and enters only after ready', () => {
     // 用户能力：分别看到 ledger/OBS/membership/serving，ready 后才进入。
     // 不变量：单一 command receipt 不能宣告 serving ready；公开 owner：GovernanceFeature。

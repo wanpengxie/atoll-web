@@ -143,7 +143,7 @@ function setupObs() {
       items: parentId ? [] : publicProfileRows(),
     })),
     spacePrincipals: vi.fn(() => directoryObservation({ complete: true, items: [] })),
-    spaceDecls: vi.fn(() => directoryObservation({ complete: true, items: [] })),
+    spaceActorDescriptions: vi.fn(() => directoryObservation({ complete: true, items: [] })),
     spaceDaemons: vi.fn(() => directoryObservation({ complete: true, items: [] })),
   };
 }

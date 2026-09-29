@@ -35,7 +35,7 @@ describe('S-Z current Timeline system-event owner', () => {
         type: TYPES.narration.memberCreated,
         visibility: 'system',
         sender: { id: 'system', kind: 'system' },
-        payload: { body: { member: 'steward', decl_id: 'mock:steward' } },
+        payload: { body: { member: 'steward', by: 'c0/root', class: 'codex' } },
       }}
     />);
 
@@ -105,7 +105,7 @@ describe('S-Z current Timeline system-event owner', () => {
         type: TYPES.narration.memberDeleted,
         visibility: 'system',
         sender: { id: 'system', kind: 'system' },
-        payload: { body: { member: 'steward', decl_id: 'mock:steward', reason: 'retired' } },
+        payload: { body: { member: 'steward', reason: 'retired' } },
       }}
     />);
 
@@ -119,10 +119,66 @@ describe('S-Z current Timeline system-event owner', () => {
       type: TYPES.narration.memberCreated,
       visibility: 'system',
       sender: { id: 'system', kind: 'system' },
-      payload: { body: { member: 'svcactor', decl_id: 'svcactor' } },
+      payload: { body: { member: 'svcactor', by: 'runtime', class: 'svcactor' } },
     }} />);
 
     expect(view.container.querySelector('.timeline-narration p')).toBeNull();
+  });
+
+  it('hides a runtime-generated member by the class the runtime wrote down', () => {
+    // 运行时生成 peer / handle 时在事件里写下它的 class；成员 id 本身看不出来。
+    const view = render(<NarrationHarness envelope={{
+      id: 'peer-created',
+      kind: 'event',
+      type: TYPES.narration.memberCreated,
+      visibility: 'system',
+      sender: { id: 'system', kind: 'system' },
+      payload: { body: { member: 'agent:c0-other:7', by: 'runtime', class: 'peeractor' } },
+    }} />);
+
+    expect(view.container.querySelector('.timeline-narration p')).toBeNull();
+  });
+
+  it('says one sentence for a build start and a failed build finish, toned by result', () => {
+    const record = {
+      object: { kind: 'member', channel: 'c0.project', name: 'writer' },
+      description: { channel_revision: 2, actor: 'writer@1' },
+      attempt: 1,
+    };
+    const started = render(<NarrationHarness envelope={{
+      id: 'build-started',
+      kind: 'event',
+      type: TYPES.narration.buildStarted,
+      visibility: 'system',
+      sender: { id: 'system', kind: 'system' },
+      payload: { body: record },
+    }} />);
+    expect(screen.getByText('开始构建成员 writer（第 1 次尝试）').className).toBe('build-event build-pending');
+    started.unmount();
+
+    render(<NarrationHarness envelope={{
+      id: 'build-finished',
+      kind: 'event',
+      type: TYPES.narration.buildFinished,
+      visibility: 'system',
+      sender: { id: 'system', kind: 'system' },
+      payload: { body: { ...record, result: 'failed', state: 'retrying', reason: 'service.api_key is a placeholder still unfilled' } },
+    }} />);
+    const line = screen.getByText('成员 writer构建失败（第 1 次尝试，下次巡检会再试）：service.api_key is a placeholder still unfilled');
+    expect(line.className).toBe('build-event build-retrying');
+    expect(screen.queryByText(TYPES.narration.buildFinished)).toBeNull();
+  });
+
+  it('says a successful build finish in plain words', () => {
+    render(<NarrationHarness envelope={{
+      id: 'build-ok',
+      kind: 'event',
+      type: TYPES.narration.buildFinished,
+      visibility: 'system',
+      sender: { id: 'system', kind: 'system' },
+      payload: { body: { object: { kind: 'member', channel: 'c0.project', name: 'writer' }, description: { channel_revision: 3 }, attempt: 1, result: 'ok', state: 'ready' } },
+    }} />);
+    expect(screen.getByText('成员 writer构建成功，已就绪').className).toBe('build-event build-ok');
   });
 
   it('silently ignores a flat legacy payload instead of restoring compatibility parsing', () => {

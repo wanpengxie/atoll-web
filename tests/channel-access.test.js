@@ -26,14 +26,17 @@ function declaredProfile(profile) {
   };
 }
 
-function publicConnectionHarness({ profiles = [], memberships = [], principalId = 'root' } = {}) {
+function publicConnectionHarness({ profiles = [], memberships = [], principalId = 'root', actorDescriptions = null } = {}) {
   const obs = {
     spaceChannels: vi.fn(async (parentId) => ({
       complete: true,
       items: parentId ? [] : profiles.map(declaredProfile),
     })),
     spacePrincipals: vi.fn(async () => ({ complete: true, items: [] })),
-    spaceDecls: vi.fn(async () => ({ complete: true, items: [] })),
+    spaceActorDescriptions: vi.fn(async () => {
+      if (actorDescriptions instanceof Error) throw actorDescriptions;
+      return { complete: true, items: actorDescriptions || [] };
+    }),
     spaceDaemons: vi.fn(async () => ({ complete: true, items: [] })),
     channelActors: vi.fn(async () => ({ complete: true, items: [] })),
   };
@@ -211,24 +214,40 @@ describe('channel access model (public useWireConnection port)', () => {
     harness.unmount();
   });
 
-  it('keeps Registrar channel templates in the session directory across OBS refreshes and hydrates bodies by id', async () => {
-    const harness = await accessPort({ profiles: [{ id: 'c0', status: 'present', open: true }], memberships: [{ channel_id: 'c0', status: 'active' }] });
+  it('loads every actor description version from OBS into the session directory, retired ones included', async () => {
+    const harness = await accessPort({
+      profiles: [{ id: 'c0', status: 'present', open: true }],
+      memberships: [{ channel_id: 'c0', status: 'active' }],
+      actorDescriptions: [
+        { key: 'writer@1', declared: { name: 'writer', version: 1, ref: 'writer@1', class: 'claude', status: 'retired' } },
+        { key: 'writer@2', declared: { name: 'writer', version: 2, ref: 'writer@2', class: 'claude', status: 'present' } },
+      ],
+    });
     const access = harness.result.current.accessRef.current;
-    expect(access.channelTemplatesObserved([{ id: 'mock:team', name: 'Team channel' }])).toBe(true);
-    expect(access.directory().channelTemplates).toEqual([{ id: 'mock:team', name: 'Team channel' }]);
+    await waitFor(() => expect(access.directory().support.actorDescriptions).toBe(true));
+    // 空间管理要看全部版本；挑成员时才只取 present 的（latestActorDescriptions）。
+    expect(access.directory().actorDescriptions.map((row) => [row.id, row.status])).toEqual([['writer@1', 'retired'], ['writer@2', 'present']]);
+    expect(access.directory()).not.toHaveProperty('channelTemplates');
+    expect(access.directory()).not.toHaveProperty('declarations');
 
-    expect(access.channelTemplateObserved({
-      id: 'mock:team',
-      name: 'Team channel',
-      body: { declarations: [{ decl_id: 'mock:steward' }] },
-    })).toBe(true);
-    expect(access.directory().channelTemplates).toEqual([expect.objectContaining({
-      id: 'mock:team',
-      body: { declarations: [{ decl_id: 'mock:steward' }] },
-    })]);
+    // 一次 OBS 刷新整份替换目录；reset 回到空目录。
+    access.directoryObserved({ principals: [], actorDescriptions: [], devices: [], support: { actorDescriptions: true } });
+    expect(access.directory().actorDescriptions).toEqual([]);
+    access.reset();
+    expect(access.directory().support).toEqual({ principals: false, actorDescriptions: false, devices: false });
+    harness.unmount();
+  });
 
-    access.directoryObserved({ principals: [], declarations: [], devices: [], channelTemplates: null, support: {} });
-    expect(access.directory().channelTemplates).toEqual([expect.objectContaining({ id: 'mock:team', body: expect.any(Object) })]);
+  it('marks actor descriptions unsupported when their OBS directory cannot be read', async () => {
+    const harness = await accessPort({
+      profiles: [{ id: 'c0', status: 'present', open: true }],
+      memberships: [{ channel_id: 'c0', status: 'active' }],
+      actorDescriptions: Object.assign(new Error('not found'), { status: 404 }),
+    });
+    const access = harness.result.current.accessRef.current;
+    await waitFor(() => expect(access.directory().support.principals).toBe(true));
+    expect(access.directory().support.actorDescriptions).toBe(false);
+    expect(access.directory().actorDescriptions).toEqual([]);
     harness.unmount();
   });
 });

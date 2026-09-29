@@ -235,43 +235,24 @@ describe('A-D round 26 public-owner evidence', () => {
     expect(onTaskControlC).not.toHaveBeenCalled();
   });
 
-  it('[AD-150] includes a selected current-channel Agent as an initial seat', () => {
-    // 用户能力：创建时带入当前频道 Agent actor seat。
-    // 不变量：seat 只能来自公开 roster；公开 owner：GovernanceFeature。
+  it('[AD-150] carries a picked current-channel member entry into the new channel', async () => {
+    // 用户能力：创建时带上当前频道的 Agent——抄它在频道描述里的成员条目。
+    // 不变量：条目只能来自本频道描述的一次按需读取；公开 owner：GovernanceFeature.ChannelCreateModal。
     const submit = vi.fn().mockResolvedValue('request-ad150');
-    createChannelModal({
-      commands: { submit },
-      roster: [{ id: 'agent:worker:1', kind: 'agent', name: 'Worker' }],
-    });
-    fireEvent.click(screen.getByRole('checkbox', { name: /Worker/ }));
+    const entry = { name: 'worker', body: { class: 'codex' } };
+    const readDescription = vi.fn().mockResolvedValue({ body: { members: [entry] }, revision: 1 });
+    createChannelModal({ commands: { submit, readDescription } });
     fireEvent.change(screen.getByLabelText('新频道名称'), { target: { value: 'agent-room' } });
+    fireEvent.click(screen.getByLabelText('起点 从本频道挑成员'));
+    fireEvent.click(screen.getByRole('button', { name: '读取 c0 的成员条目' }));
+    fireEvent.click(await screen.findByRole('checkbox', { name: '抄成员条目 worker' }));
     fireEvent.click(screen.getByRole('button', { name: '创建频道' }));
-    return waitFor(() => expect(submit).toHaveBeenCalledWith(expect.objectContaining({
+    await waitFor(() => expect(submit).toHaveBeenCalledWith(expect.objectContaining({
       scope: 'channel', action: 'create_child',
       payload: expect.objectContaining({
-        name: 'agent-room', parentId: 'c0', initialActorIds: ['agent:worker:1'],
+        name: 'agent-room', parentId: 'c0', members: [entry],
       }),
     })));
-  });
-
-  it.skip('[AD-151] reads template body before submitting a public recipe', () => {
-    // 用户能力：模板 body 先读账本再用于 create。
-    // 不变量：create 不能只发送 template ID；公开 owner：GovernanceFeature。
-    const submit = vi.fn().mockResolvedValueOnce('template-request').mockResolvedValueOnce('create-request');
-    governance({ commands: { submit }, space: { channelTemplates: [{ id: 'team', name: 'Team' }] } });
-    fireEvent.change(screen.getByLabelText('名称'), { target: { value: 'templated' } });
-    fireEvent.click(screen.getByRole('combobox', { name: '频道模板' }));
-    fireEvent.click(screen.getByRole('option', { name: 'Team' }));
-    fireEvent.click(screen.getByRole('button', { name: '创建子频道' }));
-    expect(submit).toHaveBeenNthCalledWith(1, expect.objectContaining({ action: 'get_template' }));
-  });
-
-  it.skip('[AD-152] treats a template compact closure as unavailable detail, not business failure', () => {
-    // 用户能力：模板终态缺 body 时稳定提示不可用。
-    // 不变量：缺失详情不能伪造 recipe/业务失败；公开 owner：GovernanceFeature。
-    governance({ commands: { submit: vi.fn().mockResolvedValue('template-request') } });
-    fireEvent.change(screen.getByLabelText('名称'), { target: { value: 'templated' } });
-    expect(screen.getByRole('alert').textContent).toContain('终态详情不可用，请刷新或重新进入频道');
   });
 
   it('[AD-153] keeps a bare request in convergence until typed facts arrive', async () => {
@@ -529,7 +510,7 @@ describe('A-D round 26 public-owner evidence', () => {
     fireEvent.click(screen.getByRole('button', { name: '创建频道' }));
     await waitFor(() => expect(submit).toHaveBeenCalledWith(expect.objectContaining({
       scope: 'channel', action: 'create_child',
-      payload: { name: 'research', purpose: '', parentId: 'c0' },
+      payload: { name: 'research', purpose: '', parentId: 'c0', humans: [] },
     })));
     expect(screen.getByText('服务就绪')).toBeTruthy();
     expect(screen.queryByRole('button', { name: '进入新频道' })).toBeNull();
@@ -543,20 +524,20 @@ describe('A-D round 26 public-owner evidence', () => {
     const worker = { id: 'agent:worker:1', kind: 'agent', status: 'present', name: 'Worker' };
     const view = governance({
       commands: { submit, refresh },
-      declarations: [{ id: 'agent:worker:1', kind: 'agent', status: 'present', name: 'Worker' }],
+      actorDescriptions: [{ name: 'worker', version: 1, class: 'codex', status: 'present' }],
       roster: [],
       rosterAuthority: { principalId: 'human:root:1', channelId: 'c0', generation: 1, current: false },
     });
     fireEvent.click(screen.getByRole('tab', { name: '成员' }));
     fireEvent.click(screen.getByRole('combobox', { name: '选择参与者' }));
-    fireEvent.click(screen.getByRole('option', { name: 'Worker · Agent' }));
+    fireEvent.click(screen.getByRole('option', { name: 'worker@1 · Actor 描述（class codex）' }));
     fireEvent.click(screen.getByRole('button', { name: '添加到频道' }));
     await waitFor(() => expect(submit).toHaveBeenCalledWith({
       scope: 'channel',
       action: 'introduce_actor',
-      payload: { channelId: 'c0', candidateType: 'declaration', candidateId: 'agent:worker:1' },
+      payload: { channelId: 'c0', candidateType: 'description', candidateId: 'worker@1', name: 'worker' },
     }));
-    expect(screen.getByText('命令已进入提交队列；最终状态以账本与目录投影为准。')).toBeTruthy();
+    expect(screen.getByText('成员条目已写进频道描述；成员构建好后出现在名册里，构建结果在成员详情和时间线上。')).toBeTruthy();
     expect(screen.queryByText('成员已就绪')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '刷新' }));
     expect(refresh).toHaveBeenCalledWith('members');
@@ -565,7 +546,7 @@ describe('A-D round 26 public-owner evidence', () => {
       port={{
         commands: { submit, refresh },
         children: [],
-        declarations: [{ id: 'agent:worker:1', kind: 'agent', status: 'present', name: 'Worker' }],
+        actorDescriptions: [{ name: 'worker', version: 1, class: 'codex', status: 'present' }],
         roster: [worker],
         rosterAuthority: { principalId: 'human:root:1', channelId: 'c0', generation: 1, current: true },
       }}

@@ -15,10 +15,10 @@ async function harness(scenario = 'space-administration') {
   const fetchSession = async (path, options = {}) => { const headers = new Headers(options.headers); if (cookie) headers.set('Cookie', cookie); const response = await fetch(`${baseURL}${path}`, { ...options, headers }); const next = response.headers.get('set-cookie'); if (next) cookie = next.split(';', 1)[0]; return response; };
   await createIdentityClient(fetchSession).login('root@atoll.local', 'test-root');
   class SessionWebSocket extends WebSocket { constructor(url) { super(url, { headers: { Cookie: cookie } }); } }
-  const envelopes = []; let attached = false;
-  const wire = createWire({ url: `${baseURL.replace('http', 'ws')}/ws`, WebSocketImpl: SessionWebSocket, onState: (state) => { if (state === 'attached') attached = true; }, onFeed: (_channel, _seq, envelope) => envelopes.push(envelope) });
-  await waitFor(() => attached);
-  return { server, baseURL, fetchSession, wire, envelopes };
+  const envelopes = []; const states = [];
+  const wire = createWire({ url: `${baseURL.replace('http', 'ws')}/ws`, WebSocketImpl: SessionWebSocket, onState: (state) => states.push(state), onFeed: (_channel, _seq, envelope) => envelopes.push(envelope) });
+  await waitFor(() => states.includes('attached'));
+  return { server, baseURL, fetchSession, wire, envelopes, states };
 }
 
 async function submitTerminal(h, msgType, payload, audience = ['system'], channelId = 'c0') {
@@ -26,28 +26,116 @@ async function submitTerminal(h, msgType, payload, audience = ['system'], channe
   return waitFor(() => h.envelopes.find((row) => row.parent_id === receipt.message_id && ['completed', 'failed'].includes(row.payload?.body?.status)));
 }
 
+// channel.create 改了成员清单，mock 在回复落地后让连接重连一次（attach 回执带
+// 清单）；重连期间的回复收不到，等它重新 attach 再往下走。
+async function createChannel(h, payload) {
+  const attachedBefore = h.states.filter((state) => state === 'attached').length;
+  const terminal = await submitTerminal(h, 'system.channel.create', payload);
+  if (terminal.payload.body.status === 'completed') {
+    await waitFor(() => h.states.filter((state) => state === 'attached').length > attachedBefore, 5000);
+  }
+  return terminal;
+}
+
 afterEach(async () => Promise.all([...servers].map(close)));
 
 describe('phase E stateful mock', () => {
-  it('supports templates, channel configuration and secret-safe devices', async () => {
+  it('supports versioned actor descriptions: create, list, get the latest, retire', async () => {
     const h = await harness();
-    expect((await submitTerminal(h, 'system.actor.template.create', { id: 'demo:assistant', name: 'Demo', class: 'codex', config: { model: 'mock' }, visibility: 'private' })).payload.body.status).toBe('completed');
-    const list = await submitTerminal(h, 'system.actor.template.list', {});
-    expect(list.payload.body.value.map((row) => row.id)).toContain('demo:assistant');
-    expect((await submitTerminal(h, 'system.channel.template.create', { id: 'demo:channel', name: 'Demo channel', visibility: 'private', body: { declarations: [{ decl_id: 'demo:assistant' }] } })).payload.body.status).toBe('completed');
-    // system.channel.set 的字段闭集不含 endpoints。
-    expect((await submitTerminal(h, 'system.channel.set', { channel_id: 'c0', description: 'Configured', serving: 1 })).payload.body.status).toBe('completed');
+    const first = await submitTerminal(h, 'system.actor.description.create', { name: 'assistant', class: 'codex', params: { model: 'mock' }, description: '助手' });
+    expect(first.payload.body.value).toMatchObject({ name: 'assistant', version: 1, ref: 'assistant@1', class: 'codex', params: { model: 'mock' }, status: 'present' });
+    // 同名再建就是下一个版本；已有版本不变。
+    const second = await submitTerminal(h, 'system.actor.description.create', { name: 'assistant', class: 'codex', params: { model: 'mock-2' } });
+    expect(second.payload.body.value).toMatchObject({ ref: 'assistant@2', version: 2 });
+    const list = await submitTerminal(h, 'system.actor.description.list', { name: 'assistant' });
+    expect(list.payload.body.value.map((row) => [row.ref, row.params.model])).toEqual([['assistant@1', 'mock'], ['assistant@2', 'mock-2']]);
+
+    const retired = await submitTerminal(h, 'system.actor.description.retire', { name: 'assistant', version: 2 });
+    expect(retired.payload.body.value).toMatchObject({ ref: 'assistant@2', status: 'retired' });
+    // 不给版本时 get 答最新的 present 版本。
+    expect((await submitTerminal(h, 'system.actor.description.get', { name: 'assistant' })).payload.body.value).toMatchObject({ ref: 'assistant@1' });
+    expect((await submitTerminal(h, 'system.actor.description.get', { name: 'assistant', version: 2 })).payload.body.value).toMatchObject({ status: 'retired' });
+
+    // OBS 目录里 present 与 retired 的版本都在。
+    const obs = await h.fetchSession('/obs/space/actor-descriptions').then((response) => response.json());
+    const rows = obs.items.filter((row) => row.declared.name === 'assistant');
+    expect(rows.map((row) => [row.key, row.declared.status])).toEqual([['assistant@1', 'present'], ['assistant@2', 'retired']]);
+
+    const unknownClass = await submitTerminal(h, 'system.actor.description.create', { name: 'bad', class: 'no-such-class' });
+    expect(unknownClass.payload.body).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
+    const legacy = await submitTerminal(h, 'system.actor.template.list', {});
+    expect(legacy.payload.body.status).toBe('failed');
+    h.wire.close(); await close(h.server);
+  });
+
+  it('edits a channel description with channel.set and copies it with copy_from, leaving member configs behind', async () => {
+    const h = await harness();
+    // c0 是平台搭的，没有描述可改。
+    const platform = await submitTerminal(h, 'system.channel.set', { channel_id: 'c0', description: 'Configured', serving: 1 });
+    expect(platform.payload.body).toMatchObject({ status: 'failed', error_code: 'forbidden' });
+
+    const set = await submitTerminal(h, 'system.channel.set', { channel_id: 'c0.project', description: 'Configured', serving: 1 });
+    expect(set.payload.body.value).toEqual({ channel_id: 'c0.project', revision: 2 });
+    const view = await submitTerminal(h, 'system.channel.get', { channel_id: 'c0.project' });
+    expect(view.payload.body.value).toMatchObject({
+      id: 'c0.project',
+      description: { revision: 2, body: { description: 'Configured', serving: 1, members: [{ name: 'project-agent', body: { class: 'codex' } }] } },
+      members: [expect.objectContaining({ object: { kind: 'member', channel: 'c0.project', name: 'project-agent' }, result: 'ok' })],
+    });
+    expect(view.payload.body.value).not.toHaveProperty('health');
+    // 平台频道的 channel.get 没有描述。
+    expect((await submitTerminal(h, 'system.channel.get', { channel_id: 'c0' })).payload.body.value).not.toHaveProperty('description');
+
+    // 源频道成员这一台的配置不跟着复制。
+    await submitTerminal(h, 'system.member.config.set', { member: 'project-agent', values: { effort: 'high' } }, ['system'], 'c0.project');
+    const copied = await createChannel(h, { name: 'copy', parent: 'c0', humans: ['root'], copy_from: 'c0.project' });
+    expect(copied.payload.body.value).toEqual({ channel_id: 'c0.copy', revision: 1 });
+    const description = await submitTerminal(h, 'system.channel.description.get', { channel: 'c0.copy' });
+    expect(description.payload.body.value).toEqual({ body: view.payload.body.value.description.body, revision: 1 });
+    const state = await h.fetchSession('/mock/control/state').then((response) => response.json());
+    expect(state.member_configs.filter((row) => row.member === 'project-agent').map((row) => row.channel_id)).toEqual(['c0.project']);
+    expect(state.builds).toEqual(expect.arrayContaining([expect.objectContaining({ object: { kind: 'member', channel: 'c0.copy', name: 'project-agent' }, result: 'ok' })]));
+
+    // description 和 copy_from 最多给一个；平台频道没有描述可复制。
+    const both = await createChannel(h, { name: 'both', parent: 'c0', humans: [], description: {}, copy_from: 'c0.project' });
+    expect(both.payload.body).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
+    const fromPlatform = await createChannel(h, { name: 'plat', parent: 'c0', humans: [], copy_from: 'c0' });
+    expect(fromPlatform.payload.body).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
+
+    // 从本频道挑成员：新频道的描述里只有挑出来的条目。
+    const picked = await createChannel(h, { name: 'picked', parent: 'c0', humans: ['root'], description: { description: '挑的', members: [{ name: 'helper', body: { actor: 'analyst@1' }, params: { effort: 'low' } }] } });
+    expect(picked.payload.body.value).toEqual({ channel_id: 'c0.picked', revision: 1 });
+    const pickedDescription = await submitTerminal(h, 'system.channel.description.get', { channel: 'c0.picked' });
+    expect(pickedDescription.payload.body.value.body).toMatchObject({ description: '挑的', serving: 0, members: [{ name: 'helper', body: { actor: 'analyst@1' }, params: { effort: 'low' } }] });
+    h.wire.close(); await close(h.server);
+  });
+
+  it('keeps device keys secret and attaches devices through the channel description', async () => {
+    const h = await harness();
     const devices = await submitTerminal(h, 'system.channel.device.list', {});
     expect(devices.payload.body.value).toEqual(expect.arrayContaining([
       expect.objectContaining({ channel_id: 'c0', device_id: 'local-device' }),
     ]));
     const minted = await submitTerminal(h, 'system.device.create', { name: 'Laptop' });
     expect(minted.payload.body.value.key).toMatch(/^mock-key-/);
+    const deviceId = minted.payload.body.value.device_id;
     const daemons = await h.fetchSession('/obs/space/daemons').then((response) => response.json());
-    expect(daemons.items.map((row) => row.declared.id)).toContain(minted.payload.body.value.device_id);
+    expect(daemons.items.map((row) => row.declared.id)).toContain(deviceId);
     expect(JSON.stringify(daemons)).not.toContain(minted.payload.body.value.key);
     const snapshot = await h.fetchSession('/mock/control/state').then((response) => response.json());
     expect(JSON.stringify(snapshot)).not.toContain(minted.payload.body.value.key);
+
+    // local-device 是每个频道的默认设备，不挂不卸。
+    const local = await submitTerminal(h, 'system.device.attach', { channel_id: 'c0.project', device_id: 'local-device' });
+    expect(local.payload.body).toMatchObject({ status: 'failed', error_code: 'reserved' });
+    const attached = await submitTerminal(h, 'system.device.attach', { channel_id: 'c0.project', device_id: deviceId });
+    expect(attached.payload.body.value).toMatchObject({ channel_id: 'c0.project', revision: 2 });
+    const channelDevices = await h.fetchSession('/obs/channel/c0.project/devices').then((response) => response.json());
+    expect(channelDevices.items.map((row) => [row.declared.device_id, row.declared.default])).toEqual([['local-device', true], [deviceId, false]]);
+    expect((await submitTerminal(h, 'system.channel.description.get', { channel: 'c0.project' })).payload.body.value.body.devices).toEqual([deviceId]);
+    await submitTerminal(h, 'system.device.detach', { channel_id: 'c0.project', device_id: deviceId });
+    const detached = await h.fetchSession('/obs/channel/c0.project/devices').then((response) => response.json());
+    expect(detached.items.map((row) => row.declared.device_id)).toEqual(['local-device']);
     h.wire.close(); await close(h.server);
   });
 

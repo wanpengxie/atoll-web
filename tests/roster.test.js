@@ -17,11 +17,11 @@ afterEach(() => {
 
 const actors = [
   {
-    id: 'human:root', kind: 'human', name: 'Root', decl_id: '', description: '',
+    id: 'human:root', kind: 'human', name: 'Root', body: '', description: '',
     principal: 'principal-root', bound: false, deviceOnline: false,
   },
   {
-    id: 'agent:demo:1', kind: 'agent', name: 'Demo', decl_id: '', description: '',
+    id: 'agent:demo:1', kind: 'agent', name: 'Demo', body: 'class codex', description: '',
     principal: '', bound: false, deviceOnline: false,
   },
 ];
@@ -35,6 +35,7 @@ function observation(rows) {
         kind: row.kind,
         name: row.name,
         principal: row.principal,
+        ...(row.body ? { body: row.body } : {}),
       },
       actual: { measures: [] },
     })),
@@ -91,6 +92,21 @@ describe('public channel roster owner', () => {
     expect(screen.queryByText('我')).toBeNull();
   });
 
+  it('says what a member is built from on its roster row and in its detail', () => {
+    render(React.createElement(RosterFeature, {
+      port: { rows: [{ id: 'agent:writer:3', kind: 'agent', name: 'writer', body: 'actor writer@1' }, { id: 'human:root', kind: 'human', name: 'Root' }] },
+    }));
+    expect(screen.getByText('agent · actor writer@1')).toBeTruthy();
+    expect(screen.getByText('human · channel member')).toBeTruthy();
+    cleanup();
+    render(React.createElement(ActorDetailPanel, {
+      port: { selectedActor: { id: 'agent:writer:3', kind: 'agent', name: 'writer', body: 'actor writer@1' }, commands: {} },
+    }));
+    const facts = document.querySelector('.work-item-metadata');
+    expect(facts.textContent).toContain('来源actor writer@1');
+    expect(facts.textContent).not.toContain('声明');
+  });
+
   it('passes the current target authority through the capability invocation port', async () => {
     const authority = { current: true, actorIDs: new Set(['agent:demo:1']) };
     const invoke = vi.fn().mockResolvedValue(true);
@@ -120,7 +136,7 @@ describe('public channel roster owner', () => {
     obsRef.current.channelActors.mockResolvedValueOnce(observation([
       ...actors,
       {
-        id: 'agent:new:1', kind: 'agent', name: 'New', decl_id: '', description: '',
+        id: 'agent:new:1', kind: 'agent', name: 'New', body: '', description: '',
         principal: '', bound: false, deviceOnline: false,
       },
     ]));
@@ -128,7 +144,7 @@ describe('public channel roster owner', () => {
     expect(result.current.rosters.get('c0')).toEqual([
       ...actors,
       {
-        id: 'agent:new:1', kind: 'agent', name: 'New', decl_id: '', description: '',
+        id: 'agent:new:1', kind: 'agent', name: 'New', body: '', description: '',
         principal: '', bound: false, deviceOnline: false,
       },
     ]);
@@ -157,7 +173,7 @@ describe('public channel roster owner', () => {
     const replacement = [
       ...actors,
       {
-        id: 'agent:new-owner:1', kind: 'agent', name: 'New owner', decl_id: '', description: '',
+        id: 'agent:new-owner:1', kind: 'agent', name: 'New owner', body: '', description: '',
         principal: '', bound: false, deviceOnline: false,
       },
     ];
@@ -178,7 +194,7 @@ describe('public channel roster owner', () => {
     const replacement = [
       ...actors,
       {
-        id: 'agent:new-generation:1', kind: 'agent', name: 'New generation', decl_id: '', description: '',
+        id: 'agent:new-generation:1', kind: 'agent', name: 'New generation', body: '', description: '',
         principal: '', bound: false, deviceOnline: false,
       },
     ];
@@ -209,7 +225,7 @@ describe('public channel roster owner', () => {
     const refreshedRows = [
       ...actors,
       {
-        id: 'agent:governed:1', kind: 'agent', name: 'Governed', decl_id: '', description: '',
+        id: 'agent:governed:1', kind: 'agent', name: 'Governed', body: '', description: '',
         principal: '', bound: false, deviceOnline: false,
       },
     ];
@@ -229,6 +245,42 @@ describe('public channel roster owner', () => {
     expect(obsRef.current.channelActors).toHaveBeenCalledTimes(1);
     expect(result.current.rosters.get('c0')).toEqual(refreshedRows);
     expect(result.current.authorities.get('c0')?.current).toBe(true);
+  });
+
+  it('refreshes the roster after a build finishes and after a member config write completes', async () => {
+    vi.useFakeTimers();
+    const { obsRef, rosterRef } = setup();
+    obsRef.current.channelActors.mockResolvedValue(observation(actors));
+
+    // 构建结束：成员可能换了届次、进了名册或停下。
+    act(() => rosterRef.current.handleEnvelope('c0', { kind: 'event', type: TYPES.narration.buildFinished }));
+    await act(async () => {
+      vi.advanceTimersByTime(300);
+      await Promise.resolve();
+    });
+    expect(obsRef.current.channelActors).toHaveBeenCalledTimes(1);
+
+    // 这一台的配置写成：成员按新配置重建。
+    act(() => rosterRef.current.handleEnvelope('c0', {
+      kind: 'response', type: TYPES.member.configSet,
+      payload: { body: { status: 'completed' } },
+    }));
+    await act(async () => {
+      vi.advanceTimersByTime(300);
+      await Promise.resolve();
+    });
+    expect(obsRef.current.channelActors).toHaveBeenCalledTimes(2);
+
+    // 构建开始不改名册；失败的写也不。
+    act(() => {
+      rosterRef.current.handleEnvelope('c0', { kind: 'event', type: TYPES.narration.buildStarted });
+      rosterRef.current.handleEnvelope('c0', { kind: 'response', type: TYPES.member.set, payload: { body: { status: 'failed' } } });
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(300);
+      await Promise.resolve();
+    });
+    expect(obsRef.current.channelActors).toHaveBeenCalledTimes(2);
   });
 
   it('coalesces completed governance terminals into one debounced observation', async () => {

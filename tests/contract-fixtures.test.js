@@ -22,7 +22,12 @@ describe('atoll contract v5 fixtures', () => {
   });
 
   it('[TC-0548] pins all six real OBS observation kinds and completeness', () => {
-    expect(Object.keys(fixtures.observations).sort()).toEqual(['actors', 'channels', 'daemons', 'decls', 'principals', 'profile']);
+    // /obs/space/decls 换成了 /obs/space/actor-descriptions（名字@版本一行）。
+    expect(Object.keys(fixtures.observations).sort()).toEqual(['actor-descriptions', 'actors', 'channels', 'daemons', 'principals', 'profile']);
+    expect(fixtures.observations['actor-descriptions'].items[0]).toMatchObject({ key: 'research@1', declared: { name: 'research', version: 1, ref: 'research@1', status: 'present' } });
+    // 名册行用 body 说成员从什么造，不再有 decl_id。
+    expect(fixtures.observations.actors.items[0].declared).toMatchObject({ body: 'class codex' });
+    expect(fixtures.observations.actors.items[0].declared).not.toHaveProperty('decl_id');
     for (const [kind, observation] of Object.entries(fixtures.observations)) {
       expect(observation.kind).toBe(kind);
       expect(typeof observation.complete).toBe('boolean');
@@ -35,7 +40,8 @@ describe('atoll contract v5 fixtures', () => {
     expect(fixtures.structured.registrar_reply).toMatchObject({ status: 'completed', value: { channel_id: 'c0.project' } });
     expect(fixtures.structured.registrar_error.error_code).toBe('permission_denied');
     expect(fixtures.structured.member_list_reply.actors[0]).toMatchObject({ id: expect.any(String), kind: 'agent', present: true });
-    expect(fixtures.structured.member_create_reply.member).toBeTruthy();
+    // member.create 写的是频道描述里的条目：回复带描述的新版本号。
+    expect(fixtures.structured.member_create_reply).toMatchObject({ status: 'completed', written: true, description_revision: expect.any(Number), entry: { name: expect.any(String) } });
     expect(fixtures.structured.agent_ask_reply).toMatchObject({ status: 'completed', text: expect.any(String) });
     // actor.describe = Describe 平铺：class / interfaces / capabilities / words。
     expect(fixtures.structured.actor_describe).toMatchObject({ class: 'codex', interfaces: ['actor', 'agent'] });

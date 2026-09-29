@@ -27,7 +27,7 @@ function publicConnectionHarness({ profiles = [], memberships = [] } = {}) {
   const obs = {
     spaceChannels: vi.fn(async (parentId) => ({ complete: true, items: parentId ? [] : profiles.map(profileEnvelope) })),
     spacePrincipals: vi.fn(async () => ({ complete: true, items: [] })),
-    spaceDecls: vi.fn(async () => ({ complete: true, items: [] })),
+    spaceActorDescriptions: vi.fn(async () => ({ complete: true, items: [] })),
     spaceDaemons: vi.fn(async () => ({ complete: true, items: [] })),
     channelActors: vi.fn(async () => ({ complete: true, items: [] })),
   };

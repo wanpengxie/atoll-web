@@ -176,51 +176,200 @@ describe('member layers in the roster and member config', () => {
     expect(rows[2].textContent).toContain('业务层重试中：connection refused');
   });
 
-  it('reads config on demand, edits it, and sends only the changed top-level keys', async () => {
-    const readMember = vi.fn()
-      .mockResolvedValueOnce({ class: 'deepseek-agent', config: { model: 'deepseek-chat', api_key: '$global.deepseek_prod' }, source: { decl_id: 'mock:deepseek' } })
-      .mockResolvedValueOnce({ class: 'deepseek-agent', config: { model: 'deepseek-reasoner', api_key: '$global.deepseek_prod' }, source: { decl_id: 'mock:deepseek' } });
-    const setMember = vi.fn()
-      .mockRejectedValueOnce(Object.assign(new Error('invalid_args：config refused by deepseek-agent: temperature must be a number between 0 and 2'), { code: 'invalid_args', detail: 'config refused by deepseek-agent: temperature must be a number between 0 and 2' }))
-      .mockResolvedValueOnce({ member: 'deepseek', changed: true, rebuilt: true });
-    const list = vi.fn(async () => ['deepseek_prod', 'openai_prod']);
-    render(<MemberConfigSection actor={{ id: 'deepseek', kind: 'agent' }} port={{ commands: { readMember, setMember }, globalKeys: { available: true, commands: { list } } }} />);
+  // system.member.get 对一个描述里的成员的回答（actor-config 场景的 writer）。
+  function writerDetail(overrides = {}) {
+    return {
+      actor_id: 'agent:writer:9', member: true, present: true, name: 'writer',
+      class: 'claude', desired_host: 'local-device',
+      body: { actor: 'writer@1' },
+      params: { temperature: 0.3 },
+      requires: ['web'],
+      own_config: { values: { model: 'claude-opus' }, revision: 2 },
+      effective: { model: 'claude-opus', service: { api_key: '$required:写作服务的 API key', region: 'cn' }, temperature: 0.3 },
+      sources: { model: 'config', 'service.api_key': 'actor', 'service.region': 'actor', temperature: 'member' },
+      build: { object: { kind: 'member', channel: 'c0.project', name: 'writer' }, description: { channel_revision: 3, actor: 'writer@1' }, config: { revision: 2 }, attempt: 4, result: 'failed', state: 'stopped', reason: 'service.api_key is a placeholder still unfilled' },
+      ...overrides,
+    };
+  }
+  const WRITER = { id: 'agent:writer:9', kind: 'agent' };
+
+  it('reads on demand and shows the entry, own config, sources, missing placeholders and the last build', async () => {
+    const readMember = vi.fn().mockResolvedValue(writerDetail({ missing: [{ key: 'service.api_key', hint: '写作服务的 API key' }], note: 'a newer version of its actor description exists: writer@2' }));
+    render(<MemberConfigSection actor={WRITER} port={{ commands: { readMember, setMember: vi.fn(), setMemberConfig: vi.fn() } }} />);
     // 手动挡：不点就不发 member.get。
     expect(readMember).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: '读取配置' }));
-    await screen.findByText('声明 mock:deepseek');
-    expect(screen.getByLabelText('当前配置').textContent).toContain('$global.deepseek_prod');
+    await screen.findByText('Actor 描述 writer@1');
+    expect(readMember).toHaveBeenCalledWith(WRITER);
+    expect(screen.getByText('a newer version of its actor description exists: writer@2')).toBeTruthy();
+    // 两块：描述条目（params、requires）和这一台的配置（values、版本）。
+    expect(screen.getByLabelText('当前 params').textContent).toContain('"temperature": 0.3');
+    expect(screen.getByText('requires：web')).toBeTruthy();
+    expect(screen.getByLabelText('当前配置').textContent).toContain('claude-opus');
+    expect(screen.getByText('第 2 版')).toBeTruthy();
+    // 合成值的每个键来自哪一层。
+    const table = screen.getByRole('table');
+    const rows = within(table).getAllByRole('row').slice(1).map((row) => [...row.querySelectorAll('td')].map((cell) => cell.textContent));
+    expect(rows).toEqual([
+      ['model', 'claude-opus', '这一台的配置'],
+      ['service.api_key', '$required:写作服务的 API key', 'Actor 描述'],
+      ['service.region', 'cn', 'Actor 描述'],
+      ['temperature', '0.3', '成员条目'],
+    ]);
+    // 还没填的占位和最近一次构建。
+    const missing = screen.getByRole('group', { name: '还没填的占位' });
+    expect(missing.textContent).toContain('还缺 1 个值');
+    expect(missing.textContent).toContain('写作服务的 API key');
+    const build = screen.getByLabelText('最近一次构建');
+    expect(build.textContent).toContain('失败 · 已停止：改描述或配置后才会再构建');
+    expect(build.textContent).toContain('第 4 次尝试（最多 4 次） · 描述第 3 版 · writer@1 · 配置第 2 版');
+    expect(build.textContent).toContain('service.api_key is a placeholder still unfilled');
+  });
 
-    fireEvent.click(screen.getByRole('button', { name: '编辑配置' }));
-    const editor = screen.getByRole('form', { name: '编辑成员配置' });
-    await waitFor(() => expect(within(editor).getByRole('option', { name: 'openai_prod' })).toBeTruthy());
-    const textarea = within(editor).getByLabelText('成员配置 JSON');
-    fireEvent.change(textarea, { target: { value: '{"model":"deepseek-reasoner","temperature":9}' } });
-    expect(within(editor).getByText(/将提交的变更/)).toBeTruthy();
-    fireEvent.click(within(editor).getByRole('button', { name: '保存配置' }));
-    await within(editor).findByText(/temperature must be a number/);
-    expect(setMember).toHaveBeenLastCalledWith({
-      actor: { id: 'deepseek', kind: 'agent' }, klass: '', dryRun: false,
-      config: { model: 'deepseek-reasoner', temperature: 9, api_key: null },
+  it('edits the member entry and sends body and a params merge patch through setMember', async () => {
+    const readMember = vi.fn().mockResolvedValue(writerDetail());
+    const setMember = vi.fn()
+      .mockResolvedValueOnce({ written: false, dry_run: true, description_revision: 3, entry: { name: 'writer', body: { actor: 'writer@2' } } })
+      .mockRejectedValueOnce(Object.assign(new Error('bad'), { code: 'invalid_args', detail: 'member writer: actor "writer@9" does not exist' }))
+      .mockResolvedValueOnce({ written: true, description_revision: 4 });
+    render(<MemberConfigSection actor={WRITER} port={{ commands: { readMember, setMember, setMemberConfig: vi.fn() } }} />);
+    fireEvent.click(screen.getByRole('button', { name: '读取配置' }));
+    await screen.findByText('Actor 描述 writer@1');
+    fireEvent.click(screen.getByRole('button', { name: '编辑条目' }));
+    const editor = screen.getByRole('form', { name: '编辑成员条目' });
+    // 从 actor 描述造的成员：编辑器打开时就在 Actor 描述那一档。
+    const ref = within(editor).getByLabelText('成员 Actor 描述');
+    expect(ref.value).toBe('writer@1');
+    fireEvent.change(ref, { target: { value: 'writer@2' } });
+    fireEvent.change(within(editor).getByLabelText('成员 params JSON'), { target: { value: '{"effort":"high"}' } });
+    fireEvent.change(within(editor).getByLabelText('成员 requires'), { target: { value: '' } });
+    // 将提交的变更：body 整个换、params 合并补丁（删掉的键给 null）、requires 清空给 null。
+    expect(JSON.parse(within(editor).getByText(/"body"/).textContent)).toEqual({
+      body: { actor: 'writer@2' },
+      params: { effort: 'high', temperature: null },
+      requires: null,
     });
+    fireEvent.click(within(editor).getByRole('button', { name: '检查变更' }));
+    await within(editor).findByText('检查通过：描述会是第 4 版');
+    expect(setMember).toHaveBeenLastCalledWith({ actor: WRITER, body: { actor: 'writer@2' }, params: { effort: 'high', temperature: null }, requires: null, dryRun: true });
 
-    // 插入引用：在光标处放一个 "$global.<name>"。
-    fireEvent.change(textarea, { target: { value: '{"model":"deepseek-reasoner","api_key":}' } });
-    textarea.setSelectionRange(textarea.value.length - 1, textarea.value.length - 1);
-    fireEvent.change(within(editor).getByLabelText('选择全局 key'), { target: { value: 'deepseek_prod' } });
-    fireEvent.click(within(editor).getByRole('button', { name: '插入引用' }));
-    expect(textarea.value).toBe('{"model":"deepseek-reasoner","api_key":"$global.deepseek_prod"}');
-    fireEvent.click(within(editor).getByRole('button', { name: '保存配置' }));
-    await screen.findByText('配置已保存，成员已按新配置重建。');
-    expect(setMember).toHaveBeenLastCalledWith({ actor: { id: 'deepseek', kind: 'agent' }, klass: '', dryRun: false, config: { model: 'deepseek-reasoner' } });
+    fireEvent.change(within(editor).getByLabelText('成员 Actor 描述'), { target: { value: 'writer@9' } });
+    fireEvent.click(within(editor).getByRole('button', { name: '保存条目' }));
+    await within(editor).findByText('invalid_args：member writer: actor "writer@9" does not exist');
+
+    fireEvent.change(within(editor).getByLabelText('成员 Actor 描述'), { target: { value: 'writer@2' } });
+    fireEvent.click(within(editor).getByRole('button', { name: '保存条目' }));
+    await screen.findByText(/成员条目已写进频道描述（第 4 版）/);
+    expect(setMember).toHaveBeenLastCalledWith({ actor: WRITER, body: { actor: 'writer@2' }, params: { effort: 'high', temperature: null }, requires: null, dryRun: false });
+    // 保存后重新读一次。
     expect(readMember).toHaveBeenCalledTimes(2);
   });
 
-  it('offers no editing for members without a class', async () => {
+  it('switches an entry to a class and leaves unchanged params and requires out of the call', async () => {
+    const readMember = vi.fn().mockResolvedValue(writerDetail());
+    const setMember = vi.fn().mockResolvedValue({ written: true, description_revision: 4 });
+    render(<MemberConfigSection actor={WRITER} port={{ commands: { readMember, setMember, setMemberConfig: vi.fn() } }} />);
+    fireEvent.click(screen.getByRole('button', { name: '读取配置' }));
+    await screen.findByText('Actor 描述 writer@1');
+    fireEvent.click(screen.getByRole('button', { name: '编辑条目' }));
+    const editor = screen.getByRole('form', { name: '编辑成员条目' });
+    // 没改任何东西：保存不可点。
+    expect(within(editor).getByRole('button', { name: '保存条目' }).disabled).toBe(true);
+    fireEvent.click(within(editor).getByRole('radio', { name: 'Class' }));
+    fireEvent.change(within(editor).getByLabelText('成员 Class'), { target: { value: 'codex' } });
+    fireEvent.click(within(editor).getByRole('button', { name: '保存条目' }));
+    await waitFor(() => expect(setMember).toHaveBeenCalledWith({ actor: WRITER, body: { class: 'codex' }, params: {}, dryRun: false }));
+  });
+
+  it('edits this member\'s own config and sends desired_host and a values merge patch through setMemberConfig', async () => {
+    const readMember = vi.fn().mockResolvedValue(writerDetail({ own_config: { values: { model: 'claude-opus', service: { region: 'cn' } }, revision: 2 } }));
+    const setMemberConfig = vi.fn()
+      .mockResolvedValueOnce({ member: 'writer', desired_host: 'laptop', values: { service: { region: 'us' } }, revision: 2, dry_run: true })
+      .mockResolvedValueOnce({ member: 'writer', revision: 3 });
+    const list = vi.fn(async () => ['deepseek_prod', 'openai_prod']);
+    const devices = [{ id: 'local-device', name: 'local-device' }, { id: 'laptop', name: 'Laptop' }];
+    render(<MemberConfigSection actor={WRITER} port={{ devices, commands: { readMember, setMember: vi.fn(), setMemberConfig }, globalKeys: { available: true, commands: { list } } }} />);
+    fireEvent.click(screen.getByRole('button', { name: '读取配置' }));
+    await screen.findByText('Actor 描述 writer@1');
+    // 全局 key 名单只在打开编辑器时读。
+    expect(list).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '编辑配置' }));
+    const editor = screen.getByRole('form', { name: '编辑成员配置' });
+    await waitFor(() => expect(within(editor).getByRole('option', { name: 'openai_prod' })).toBeTruthy());
+    const host = within(editor).getByLabelText('成员运行设备');
+    // local-device 是默认，不单列；其余是本频道能用的设备。
+    expect([...host.querySelectorAll('option')].map((option) => [option.value, option.textContent])).toEqual([['', 'local-device（默认）'], ['laptop', 'Laptop']]);
+    fireEvent.change(host, { target: { value: 'laptop' } });
+    const textarea = within(editor).getByLabelText('成员配置 JSON');
+    fireEvent.change(textarea, { target: { value: '{"service":{"region":"us"},"api_key":}' } });
+    // 插入引用：在光标处放一个 "$global.<name>"。
+    textarea.setSelectionRange(textarea.value.length - 1, textarea.value.length - 1);
+    fireEvent.change(within(editor).getByLabelText('选择全局 key'), { target: { value: 'deepseek_prod' } });
+    fireEvent.click(within(editor).getByRole('button', { name: '插入引用' }));
+    expect(textarea.value).toBe('{"service":{"region":"us"},"api_key":"$global.deepseek_prod"}');
+
+    fireEvent.click(within(editor).getByRole('button', { name: '检查变更' }));
+    await within(editor).findByText('运行设备 laptop');
+    const patch = { service: { region: 'us' }, api_key: '$global.deepseek_prod', model: null };
+    expect(setMemberConfig).toHaveBeenLastCalledWith({ actor: WRITER, desiredHost: 'laptop', values: patch, dryRun: true });
+    fireEvent.click(within(editor).getByRole('button', { name: '保存配置' }));
+    await screen.findByText(/这一台的配置已保存（第 3 版）/);
+    expect(setMemberConfig).toHaveBeenLastCalledWith({ actor: WRITER, desiredHost: 'laptop', values: patch, dryRun: false });
+  });
+
+  it('refuses to write back a redacted value from the local cache', async () => {
+    const readMember = vi.fn().mockResolvedValue(writerDetail({ own_config: { values: { token: '已隐藏' }, revision: 1 } }));
+    const setMemberConfig = vi.fn();
+    render(<MemberConfigSection actor={WRITER} port={{ commands: { readMember, setMember: vi.fn(), setMemberConfig } }} />);
+    fireEvent.click(screen.getByRole('button', { name: '读取配置' }));
+    await screen.findByText('Actor 描述 writer@1');
+    fireEvent.click(screen.getByRole('button', { name: '编辑配置' }));
+    const editor = screen.getByRole('form', { name: '编辑成员配置' });
+    // 没动的"已隐藏"不在补丁里，可以改别的键。
+    fireEvent.change(within(editor).getByLabelText('成员配置 JSON'), { target: { value: '{"token":"已隐藏","model":"x"}' } });
+    expect(within(editor).getByRole('button', { name: '保存配置' }).disabled).toBe(false);
+    // 把"已隐藏"当成新值写进去：拦下。
+    fireEvent.change(within(editor).getByLabelText('成员配置 JSON'), { target: { value: '{"secret":"已隐藏"}' } });
+    expect(within(editor).getByText(/不能写回成员/)).toBeTruthy();
+    expect(within(editor).getByRole('button', { name: '保存配置' }).disabled).toBe(true);
+    expect(setMemberConfig).not.toHaveBeenCalled();
+  });
+
+  it('fills a missing placeholder with a values patch built from its dotted key', async () => {
+    const readMember = vi.fn()
+      .mockResolvedValueOnce(writerDetail({ member: false, present: false, actor_id: '', missing: [{ key: 'service.api_key', hint: '写作服务的 API key' }] }))
+      .mockResolvedValueOnce(writerDetail({ build: { object: { kind: 'member', channel: 'c0.project', name: 'writer' }, description: { channel_revision: 3 }, attempt: 1, result: 'ok', state: 'ready' } }));
+    const setMemberConfig = vi.fn().mockResolvedValue({ member: 'writer', revision: 3 });
+    // 构建失败、不在名册上的成员：从频道设置的构建摘要打开，没有 kind。
+    const actor = { id: 'writer', name: 'writer', kind: '', body: '' };
+    render(<MemberConfigSection actor={actor} port={{ commands: { readMember, setMember: vi.fn(), setMemberConfig } }} />);
+    fireEvent.click(screen.getByRole('button', { name: '读取配置' }));
+    const missing = await screen.findByRole('group', { name: '还没填的占位' });
+    const fill = within(missing).getByRole('button', { name: '填入' });
+    expect(fill.disabled).toBe(true);
+    fireEvent.change(within(missing).getByLabelText('填写 service.api_key'), { target: { value: '$global.openai_prod' } });
+    fireEvent.click(fill);
+    await screen.findByText(/已填 service.api_key（配置第 3 版）/);
+    expect(setMemberConfig).toHaveBeenCalledWith({ actor, values: { service: { api_key: '$global.openai_prod' } } });
+    // 填完重新读：占位没了，构建成功。
+    await waitFor(() => expect(screen.queryByRole('group', { name: '还没填的占位' })).toBeNull());
+    expect(screen.getByLabelText('最近一次构建').textContent).toContain('成功 · 已就绪');
+  });
+
+  it('offers no editing for humans and runtime-generated members', async () => {
     const readMember = vi.fn().mockResolvedValue({ actor_id: 'root', member: true, present: true });
-    render(<MemberConfigSection actor={{ id: 'root', kind: 'human' }} port={{ commands: { readMember, setMember: vi.fn() } }} />);
+    render(<MemberConfigSection actor={{ id: 'root', kind: 'human' }} port={{ commands: { readMember, setMember: vi.fn(), setMemberConfig: vi.fn() } }} />);
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: '读取配置' })); });
+    expect(screen.queryByRole('button', { name: '编辑条目' })).toBeNull();
     expect(screen.queryByRole('button', { name: '编辑配置' })).toBeNull();
-    expect(screen.getByText('只有 Agent 和工具成员有可编辑的配置。')).toBeTruthy();
+    expect(screen.getByText('只有 Agent 和工具成员有可编辑的描述和配置。')).toBeTruthy();
+    cleanup();
+
+    const generated = vi.fn().mockResolvedValue({ actor_id: 'svcactor', member: true, present: true, generated: true });
+    render(<MemberConfigSection actor={{ id: 'svcactor', kind: '' }} port={{ commands: { readMember: generated, setMember: vi.fn(), setMemberConfig: vi.fn() } }} />);
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: '读取配置' })); });
+    expect(screen.getByText('运行时生成（不在频道描述里）')).toBeTruthy();
+    expect(screen.queryByRole('region', { name: '描述条目' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '编辑配置' })).toBeNull();
   });
 });

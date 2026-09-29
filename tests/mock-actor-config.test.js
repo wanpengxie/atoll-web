@@ -5,7 +5,7 @@ import { createMockServer } from '../mock/server.mjs';
 import { createIdentityClient } from '../src/net/identity.js';
 import { createWire } from '../src/net/wire.js';
 
-// actor-config 场景的 mock 契约：两层状态、member.get/set、global/ 资源面、ui.form
+// actor-config 场景的 mock 契约：两层状态、member.get/set/config.set、构建记录、global/ 资源面、ui.form
 // 的 resolve（result / error）。前端的真 wire 直接连 mock，走的就是浏览器那条路。
 
 const servers = new Set();
@@ -25,63 +25,156 @@ async function harness(scenario = 'actor-config') {
   return { server, fetchSession, wire, envelopes };
 }
 
-async function system(h, msgType, payload) {
-  const receipt = await h.wire.submit({ channel_id: 'c0', msg_type: msgType, kind: 'request', payload, audience: ['system'] });
+async function system(h, msgType, payload, channelId = 'c0') {
+  const receipt = await h.wire.submit({ channel_id: channelId, msg_type: msgType, kind: 'request', payload, audience: ['system'] });
   const terminal = await waitFor(() => h.envelopes.find((row) => row.parent_id === receipt.message_id && ['completed', 'failed'].includes(row.payload?.body?.status)));
   return terminal.payload.body;
+}
+
+// actor-config 场景的成员都在 c0.project：deepseek、search-tool、writer。
+const PROJECT = 'c0.project';
+const project = (h, msgType, payload) => system(h, msgType, payload, PROJECT);
+
+// 成员 id 是 <kind>:<名字>:<届次>；名字是中间那段。
+const memberName = (id) => String(id).split(':').slice(1, -1).join(':') || String(id);
+
+async function projectRoster(h) {
+  const roster = await h.fetchSession(`/obs/channel/${PROJECT}/actors`).then((response) => response.json());
+  return roster.items;
 }
 
 afterEach(async () => Promise.all([...servers].map(close)));
 
 describe('actor-config mock', () => {
-  it('reports both layers on the roster and on member.list/get', async () => {
+  it('reports both layers on the roster and on member.list/get, and answers member.get from the description', async () => {
     const h = await harness();
-    const roster = await h.fetchSession('/obs/channel/c0/actors').then((response) => response.json());
-    const measures = (id) => roster.items.find((entry) => entry.declared.id === id).actual.measures;
-    expect(measures('deepseek')).toEqual(expect.arrayContaining([
+    const rows = await projectRoster(h);
+    const row = (name) => rows.find((entry) => entry.declared.kind !== 'human' && memberName(entry.declared.id) === name);
+    expect(row('deepseek').declared).toMatchObject({ kind: 'agent', body: 'actor deepseek@1' });
+    expect(row('deepseek').actual.measures).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: 'standard', value: 'ready', unknown: false }),
       expect.objectContaining({ name: 'business', value: 'stuck', reason: 'missing global resource global/deepseek_prod' }),
     ]));
-    expect(measures('search-tool')).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'business', value: 'retrying' })]));
-    expect(measures('steward')).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'business', value: 'ready' })]));
+    expect(row('search-tool').actual.measures).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'business', value: 'retrying' })]));
+    expect(row('project-agent').actual.measures).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'business', value: 'ready' })]));
+    // writer 还有占位没填：构建失败，不在名册上。
+    expect(row('writer')).toBeUndefined();
+    // 运行时生成的成员 body 是 generated。
+    expect(rows.find((entry) => entry.declared.id === 'svcactor').declared.body).toBe('generated');
 
-    const list = await system(h, 'system.member.list', {});
-    const deepseek = list.actors.find((row) => row.id === 'deepseek');
-    expect(deepseek).toMatchObject({ present: false, standard: { state: 'ready' }, business: { state: 'stuck', reason: 'missing global resource global/deepseek_prod' } });
-    expect(list.actors.find((row) => row.id === 'steward')).toMatchObject({ present: true, business: { state: 'ready' } });
+    const list = await project(h, 'system.member.list', {});
+    const deepseek = list.actors.find((entry) => memberName(entry.id) === 'deepseek');
+    expect(deepseek).toMatchObject({ present: false, body: 'actor deepseek@1', standard: { state: 'ready' }, business: { state: 'stuck', reason: 'missing global resource global/deepseek_prod' } });
+    expect(list.actors.find((entry) => memberName(entry.id) === 'project-agent')).toMatchObject({ present: true, body: 'class codex', business: { state: 'ready' } });
+    expect(list.actors.find((entry) => entry.id === 'svcactor')).toMatchObject({ body: 'generated' });
 
-    const get = await system(h, 'system.member.get', { member: 'search-tool' });
+    const get = await project(h, 'system.member.get', { member: 'search-tool' });
     expect(get).toMatchObject({
-      actor_id: 'search-tool', member: true, present: false,
-      class: 'mcp-tool', config: { endpoint: 'http://127.0.0.1:9000/mcp' },
-      source: { decl_id: 'mock:search' }, desired_host: 'local-device',
+      member: true, present: false, name: 'search-tool',
+      class: 'mcp-tool', desired_host: 'local-device',
+      body: { actor: 'search@1' },
+      params: { endpoint: 'http://127.0.0.1:9000/mcp' },
+      own_config: { values: {}, revision: 0 },
+      effective: { endpoint: 'http://127.0.0.1:9000/mcp' },
+      sources: { endpoint: 'member' },
       business: { state: 'retrying' },
+      build: { object: { kind: 'member', channel: PROJECT, name: 'search-tool' }, result: 'failed', state: 'retrying' },
     });
+    expect(memberName(get.actor_id)).toBe('search-tool');
+
+    // 描述里有、没在跑的成员也答：还缺的占位和停下的构建。
+    const writer = await project(h, 'system.member.get', { member: 'writer' });
+    expect(writer).toMatchObject({
+      actor_id: '', member: false, present: false,
+      class: 'claude', body: { actor: 'writer@1' }, params: { temperature: 0.3 },
+      missing: [{ key: 'service.api_key', hint: '写作服务的 API key' }],
+      sources: { model: 'actor', 'service.api_key': 'actor', 'service.region': 'actor', temperature: 'member', effort: 'default' },
+      build: { result: 'failed', state: 'stopped', attempt: 4 },
+    });
+    expect(writer.build.reason).toContain('service.api_key is a placeholder still unfilled');
+
+    // 运行时生成的成员没有描述条目。
+    expect(await project(h, 'system.member.get', { member: 'svcactor' })).toMatchObject({ status: 'completed', generated: true });
     h.wire.close();
   });
 
-  it('applies member.set as a top-level patch, with dry_run and refusals', async () => {
+  it('applies member.set to the description entry: body replaced, params merged, dry_run and refusals', async () => {
     const h = await harness();
-    const dry = await system(h, 'system.member.set', { member: 'deepseek', config: { model: 'deepseek-reasoner', api_key: null }, dry_run: true });
-    expect(dry).toMatchObject({ status: 'completed', member: 'deepseek', changed: true, class: 'deepseek-agent', config: { model: 'deepseek-reasoner' } });
-    expect(dry.config).not.toHaveProperty('api_key');
+    const before = (await project(h, 'system.channel.description.get', { channel: PROJECT })).value;
+    const dry = await project(h, 'system.member.set', { member: 'search-tool', params: { endpoint: 'http://127.0.0.1:9100/mcp', extra: 1 }, dry_run: true });
+    expect(dry).toMatchObject({ status: 'completed', written: false, dry_run: true, description_revision: before.revision, entry: { name: 'search-tool', params: { endpoint: 'http://127.0.0.1:9100/mcp', extra: 1 } } });
+    expect((await project(h, 'system.channel.description.get', { channel: PROJECT })).value.revision).toBe(before.revision);
 
-    const refused = await system(h, 'system.member.set', { member: 'deepseek', config: { temperature: 9 } });
-    expect(refused).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
-    expect(refused.detail).toContain('temperature');
+    const badBody = await project(h, 'system.member.set', { member: 'search-tool', body: { actor: 'search' } });
+    expect(badBody).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
+    expect(badBody.detail).toContain('name@version');
 
-    const missing = await system(h, 'system.member.set', { member: 'steward', config: { api_key: '$global.nope' } });
-    expect(missing).toMatchObject({ status: 'failed', error_code: 'invalid_args', detail: 'missing global resource global/nope' });
+    // 人不在频道描述里，没有条目可改。
+    const human = await project(h, 'system.member.set', { member: 'root-project', params: {} });
+    expect(human).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
 
-    const kindChange = await system(h, 'system.member.set', { member: 'steward', class: 'mcp-tool' });
-    expect(kindChange).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
+    // 旧的 class/config 形状被拒绝。
+    const legacy = await project(h, 'system.member.set', { member: 'search-tool', config: { endpoint: 'x' } });
+    expect(legacy.status).toBe('failed');
 
-    const human = await system(h, 'system.member.set', { member: 'root', config: {} });
-    expect(human.status).toBe('failed');
+    const fixed = await project(h, 'system.member.set', { member: 'search-tool', params: { endpoint: 'http://127.0.0.1:9100/mcp', extra: 1 } });
+    expect(fixed).toMatchObject({ status: 'completed', written: true, description_revision: before.revision + 1 });
+    // params 是合并补丁：null 删键，其余的键留着。
+    const cleared = await project(h, 'system.member.set', { member: 'search-tool', params: { extra: null } });
+    expect(cleared.entry.params).toEqual({ endpoint: 'http://127.0.0.1:9100/mcp' });
+    expect(await project(h, 'system.member.get', { member: 'search-tool' })).toMatchObject({ present: true, business: { state: 'ready' }, build: { result: 'ok', state: 'ready' } });
 
-    const fixed = await system(h, 'system.member.set', { member: 'search-tool', config: { endpoint: 'http://127.0.0.1:9100/mcp' } });
-    expect(fixed).toMatchObject({ status: 'completed', changed: true, rebuilt: true });
-    expect(await system(h, 'system.member.get', { member: 'search-tool' })).toMatchObject({ present: true, business: { state: 'ready' } });
+    // body 换成另一个 class：成员按新 body 重建。
+    await project(h, 'system.member.set', { member: 'search-tool', body: { class: 'mcp-tool' } });
+    expect(await project(h, 'system.member.get', { member: 'search-tool' })).toMatchObject({ body: { class: 'mcp-tool' }, class: 'mcp-tool' });
+    h.wire.close();
+  });
+
+  it('refuses member.set in c0, whose members are fixed, but still takes their own config', async () => {
+    const h = await harness();
+    const refused = await system(h, 'system.member.set', { member: 'steward', params: { model: 'x' } });
+    expect(refused).toMatchObject({ status: 'failed', error_code: 'forbidden' });
+    expect(refused.detail).toContain('no description');
+    const created = await system(h, 'system.member.create', { name: 'helper', body: { class: 'codex' } });
+    expect(created).toMatchObject({ status: 'failed', error_code: 'forbidden' });
+    const own = await system(h, 'system.member.config.set', { member: 'steward', values: { effort: 'high' } });
+    expect(own).toMatchObject({ status: 'completed', member: 'steward', values: { effort: 'high' }, revision: 1 });
+    expect(await system(h, 'system.member.get', { member: 'steward' })).toMatchObject({ effective: { effort: 'high' }, sources: { effort: 'config' } });
+    h.wire.close();
+  });
+
+  it('turns a failed build ok once member.config.set fills the placeholder, and narrates the build', async () => {
+    const h = await harness();
+    const dry = await project(h, 'system.member.config.set', { member: 'writer', values: { service: { api_key: 'sk-write' } }, dry_run: true });
+    expect(dry).toMatchObject({ status: 'completed', dry_run: true, revision: 0, values: { service: { api_key: 'sk-write' } } });
+    expect(await project(h, 'system.member.get', { member: 'writer' })).toMatchObject({ member: false, build: { state: 'stopped' } });
+
+    // 前端填占位时发的就是 patchAtPath 算出来的那一小块补丁。
+    const filled = await project(h, 'system.member.config.set', { member: 'writer', values: { service: { api_key: 'sk-write' } } });
+    expect(filled).toMatchObject({ status: 'completed', member: 'writer', desired_host: '', values: { service: { api_key: 'sk-write' } }, revision: 1 });
+    const writer = await project(h, 'system.member.get', { member: 'writer' });
+    expect(writer).toMatchObject({
+      member: true, present: true,
+      own_config: { values: { service: { api_key: 'sk-write' } }, revision: 1 },
+      sources: { 'service.api_key': 'config', 'service.region': 'actor' },
+      build: { result: 'ok', state: 'ready', attempt: 1, config: { revision: 1 } },
+    });
+    expect(writer).not.toHaveProperty('missing');
+    expect((await projectRoster(h)).some((entry) => memberName(entry.declared.id) === 'writer')).toBe(true);
+
+    // 构建的开始和结束作为 system 事件进本频道账本。
+    const finished = await waitFor(() => h.envelopes.find((row) => row.channel_id === PROJECT && row.type === 'system.build.finished' && row.payload?.body?.object?.name === 'writer'));
+    expect(finished.payload.body).toMatchObject({ result: 'ok', state: 'ready' });
+    expect(h.envelopes.some((row) => row.channel_id === PROJECT && row.type === 'system.build.started' && row.payload?.body?.object?.name === 'writer')).toBe(true);
+
+    // 运行设备指到一台没挂到本频道的设备：构建失败并说清为什么。
+    await project(h, 'system.member.config.set', { member: 'writer', desired_host: 'device-x' });
+    const moved = await project(h, 'system.member.get', { member: 'writer' });
+    expect(moved.build).toMatchObject({ result: 'failed', state: 'retrying' });
+    expect(moved.build.reason).toContain('desired_host device-x');
+
+    // 不在频道描述里的名字没有自己的配置。
+    expect(await project(h, 'system.member.config.set', { member: 'nobody', values: { a: 1 } })).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
     h.wire.close();
   });
 
@@ -104,8 +197,9 @@ describe('actor-config mock', () => {
     expect(JSON.stringify(state)).not.toContain('sk-deep-5678');
 
     // 补上 key 再重启，卡住的成员起来。
-    await system(h, 'system.member.restart', { member: 'deepseek' });
-    expect(await system(h, 'system.member.get', { member: 'deepseek' })).toMatchObject({ present: true, business: { state: 'ready' } });
+    const deepseekId = (await projectRoster(h)).find((entry) => memberName(entry.declared.id) === 'deepseek').declared.id;
+    await project(h, 'system.member.restart', { member: deepseekId });
+    expect(await project(h, 'system.member.get', { member: 'deepseek' })).toMatchObject({ present: true, business: { state: 'ready' } });
     await resource('c0', { op: 'delete', resource_id: 'global/deepseek_prod' });
     expect(await resource('c0', { op: 'stat', resource_id: 'global/deepseek_prod' })).toMatchObject({ exists: false });
     h.wire.close();
@@ -137,7 +231,8 @@ describe('actor-config mock', () => {
 
   it('refuses to deliver work to a member whose business layer is not ready', async () => {
     const h = await harness();
-    const receipt = await h.wire.submit({ channel_id: 'c0', msg_type: 'agent.ask', kind: 'request', payload: { text: 'hi' }, audience: ['deepseek'] });
+    const deepseekId = (await projectRoster(h)).find((entry) => memberName(entry.declared.id) === 'deepseek').declared.id;
+    const receipt = await h.wire.submit({ channel_id: PROJECT, msg_type: 'agent.ask', kind: 'request', payload: { text: 'hi' }, audience: [deepseekId] });
     const terminal = await waitFor(() => h.envelopes.find((row) => row.parent_id === receipt.message_id && row.payload?.body?.status === 'failed'));
     expect(terminal.payload.body).toMatchObject({ error_code: 'not_ready' });
     expect(terminal.payload.body.detail).toContain('missing global resource global/deepseek_prod');

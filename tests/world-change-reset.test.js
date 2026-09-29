@@ -26,7 +26,7 @@ function connectionHarness({
   const obs = {
     spaceChannels: vi.fn(async () => ({ complete: true, items: [] })),
     spacePrincipals: vi.fn(async () => ({ complete: true, items: [] })),
-    spaceDecls: vi.fn(async () => ({ complete: true, items: [] })),
+    spaceActorDescriptions: vi.fn(async () => ({ complete: true, items: [] })),
     spaceDaemons: vi.fn(async () => ({ complete: true, items: [] })),
     channelActors: vi.fn(async () => ({ complete: true, items: [] })),
   };
@@ -96,13 +96,18 @@ describe('server-world reset seam', () => {
     const setHistoryGrants = vi.fn(() => { events.push('grants'); return Promise.resolve(); });
     const harness = connectionHarness({ onWorldChanged, setHistoryGrants });
     const access = harness.result.current.accessRef.current;
-    expect(access.channelTemplatesObserved([{ id: 'old-world:team', name: '旧世界模板' }])).toBe(true);
-    expect(access.directory().channelTemplates).toEqual([{ id: 'old-world:team', name: '旧世界模板' }]);
+    access.directoryObserved({
+      principals: [],
+      actorDescriptions: [{ id: 'old-world@1', name: 'old-world', version: 1, status: 'present' }],
+      devices: [],
+      support: { principals: true, actorDescriptions: true, devices: true },
+    });
+    expect(access.directory().actorDescriptions).toEqual([{ id: 'old-world@1', name: 'old-world', version: 1, status: 'present' }]);
 
     await waitFor(() => expect(onWorldChanged).toHaveBeenCalledTimes(1));
-    // The session owner must clear Registrar projections synchronously at the
-    // world boundary, while the public reset waiter still blocks new grants.
-    expect(access.directory().channelTemplates).toBeNull();
+    // The session owner must clear the old world's space directory synchronously
+    // at the world boundary, while the public reset waiter still blocks new grants.
+    expect(access.directory().actorDescriptions).toEqual([]);
     expect(setHistoryGrants).not.toHaveBeenCalled();
     release();
     await waitFor(() => expect(setHistoryGrants).toHaveBeenCalledTimes(1));
