@@ -377,21 +377,6 @@ button.channel-file-row { font: inherit; }
 .activity-empty strong { font-size: 13px; }
 .activity-empty p { color: var(--text-muted); font-size: 10px; line-height: 1.5; }
 
-.global-search-backdrop { position: fixed; z-index: 110; inset: 0; display: grid; place-items: start center; padding: max(72px, 10vh) 18px 18px; background: var(--scrim-soft); }
-.global-search { display: grid; width: min(100%, 640px); max-height: min(680px, calc(100vh - 100px)); grid-template-rows: auto auto minmax(0, 1fr); overflow: hidden; border: 1px solid var(--line-control); border-radius: var(--radius-modal); background: var(--input); box-shadow: var(--shadow-modal); }
-.global-search > header { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--line-subtle); }
-.global-search h2 { margin: 0; font-size: 16px; }
-.global-search-input { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 8px; margin: 12px; padding: 0 11px; border: 1px solid var(--line-control); border-radius: var(--radius-object); background: var(--raised); color: var(--text-dim); }
-.global-search-input:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-bg); }
-.global-search-input input { min-width: 0; height: 42px; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 13px; }
-.global-search-results { min-height: 160px; overflow-y: auto; padding: 0 12px 12px; }
-.global-search-result { display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 3px 10px; width: 100%; padding: 10px 8px; overflow: hidden; border: 0; border-top: 1px solid var(--line-subtle); background: transparent; color: var(--text); text-align: left; cursor: pointer; }
-.global-search-result:hover, .global-search-result:focus-visible { background: var(--surface-soft); }
-.global-search-result > span { grid-row: 1 / 3; color: var(--text-dim); font: 700 8px var(--mono); }
-.global-search-result strong, .global-search-result small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.global-search-result strong { font-size: 12px; }
-.global-search-result small, .global-search-hint { color: var(--text-muted); font-size: 10px; }
-.global-search-hint { margin: 0; padding: 30px 12px; line-height: 1.55; text-align: center; }
 .channel-create-form > p { margin: 0; color: var(--text-muted); font-size: 11px; line-height: 1.55; }
 .channel-create-progress { margin: 0; box-shadow: none; }
 .channel-create-progress > header { margin-bottom: 6px; }

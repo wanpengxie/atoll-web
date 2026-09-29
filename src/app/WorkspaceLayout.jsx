@@ -3,6 +3,7 @@ import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { SurfaceShell, useSurfaceTopology } from './SurfaceShell.jsx';
 import { useModalFocus } from '../ui/primitives/useModalFocus.js';
 import { diagnostic } from '../model/diagnostics.js';
+import { perfSwitchCommitted, perfSwitchStart } from '../model/perf-trace.js';
 
 const RAIL_COLLAPSED_KEY = 'atoll.rail.collapsed';
 
@@ -318,7 +319,6 @@ function WorkspaceRail({ session, navigation, onClose, onCollapse, collapsed = f
     </header>
     <nav aria-label="频道">
       <div className="rail-global-actions" aria-label="全局工具">
-        <button type="button" onClick={() => { onClose?.('none'); navigation.openSearch(); }} aria-label="全局搜索"><span aria-hidden="true">⌕</span> 搜索</button>
         {navigation.openActivity && <button type="button" onClick={() => { onClose?.('none'); navigation.openActivity(); }} aria-label="打开活动中心" title="活动中心"><span aria-hidden="true">◷</span> 活动</button>}
       </div>
       <p className="rail-caption">我的频道 <span>{memberChannels.length}</span></p>
@@ -511,6 +511,7 @@ export function WorkspaceLayout({
       }
       return;
     }
+    perfSwitchStart(navigation.activeChannelId, channelId);
     const pending = {
       target: channelId,
       origin: navigation.activeChannelId,
@@ -529,6 +530,9 @@ export function WorkspaceLayout({
       throw error;
     }
   }, [clearPendingChannelSelection, navigation.activeChannelId, navigation.select]);
+  useLayoutEffect(() => {
+    perfSwitchCommitted(navigation.activeChannelId);
+  }, [navigation.activeChannelId]);
   useLayoutEffect(() => {
     const pending = pendingChannelSelectionRef.current;
     if (!pending) return;
@@ -741,6 +745,7 @@ export function WorkspaceLayout({
                 disabled={!channel || typeof navigation.channelRestart.invoke !== 'function'}
                 onClick={() => runChannelMenuAction(navigation.channelRestart.invoke)}
               >重启频道</button>}
+              {navigation.exportPerf && <button type="button" role="menuitem" onClick={() => runChannelMenuAction(navigation.exportPerf)}>导出性能记录</button>}
             </div>}
           </div>
         </div>

@@ -19,7 +19,6 @@ describe('current history demand boundary', () => {
     expect(HISTORY_INTENT).toEqual({
       initialView: 'initial-view',
       scrollHistory: 'scroll-history',
-      searchContext: 'search-context',
       channelEntry: 'channel-entry',
       reconnect: 'reconnect',
       foregroundReturn: 'foreground-return',
@@ -72,7 +71,6 @@ describe('current history demand boundary', () => {
       status: { generation: 4 },
       snapshot: { revision: 3, rows: [{ id: 'row-80', seqLow: 80, localState: false }] },
     };
-    expect(historyRevealIntent({ ...base, intent: HISTORY_INTENT.searchContext, demandUnits: 99 })).toBeNull();
     expect(historyRevealIntent({
       ...base,
       intent: HISTORY_INTENT.scrollHistory,

@@ -18,6 +18,7 @@ import { useChannelRoster } from './hooks/useChannelRoster.js';
 import { useAgentProbes } from './hooks/useAgentProbes.js';
 import { useAttachmentTransactions } from './hooks/useAttachmentTransactions.js';
 import { useUiWords } from './hooks/useUiWords.js';
+import { perfText, registerPerfContextProvider } from '../model/perf-trace.js';
 import { createChannelFeedRuntime } from '../model/channel-feed-runtime.js';
 import { createViewSessionStore } from '../model/view-session.js';
 import { HISTORY_INTENT } from '../model/history-demand.js';
@@ -33,7 +34,6 @@ import {
   selectFeatureTaskProviders,
   selectFeatureWaitingFacts,
 } from '../model/feature-tasks.js';
-import { selectFeatureSearchIndex } from '../model/feature-search.js';
 import { terminalResultPayload, terminalResultState } from '../model/terminal-result.js';
 import { argsOf } from '../protocol/envelope.js';
 import { ERROR_CODES } from '../protocol/frame.js';
@@ -383,7 +383,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const wire = useWireSessionPort({ principalId });
   // Only state setters are captured, so this is stable by construction. An
   // inline arrow here reaches `navigation.select`, then `openWorkspaceSource`,
-  // then the activity and search projections, and rebuilds all of them on
+  // then the activity projection, and rebuilds all of it on
   // every render of this component.
   const clearChannelScopedPanels = useCallback(() => {
     setPanel(''); setTaskCreateSource(undefined); setChannelNotice('');
@@ -494,6 +494,21 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       queueMicrotask(() => { if (feedRef.current === feed) feedRef.current = null; });
     };
   }, [feed]);
+  // The page's own performance record (model/perf-trace.js) is told how much
+  // it is holding; counts only, never content.
+  const perfActiveChannelRef = useRef('');
+  perfActiveChannelRef.current = navigation.activeChannelId || '';
+  useEffect(() => registerPerfContextProvider(() => {
+    const states = feedRef.current?.stateEntries?.() || [];
+    let rowsLoaded = 0;
+    let activeRows = 0;
+    for (const [channelId, state] of states) {
+      const size = state?.rows?.size || 0;
+      rowsLoaded += size;
+      if (channelId === perfActiveChannelRef.current) activeRows = size;
+    }
+    return { channelsLoaded: states.length, rowsLoaded, activeRows };
+  }), []);
   const callFeed = useCallback((name, args) => {
     const command = feedRef.current?.[name];
     if (typeof command !== 'function') throw unavailableError(`feed.${name}`);
@@ -538,10 +553,10 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     retryLocalReplica: (...args) => callFeed('retryLocalReplica', args),
     reconcileIdentity: (...args) => callFeed('reconcileIdentity', args),
     refreshChannel: (...args) => callFeed('refreshChannel', args),
-    // Search may outlive one committed Feed owner during a React handoff. A
-    // missing port is a transient admission state, not an application error;
-    // the Search effect retries the same activation until this typed command
-    // is available. Do not call through `callFeed` here because that helper's
+    // A background interest may outlive one committed Feed owner during a
+    // React handoff. A missing port is a transient admission state, not an
+    // application error; the caller retries the same activation until this
+    // typed command is available. Do not call through `callFeed` here because that helper's
     // throwing contract is correct for foreground commands but would turn a
     // lease handoff into an unhandled effect error.
     requestBackgroundInterest: (...args) => {
@@ -1093,7 +1108,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     setTaskCreateSource(undefined);
     setPanel((current) => {
       const kind = typeof current === 'string' ? current : current?.kind || '';
-      return ['search', 'space-administration'].includes(kind) ? current : '';
+      return kind === 'space-administration' ? current : '';
     });
   }, [activeAccess, contentVisible, navigation.setTerminalVisible]);
 
@@ -1453,24 +1468,6 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     : !contentVisible && navigation.activeChannel
       ? <ChannelAccessPlaceholder access={activeAccess} composer={conversationPort.composer} />
       : <div className="boot-screen"><span className="brand-dot" />正在同步频道…</div>;
-  const searchableChannels = useMemo(
-    () => navigation.channels.filter((channel) => canViewChannelContent(channel.access)),
-    [navigation.channels],
-  );
-  const searchableChannelIds = useMemo(
-    () => searchableChannels.map((channel) => channel.id),
-    [searchableChannels],
-  );
-  const searchableChannelKey = searchableChannelIds.join('\u0000');
-  const searchableStates = useMemo(() => {
-    const readableChannelIds = new Set(searchableChannelIds);
-    return feed.stateEntries().filter(([channelId]) => readableChannelIds.has(channelId));
-  }, [feed, searchableChannelIds]);
-  const searchableRosters = useMemo(() => new Map(
-    searchableChannels
-      .filter((channel) => isMemberAccess(channel.access))
-      .map((channel) => [channel.id, roster.rosters.get(channel.id) || EMPTY_ARRAY]),
-  ), [roster.rosters, searchableChannels]);
   const panelKind = typeof panel === 'string' ? panel : panel?.kind || '';
   const selectedActorChannelId = panelKind === 'actor' ? panel.channelId : navigation.activeChannelId;
   // 面板打开时记下的是那一刻的行；两层状态会变（改完配置、名册刷新），所以详情
@@ -1871,54 +1868,6 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       cancel: cancelAutomation,
     },
   };
-  const searchOpen = panelKind === 'search';
-  useEffect(() => {
-    if (!searchOpen || wire.state !== 'open') return;
-    let active = true;
-    let retryTimer = null;
-    const interests = [];
-    const acquiredChannels = new Set();
-    const release = () => interests.splice(0).forEach((interest) => interest?.release?.());
-    const retry = () => {
-      if (!active || retryTimer != null) return;
-      retryTimer = setTimeout(() => {
-        retryTimer = null;
-        acquire();
-      }, 16);
-    };
-    const acquire = () => {
-      if (!active) return;
-      const unavailable = [];
-      searchableChannelKey.split('\u0000')
-        .filter((channelId) => channelId
-          && channelId !== navigation.activeChannelId
-          && !acquiredChannels.has(channelId))
-        .forEach((channelId) => {
-          if (!active) return;
-          try {
-            const interest = feedCommands.requestBackgroundInterest(channelId, {
-              intent: HISTORY_INTENT.searchContext,
-            });
-            if (interest) {
-              acquiredChannels.add(channelId);
-              interests.push(interest);
-            }
-            else unavailable.push(channelId);
-          } catch (error) {
-            if (error?.code === 'owner_unavailable') unavailable.push(channelId);
-            else showError(error);
-          }
-        });
-      if (unavailable.length) retry();
-    };
-    acquire();
-    return () => {
-      active = false;
-      if (retryTimer != null) clearTimeout(retryTimer);
-      retryTimer = null;
-      release();
-    };
-  }, [feedCommands, navigation.activeChannelId, searchOpen, searchableChannelKey, showError, wire.state]);
   const openWorkspaceSource = useCallback(({ source } = {}) => {
     if (!source?.channelId) return false;
     const sourceChannel = navigation.channels.find((row) => row.id === source.channelId);
@@ -2004,23 +1953,6 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       commands: Object.freeze({ open: openWorkspaceSource }),
     });
   }, [feed, navigation.channels, navigation.selfFor, openWorkspaceSource]);
-  const searchIndex = useMemo(() => selectFeatureSearchIndex({
-    states: searchableStates,
-    channels: searchableChannels,
-    rosters: searchableRosters,
-    tasks: new Map([[navigation.activeChannelId, contentVisible ? taskItems : EMPTY_ARRAY]]),
-    files: new Map([[navigation.activeChannelId, contentVisible ? attachments.entries : EMPTY_ARRAY]]),
-    operations: activityPort.operations,
-  }), [
-    activityPort.operations,
-    attachments.entries,
-    contentVisible,
-    navigation.activeChannelId,
-    searchableChannels,
-    searchableRosters,
-    searchableStates,
-    taskItems,
-  ]);
   // Terminal is a split-surface overlay.  It must not replace the committed
   // Files route: WorkspaceFeatures uses this view only to decide which
   // feature surface to materialize, while navigation remains the sole route
@@ -2078,7 +2010,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const selectedTurn = panelKind === 'turn'
     ? timelineTurnForRequest(feed.stateFor(panel.channelId || navigation.activeChannelId), panel.requestId || panel.key)
     : null;
-  const rightPanel = panel && !searchOpen && (panelKind !== 'task' || selectedTaskItem) ? <WorkspaceRightPanel
+  const rightPanel = panel && (panelKind !== 'task' || selectedTaskItem) ? <WorkspaceRightPanel
     panel={panel}
     channel={navigation.activeChannel}
     files={filesPort}
@@ -2096,17 +2028,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     }}
   /> : null;
   const overlays = <>
-    <WorkspaceFeatureOverlays search={{
-      open: searchOpen,
-      index: searchIndex,
-      commands: {
-        close: () => {
-          setPanel('');
-          if (typeof navigation.setFocus === 'function') navigation.setFocus(null);
-        },
-        open: openWorkspaceSource,
-      },
-    }} filePicker={{
+    <WorkspaceFeatureOverlays filePicker={{
       open: Boolean(filePickerRequest),
       channel: navigation.activeChannel,
       files: filesPort,
@@ -2193,7 +2115,18 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       },
       openAutomation: contentVisible ? () => setPanel('automation') : undefined,
       openRoster: memberVisible ? () => setPanel('roster') : undefined,
-      openSearch: () => setPanel('search'),
+      // Writes the page's performance record into this channel's files, where
+      // whoever is looking into a slowdown can read it.
+      exportPerf: canWrite ? async () => {
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const name = `atoll-perf-${stamp}.json`;
+        try {
+          await attachments.uploadChannelFiles([new File([perfText()], name, { type: 'application/json' })]);
+          setChannelNotice(`性能记录已导出到本频道文件：${name}`);
+        } catch (error) {
+          setChannelNotice(`性能记录导出失败：${error?.message || error}`);
+        }
+      } : undefined,
       openActivity: () => setPanel('activity'),
       update: wire.update,
       openReadingHistory: contentVisible ? () => setPanel('reading-history') : undefined,

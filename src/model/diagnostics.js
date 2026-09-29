@@ -1,3 +1,5 @@
+import { clearPerf, perfSnapshot, perfText } from './perf-trace.js';
+
 const STORAGE_KEY = 'atoll.diagnostics.v1';
 const MAX_ENTRIES = 500;
 const MAX_READING_TRACE_ENTRIES = 1_024;
@@ -291,5 +293,6 @@ if (typeof globalThis === 'object') {
       snapshot: coldEntryDiagnosticSnapshot,
       exportText: coldEntryDiagnosticsText,
     }),
+    perf: Object.freeze({ snapshot: perfSnapshot, exportText: perfText, clear: clearPerf }),
   });
 }

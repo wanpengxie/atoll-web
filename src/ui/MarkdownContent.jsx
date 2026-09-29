@@ -21,7 +21,10 @@ const REHYPE_PLUGINS = [[rehypeKatex, { strict: false, throwOnError: false, trus
 // AST byte budgets permit it. Mounted MarkdownContent instances keep their
 // committed plan independently, so evicting a prepared tree never remounts or
 // truncates visible content.
-const CONTENT_PLANS = createContentPlanStore({ limit: 128, preparedByteLimit: 4 * 1024 * 1024 });
+// Sized for switching among several open channels: a store smaller than the
+// messages those channels show evicts each one's plans while the reader is in
+// another, and every switch back parses them all again.
+const CONTENT_PLANS = createContentPlanStore({ limit: 1024, preparedByteLimit: 32 * 1024 * 1024 });
 
 const FileReferenceContext = createContext(null);
 const MarkdownBlockContext = createContext('');

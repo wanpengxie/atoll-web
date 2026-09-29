@@ -3,7 +3,7 @@ import { MOCK_ORIGIN as MOCK } from './mock-origin.js';
 
 // Exact baseline successors for fae8b70:tests/browser/f5-management.spec.js
 // TC-0191..TC-0195. The cases stay independent: member governance, child
-// creation, activity return, operation return, and search/access revocation
+// creation, activity return and operation return
 // each retain their own historical action/result contract.
 
 async function reset(request, scenario, seed) {
@@ -96,46 +96,4 @@ test('TC-0194 F5-004 创建操作进入 Operation Center 并可回到原频道�
   await expect(page.locator('.turn-card').filter({ hasText: '创建子频道' })).toBeVisible();
   await expect(page.getByRole('complementary', { name: '回合详情' })).toContainText('operation-room');
   await expect(page.locator('main h1')).toHaveText('c0');
-});
-
-test('AD-004 全局搜索投影未收敛 Operation 并保留公开来源', async ({ page, request }) => {
-  await reset(request, 'long-running', 1506); await login(page);
-  await page.getByRole('button', { name: '选择 Agent' }).click();
-  await page.getByRole('menu', { name: '选择目标 Agent' })
-    .getByRole('menuitem', { name: 'steward' }).click();
-  const editor = page.getByRole('textbox', { name: '消息', exact: true });
-  await editor.fill('全局搜索中的运行操作');
-  await editor.press('Enter');
-  await expect(page.locator('.channel-agent-timer')).toHaveCount(1);
-  await page.getByRole('button', { name: '全局搜索', exact: true }).click();
-  const search = page.getByRole('dialog', { name: '全局搜索' });
-  await search.getByLabel('搜索频道、消息、文件、任务或成员').fill('全局搜索中的运行操作');
-  const result = search.getByRole('button', { name: /全局搜索中的运行操作/ });
-  await expect(result).toHaveCount(1);
-  await expect(result).toContainText('任务');
-});
-
-test('TC-0195 F5-005 全局搜索恢复频道、视图和 focus，权限撤销后不泄漏缓存', async ({ page, request }) => {
-  await reset(request, 'multi-channel', 1505); await login(page);
-  await page.getByRole('button', { name: '全局搜索' }).click();
-  let search = page.getByRole('dialog', { name: '全局搜索' });
-  await search.getByLabel('搜索频道、消息、文件、任务或成员').fill('c0.project history 1');
-  const result = search.getByRole('button', { name: /c0\.project history 1/ });
-  await expect(result).toHaveCount(1);
-  await result.click();
-  await expect(page.locator('main h1')).toHaveText('c0.project');
-  await expect(page.getByRole('complementary', { name: '工作项详情' })).toBeVisible();
-  await expect(page).toHaveURL(/channels\/c0\.project\/tasks\?focus=work_item/);
-
-  await request.post(`${MOCK}/mock/control/action`, { data: { type: 'revoke_membership', channel_id: 'c0.project' } });
-  // The public revocation notice is the live status surface. The same product
-  // wording is intentionally repeated in the content placeholder and composer
-  // explanation, so a page-wide text selector is ambiguous.
-  await expect(page.getByRole('status')).toContainText('你的频道访问权限已被撤销，缓存内容已隐藏。重新获得访问权限后才能查看。');
-  await expect(page.getByRole('complementary', { name: '工作项详情' })).toHaveCount(0);
-  await expect(page.getByRole('region', { name: '任务' })).toContainText('任务不可访问');
-  await page.getByRole('button', { name: '全局搜索' }).click();
-  search = page.getByRole('dialog', { name: '全局搜索' });
-  await search.getByLabel('搜索频道、消息、文件、任务或成员').fill('c0.project history 1');
-  await expect(search.getByRole('button', { name: /c0\.project history 1/ })).toHaveCount(0);
 });

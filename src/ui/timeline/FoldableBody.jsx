@@ -71,6 +71,59 @@ function countLines(value) {
   return count;
 }
 
+function unmute(node, saved) {
+  if (saved.tabIndex == null) node.removeAttribute('tabindex');
+  else node.setAttribute('tabindex', saved.tabIndex);
+  if (saved.ariaHidden == null) node.removeAttribute('aria-hidden');
+  else node.setAttribute('aria-hidden', saved.ariaHidden);
+}
+
+// The focusable nodes a folded body clips. Reads layout only. Null means the
+// surface has no layout (hidden); its ResizeObserver asks again once it does.
+function measureClipped(content) {
+  if (!content.isConnected) return null;
+  const clip = content.getBoundingClientRect();
+  if (!(clip.bottom > clip.top)) return null;
+  const clipped = new Set();
+  for (const node of content.querySelectorAll(FOCUSABLE_CONTENT)) {
+    const rect = node.getBoundingClientRect();
+    const fullyVisible = rect.bottom > rect.top
+      && rect.top >= clip.top - 0.5
+      && rect.bottom <= clip.bottom + 0.5;
+    if (!fullyVisible) clipped.add(node);
+  }
+  return clipped;
+}
+
+// Every folded body on the page is measured in one pass per frame: all reads,
+// then all writes, so the page is laid out once however many bodies mounted.
+const pendingFoldJobs = new Set();
+let foldPassHandle = null;
+
+function runFoldPass() {
+  foldPassHandle = null;
+  const jobs = [...pendingFoldJobs];
+  pendingFoldJobs.clear();
+  const measured = jobs.map((job) => job.measure());
+  jobs.forEach((job, index) => job.write(measured[index]));
+}
+
+function scheduleFoldPass(job) {
+  pendingFoldJobs.add(job);
+  if (foldPassHandle !== null) return;
+  foldPassHandle = typeof requestAnimationFrame === 'function'
+    ? { frame: requestAnimationFrame(runFoldPass) }
+    : { timer: setTimeout(runFoldPass, 0) };
+}
+
+function cancelFoldPass(job) {
+  pendingFoldJobs.delete(job);
+  if (pendingFoldJobs.size || foldPassHandle === null) return;
+  if (foldPassHandle.frame !== undefined) cancelAnimationFrame(foldPassHandle.frame);
+  else clearTimeout(foldPassHandle.timer);
+  foldPassHandle = null;
+}
+
 // 一段可折叠的正文。折叠与否按内容判，不看发送者：人贴进来的长文和 agent 的长答
 // 一样折。三种输入决定状态：
 //   expanded  —— 读者手动的选择（true 展开 / false 收起），恒优先；
@@ -91,41 +144,42 @@ export function FoldableBody({ id, text = '', exempt = false, automaticExpanded 
     const content = contentRef.current;
     if (!content) return undefined;
     const restore = () => {
-      for (const [node, saved] of mutedRef.current) {
-        if (saved.tabIndex == null) node.removeAttribute('tabindex');
-        else node.setAttribute('tabindex', saved.tabIndex);
-        if (saved.ariaHidden == null) node.removeAttribute('aria-hidden');
-        else node.setAttribute('aria-hidden', saved.ariaHidden);
-      }
+      for (const [node, saved] of mutedRef.current) unmute(node, saved);
       mutedRef.current.clear();
     };
-    const apply = () => {
+    if (!folded) {
       restore();
-      if (!folded) return;
-      const clip = content.getBoundingClientRect();
-      // A hidden/zero-sized surface is not operable. Its ResizeObserver will
-      // apply the boundary when the surface acquires real layout again.
-      if (!(clip.bottom > clip.top)) return;
-      for (const node of content.querySelectorAll(FOCUSABLE_CONTENT)) {
-        const rect = node.getBoundingClientRect();
-        const fullyVisible = rect.bottom > rect.top
-          && rect.top >= clip.top - 0.5
-          && rect.bottom <= clip.bottom + 0.5;
-        if (fullyVisible) continue;
-        mutedRef.current.set(node, {
-          tabIndex: node.getAttribute('tabindex'),
-          ariaHidden: node.getAttribute('aria-hidden'),
-        });
-        node.setAttribute('tabindex', '-1');
-        node.setAttribute('aria-hidden', 'true');
-      }
-      if (mutedRef.current.has(content.ownerDocument.activeElement)) {
-        toggleRef.current?.focus({ preventScroll: true });
-      }
+      return undefined;
+    }
+    // Measure in the shared frame pass, never here: a channel switch mounts
+    // dozens of folded bodies, and each one reading layout right after the
+    // previous one wrote attributes forced a full page layout per body.
+    const job = {
+      measure: () => measureClipped(content),
+      write: (clipped) => {
+        if (!clipped) return;
+        for (const [node, saved] of mutedRef.current) {
+          if (clipped.has(node)) continue;
+          unmute(node, saved);
+          mutedRef.current.delete(node);
+        }
+        for (const node of clipped) {
+          if (mutedRef.current.has(node)) continue;
+          mutedRef.current.set(node, {
+            tabIndex: node.getAttribute('tabindex'),
+            ariaHidden: node.getAttribute('aria-hidden'),
+          });
+          node.setAttribute('tabindex', '-1');
+          node.setAttribute('aria-hidden', 'true');
+        }
+        if (mutedRef.current.has(content.ownerDocument.activeElement)) {
+          toggleRef.current?.focus({ preventScroll: true });
+        }
+      },
     };
+    const apply = () => scheduleFoldPass(job);
 
     apply();
-    if (!folded) return restore;
     const resize = typeof ResizeObserver === 'function' ? new ResizeObserver(apply) : null;
     resize?.observe(content);
     for (const child of content.children) resize?.observe(child);
@@ -137,6 +191,7 @@ export function FoldableBody({ id, text = '', exempt = false, automaticExpanded 
     mutation?.observe(content, { childList: true, subtree: true });
     globalThis.addEventListener?.('resize', apply);
     return () => {
+      cancelFoldPass(job);
       resize?.disconnect();
       mutation?.disconnect();
       globalThis.removeEventListener?.('resize', apply);

@@ -45,7 +45,6 @@ const WARM_CACHE_MAX_PAGES = 4;
 export const HISTORY_REVEAL_MAX_PAGES = 32;
 
 const BACKGROUND_INTEREST_TYPES = new Set([
-  HISTORY_INTENT.searchContext,
   HISTORY_INTENT.channelEntry,
   HISTORY_INTENT.reconnect,
   HISTORY_INTENT.foregroundReturn,
@@ -858,7 +857,9 @@ export function createChannelFeedRuntime(options = {}) {
     const low = cursors.read(channelId);
     const roots = new Set();
     let unknown = false;
-    const inConversation = conversationRelation(state, selfID);
+    // The relation walks the whole channel; build it only once a row above
+    // the read position asks, which on a read channel is never.
+    let inConversation = null;
     for (const [seq, envelope] of state?.rows || []) {
       if (seq <= low || samePerson(envelope?.sender?.id, selfID)) continue;
       const disposition = notificationDisposition(state, envelope, selfID);
@@ -866,7 +867,9 @@ export function createChannelFeedRuntime(options = {}) {
         unknown = true;
         continue;
       }
-      if (!isRailNotifiableDisposition(disposition) || !inConversation(envelope)) continue;
+      if (!isRailNotifiableDisposition(disposition)) continue;
+      inConversation ||= conversationRelation(state, selfID);
+      if (!inConversation(envelope)) continue;
       const rootID = notificationRootID(state, envelope);
       if (!rootID) {
         unknown = true;

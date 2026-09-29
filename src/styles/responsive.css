@@ -161,10 +161,10 @@
   .mobile-shell .composer-state-rail:empty { display: none; }
   .mobile-shell .composer-wrap.is-empty:not(:focus-within) .composer-toolbar { display: none; }
   .mobile-shell .send-button, .mobile-shell .task-create-modal > header button, .mobile-shell .task-create-modal footer button,
-  .mobile-shell .global-search > header button, .mobile-shell .tasks-header-actions button, .mobile-shell .artifact-upload { min-height: 44px; }
+  .mobile-shell .tasks-header-actions button, .mobile-shell .artifact-upload { min-height: 44px; }
   .mobile-shell .composer-tools > button,
   .mobile-shell .composer-file-control { width: 44px; height: 44px; }
-  .mobile-shell .task-create-modal > header button, .mobile-shell .global-search > header button { min-width: 44px; }
+  .mobile-shell .task-create-modal > header button { min-width: 44px; }
   .mobile-shell .seq-label { display: none; }
   .mobile-shell .timeline-inner { padding: 8px 7px 18px; }
 	.mobile-shell .timeline-virtual-item { padding-right: 7px; padding-left: 7px; }

@@ -6,7 +6,6 @@ import { ArtifactPreviewPanel } from './files/ArtifactPreviewPanel.jsx';
 import { FilesFeature } from './files/FilesFeature.jsx';
 import { ChannelAdministrationPanel, ChannelAutomationPanel, ChannelCreateModal, SpaceAdministrationPanel } from './governance/GovernanceFeature.jsx';
 import { ActorDetailPanel, RosterFeature } from './roster/RosterFeature.jsx';
-import { SearchFeature } from './search/SearchFeature.jsx';
 import { TaskDetailPanel } from './tasks/TaskDetailPanel.jsx';
 import { TasksFeature } from './tasks/TasksFeature.jsx';
 import { PanelCard } from '../primitives/PanelCard.jsx';
@@ -483,9 +482,8 @@ export function WorkspaceRightPanel({ panel, channel, files = {}, tasks = {}, ro
   >{content}</ContextHost>;
 }
 
-export function WorkspaceFeatureOverlays({ search = {}, filePicker = null }) {
+export function WorkspaceFeatureOverlays({ filePicker = null }) {
   return <>
-    {search.open && <SearchFeature port={search} />}
     {filePicker?.open && <ChannelFilePickerModal
       channel={filePicker.channel}
       files={filePicker.files}
@@ -499,7 +497,6 @@ export function WorkspaceFeatureOverlays({ search = {}, filePicker = null }) {
 
 export function workspaceFeatureChannelListProps(commands = {}) {
   return Object.freeze({
-    onSearch: () => commands.openSearch?.(),
     onSpaceManage: () => commands.openSpaceAdministration?.(),
   });
 }
