@@ -583,3 +583,5 @@ button.channel-file-row { font: inherit; }
 .actor-description-version pre { margin: 4px 0 0; font: 8px/1.5 var(--mono); white-space: pre-wrap; }
 .actor-description-version.status-retired { opacity: .6; }
 .actor-description-version button { padding: 4px 6px; border: 1px solid var(--line-control); border-radius: 5px; background: var(--surface-control); cursor: pointer; font-size: 9px; }
+.member-build-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 6px; }
+.member-build-row > .text-button { margin-top: 8px; }

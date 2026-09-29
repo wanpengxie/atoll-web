@@ -299,7 +299,8 @@ export function MemberConfigSection({ actor, port = {} }) {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [editing, setEditing] = useState('');
-  const editable = isEditableMemberKind(actor?.kind);
+  // 构建失败、还没在跑的成员没有 kind；它在频道描述里有条目，就能编辑。
+  const editable = isEditableMemberKind(actor?.kind) || (!actor?.kind && Boolean(info) && !info.generated && plainObject(info.body));
   const readable = typeof commands.readMember === 'function';
   const actorIdRef = useRef(actor?.id);
   actorIdRef.current = actor?.id;

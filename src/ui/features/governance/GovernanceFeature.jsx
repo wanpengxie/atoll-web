@@ -203,7 +203,15 @@ function ChannelSettings({ channel, port }) {
         {platformChannel && <p className="governance-empty">这个频道由平台搭建，没有频道描述；成员固定。</p>}
         {view.build && <BuildLine record={view.build} label="频道自身" />}
         <div className="member-builds" aria-label="成员构建摘要">
-          {(view.members || []).map((record, index) => <BuildLine key={`${record?.object?.name || index}`} record={record} />)}
+          {(view.members || []).map((record, index) => {
+            const name = String(record?.object?.name || '');
+            // 构建失败的成员不在名册上；从这里打开它的详情去补占位、改配置。
+            const running = (port.roster || []).find((row) => row.kind !== 'human' && actorMemberName(row.id) === name);
+            return <div className="member-build-row" key={`${name || index}`}>
+              <BuildLine record={record} />
+              {name && typeof commands.selectActor === 'function' && <button type="button" className="text-button" aria-label={`查看成员 ${name}`} onClick={() => commands.selectActor(running || { id: name, name, kind: '', body: '' })}>查看</button>}
+            </div>;
+          })}
           {!(view.members || []).length && <p className="governance-empty">还没有成员构建记录。</p>}
         </div>
       </>}
