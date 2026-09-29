@@ -66,6 +66,10 @@ test('@成员 menu stays within the input area at 320px', async ({ page, request
   await reset(request, 'actor-capability', 953);
   await login(page);
   const input = page.getByLabel('消息');
+  // Writing opens the resting composer (its toolbar lifts the input once);
+  // what must not move the input is the menu opening.
+  await input.click();
+  await expect(page.locator('.composer-toolbar')).toBeVisible();
   const before = await input.boundingBox();
   await input.fill('@');
   const menu = page.getByRole('listbox');

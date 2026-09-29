@@ -229,6 +229,10 @@ export const Composer = memo(function Composer({ model, commands, className = ''
   const presentationKey = `${model.channelId}\u0000${model.editSession?.targetId || ''}`;
 
   const [fileDragActive, setFileDragActive] = useState(false);
+  // Whether the editor holds any text right now. The draft model is not
+  // updated per keystroke, so the resting (one-line) composer asks the editor;
+  // it only changes state when emptiness flips, never per keystroke.
+  const [editorHasText, setEditorHasText] = useState(false);
   const [uploadBusy, setUploadBusy] = useState(false);
   const [channelFileBusy, setChannelFileBusy] = useState(false);
   // `@` and `/` are input modes owned by ProseMirror. This is the only state
@@ -345,7 +349,7 @@ export const Composer = memo(function Composer({ model, commands, className = ''
         sendInFlightRef.current = true;
         Promise.resolve(invoke(current.edit ? owner.edit : owner.send, current.edit ? { newText: text } : { readingIntent: intent, draft: snapshot })).then((result) => {
           if (!result) return;
-          applyingRef.current = true; editorRef.current?.commands.clearContent(false); applyingRef.current = false;
+          applyingRef.current = true; editorRef.current?.commands.clearContent(false); applyingRef.current = false; setEditorHasText(false);
           pendingTextRef.current = null;
           bodiesRef.current.delete(latestRef.current.presentationKey);
         }).finally(() => { sendInFlightRef.current = false; });
@@ -357,6 +361,7 @@ export const Composer = memo(function Composer({ model, commands, className = ''
       const value = editorText(current);
       pendingTextRef.current = value;
       bodiesRef.current.set(latestRef.current.presentationKey, value);
+      setEditorHasText(Boolean(value.trim()));
     },
   }, [model.channelId]);
   editorRef.current = editor;
@@ -483,6 +488,7 @@ export const Composer = memo(function Composer({ model, commands, className = ''
     const restored = bodiesRef.current.has(presentationKey)
       ? bodiesRef.current.get(presentationKey)
       : model.draft.text;
+    setEditorHasText(Boolean(String(restored || '').trim()));
     if (editorText(editor) === restored) return;
     applyingRef.current = true;
     editor.commands.setContent(editorDocument(restored), { emitUpdate: false });
@@ -513,6 +519,11 @@ export const Composer = memo(function Composer({ model, commands, className = ''
     place();
     const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(place) : null;
     observer?.observe(inputAreaRef.current);
+    // The input can move without changing size: on a phone the resting
+    // composer opens its toolbar below the input, lifting it. The composer's
+    // own height changes then, so it re-places the tab too.
+    const wrap = inputAreaRef.current.closest('.composer-wrap');
+    if (wrap) observer?.observe(wrap);
     // `placeTarget` owns the fixed node's width/top. Observing that same node
     // feeds its own style write back into ResizeObserver and can produce a
     // Chromium loop warning. Child mutations are the only target-side size
@@ -552,7 +563,7 @@ export const Composer = memo(function Composer({ model, commands, className = ''
   };
   const clearAccepted = (result) => {
     if (!result || !editor || editor.isDestroyed) return;
-    applyingRef.current = true; editor.commands.clearContent(false); applyingRef.current = false;
+    applyingRef.current = true; editor.commands.clearContent(false); applyingRef.current = false; setEditorHasText(false);
     pendingTextRef.current = null;
     bodiesRef.current.delete(presentationKey);
   };
@@ -595,7 +606,11 @@ export const Composer = memo(function Composer({ model, commands, className = ''
       ? model.delivery.label
       : [model.delivery.rows.map((row) => `@${actorName(row)}`).join('、'), model.delivery.sourceLabel || model.delivery.label].filter(Boolean).join(' · ');
 
-  return <section className={`composer-wrap${editMode ? ' is-editing-message' : ''}${className ? ` ${className}` : ''}`} data-composer-channel={model.channelId} data-composer-owner="current">
+  // Nothing typed, attached or being replied to: on a phone the composer rests
+  // as one line and opens its toolbar only when the reader starts writing.
+  const draftEmpty = !editMode && !editorHasText && !String(model.draft.text || '').trim()
+    && !model.draft.attachments.length && !model.draft.replyTarget;
+  return <section className={`composer-wrap${editMode ? ' is-editing-message' : ''}${draftEmpty ? ' is-empty' : ''}${className ? ` ${className}` : ''}`} data-composer-channel={model.channelId} data-composer-owner="current">
     <form className={`composer-surface${fileDragActive ? ' is-file-dragging' : ''}${editMode ? ' is-editing-message' : ''}`} onSubmit={submit} onDragEnter={onDragEnter} onDragOver={(event) => { if (containsFiles(event.dataTransfer)) { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; } }} onDragLeave={onDragLeave} onDrop={(event) => { if (!containsFiles(event.dataTransfer)) return; event.preventDefault(); dragDepthRef.current = 0; setFileDragActive(false); void uploadFiles([...(event.dataTransfer.files || [])]); }}>
       {!editMode && <div ref={targetRef} className={`composer-target is-${model.delivery.kind}${disabled ? ' is-muted' : ''}`} role="status" aria-label="收件人" title={deliveryTitle}>{removableRows.length ? removableRows.map((row) => <span key={row.id} className={`composer-target-pill is-picked${row.missing ? ' is-lost' : ''}`}>@{actorName(row)}<button type="button" className="composer-target-remove" aria-label={`移除收件人 @${actorName(row)}`} disabled={disabled} onMouseDown={(event) => event.preventDefault()} onClick={() => invoke(commands.removeMention, row.id)}><X size={11} /></button></span>) : <span className="composer-target-pill">{deliveryText}</span>}</div>}
       {fileDragActive && <div className="composer-drop-hint" role="status"><Upload size={18} /><strong>松开以上传到当前频道</strong></div>}

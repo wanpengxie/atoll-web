@@ -60,6 +60,23 @@ import {
   WorkspaceFeatureOverlays,
   WorkspaceRightPanel,
 } from '../ui/features/index.js';
+import { ArtifactPreviewPanel } from '../ui/features/files/ArtifactPreviewPanel.jsx';
+
+// One channel's preview layer. A hidden layer keeps what it rendered and
+// depends on nothing but that; it is shown again, untouched, when its channel
+// is. Only the shown layer is live.
+const PreviewLayer = React.memo(function PreviewLayer({ active, channel, port, onClose, channelId, kept }) {
+  const hiddenChannel = React.useMemo(() => ({ id: channelId }), [channelId]);
+  const hiddenPort = React.useMemo(() => (kept ? Object.freeze({
+    channelId, preview: kept.preview, selectedArtifact: kept.artifact, canGoBack: false, commands: Object.freeze({}),
+  }) : null), [channelId, kept]);
+  if (!active && !hiddenPort) return null;
+  return <div className="preview-layer" data-active={active ? 'true' : 'false'} inert={active ? undefined : true} aria-hidden={active ? undefined : true}>
+    <ArtifactPreviewPanel channel={active ? channel : hiddenChannel} port={active ? port : hiddenPort} onClose={onClose} />
+  </div>;
+}, (previous, next) => (!previous.active && !next.active
+  ? previous.channelId === next.channelId && previous.kept === next.kept
+  : false));
 
 const EMPTY_ARRAY = Object.freeze([]);
 
@@ -972,9 +989,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     preview: (resource, channelId) => {
       const artifact = resourceEntry(channelId, resource);
       if (!artifact.resourceId) throw new TypeError('文件资源标识为空');
-      const operation = attachments.previewArtifact(artifact, channelId);
-      setPanel('artifact');
-      return operation;
+      return attachments.previewArtifact(artifact, channelId);
     },
     reset: attachments.reset,
     setSelectedArtifact: attachments.setSelectedArtifact,
@@ -1160,9 +1175,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const previewResource = useCallback((channelId, resource) => {
     const artifact = resourceEntry(channelId, resource);
     if (!artifact.resourceId) throw new TypeError('文件资源标识为空');
-    const operation = attachments.previewArtifact(artifact, channelId);
-    setPanel('artifact');
-    return operation;
+    return attachments.previewArtifact(artifact, channelId);
   }, [attachments.previewArtifact, resourceEntry]);
   const downloadResource = useCallback((channelId, resource) => {
     const artifact = resourceEntry(channelId, resource);
@@ -1563,9 +1576,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       navigate: attachments.navigateFiles,
       loadMore: attachments.loadMoreDirectory,
       preview: (entry) => {
-        const operation = attachments.previewArtifact(entry, navigation.activeChannelId);
-        setPanel('artifact');
-        return operation;
+        return attachments.previewArtifact(entry, navigation.activeChannelId);
       },
       refresh: () => attachments.refreshDirectoryReceipt(),
       rememberScroll: attachments.rememberFilesScroll,
@@ -2017,6 +2028,26 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const featureView = navigation.activeView === 'files'
     ? 'files'
     : navigation.terminalVisible ? 'conversation' : navigation.activeView;
+  // The channel's open preview is part of the channel: a floating panel open
+  // until its own × — not a modal over the whole page. Every channel whose
+  // preview this page rendered keeps its layer mounted (hidden while another
+  // channel is shown), so coming back is instant: no fetch, no re-render, the
+  // same scroll position and 预览/源码 choice.
+  const activePreviewChannelId = navigation.activeChannelId;
+  const keptPreviews = attachments.channelPreviews || {};
+  // A fixed order (by channel), so switching channels never moves a layer in
+  // the DOM — a moved node would lose its scroll position.
+  // Kept layers stay mounted through a channel switch — including the moment
+  // the new channel's access is still settling — or they would be rebuilt and
+  // lose their scroll. Only whether the shown channel's layer is visible
+  // follows that channel's access.
+  const previewShown = contentVisible && attachments.previewOpen;
+  const previewChannelIds = [...new Set([...Object.keys(keptPreviews), ...(previewShown ? [activePreviewChannelId] : [])])].sort();
+  const previewElement = previewChannelIds.length > 0
+    ? previewChannelIds.map((channelId) => channelId === activePreviewChannelId && previewShown
+      ? <PreviewLayer key={channelId} active channel={navigation.activeChannel} port={filesPort} onClose={() => attachments.setSelectedArtifact(null)} />
+      : <PreviewLayer key={channelId} active={false} channelId={channelId} kept={keptPreviews[channelId]} />)
+    : null;
   const featureElement = <WorkspaceFeatures
     activeView={featureView}
     channel={navigation.activeChannel}
@@ -2201,6 +2232,8 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     }}
     conversation={conversationPort}
     features={featureElement}
+    preview={previewElement}
+    previewShown={previewShown}
     rightPanel={rightPanel}
     overlays={overlays}
   />;

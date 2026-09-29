@@ -10,6 +10,7 @@ import {
 } from './conversation-visibility.js';
 
 const TIMER_WAKE_TYPE = 'agent.timer.wake';
+const PROVIDER_RUN_TYPE = 'agent.provider.run';
 
 export function isCanonicalAgentTimerFire(envelope) {
   const sender = envelope?.sender;
@@ -69,6 +70,12 @@ export function notificationDisposition(channelState, envelope, selfId = '') {
   }
   if (isToolProtocolType(semanticType) && semanticRequest?.parent_id) return 'nested_tool_lifecycle';
 
+  // The agent reporting back after its background work returned: an answer
+  // to the request that set the work off, so it is new activity like any
+  // other answer, not a passing event.
+  if (envelope?.kind === 'event' && envelope.type === PROVIDER_RUN_TYPE) {
+    return personConversationEventVisible(envelope) ? 'final' : 'not_presented';
+  }
   if (envelope?.kind === 'event') {
     return personConversationEventVisible(envelope) ? 'event' : 'not_presented';
   }

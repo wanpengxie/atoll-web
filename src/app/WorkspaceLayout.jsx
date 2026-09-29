@@ -1,7 +1,10 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { SurfaceShell, useSurfaceTopology } from './SurfaceShell.jsx';
 import { useModalFocus } from '../ui/primitives/useModalFocus.js';
 import { diagnostic } from '../model/diagnostics.js';
+
+const RAIL_COLLAPSED_KEY = 'atoll.rail.collapsed';
 
 const VIEW_LABELS = Object.freeze({ conversation: '动态', tasks: '任务' });
 const VIEW_ENTRIES = Object.freeze(Object.entries(VIEW_LABELS));
@@ -250,7 +253,7 @@ function nodeUpdateLabel(update, wireState) {
   })[update?.status] || `升级到 ${update?.latest_version || update?.latestVersion || '最新版'}`;
 }
 
-function WorkspaceRail({ session, navigation, onClose, closeButtonRef, railRef, onSelect }) {
+function WorkspaceRail({ session, navigation, onClose, onCollapse, collapsed = false, closeButtonRef, railRef, onSelect }) {
   const memberChannels = navigation.channels.filter((channel) => String(channel.access || '').startsWith('member_'));
   const otherChannels = navigation.channels.filter((channel) => !String(channel.access || '').startsWith('member_'));
   const activeCount = Object.values(navigation.agentActivity?.byChannel || {})
@@ -304,11 +307,14 @@ function WorkspaceRail({ session, navigation, onClose, closeButtonRef, railRef, 
     })}
     {!rows.length && <p className="rail-empty">{empty}</p>}
   </div>;
-  return <aside ref={railRef} className="channel-rail" data-modal-layer={onClose ? '' : undefined}>
+  // A collapsed rail is out of the page, not merely out of sight: nothing in it
+  // is reachable by keyboard until it is opened again.
+  return <aside ref={railRef} className="channel-rail" data-modal-layer={onClose ? '' : undefined} inert={collapsed ? true : undefined} aria-hidden={collapsed || undefined}>
     <header className="rail-header">
       <div className="brand-lockup"><span className="brand-dot" />ATOLL</div>
       <div className={`connection-state state-${session.wireState}`}><span aria-hidden="true" />{connectionLabel(session.wireState)}</div>
       {onClose && <button ref={closeButtonRef} type="button" className="mobile-rail-close" onClick={() => onClose('toggle')} aria-label="关闭频道列表">×</button>}
+      {!onClose && onCollapse && <button type="button" className="rail-collapse-toggle" onClick={onCollapse} aria-label="收起频道列表" title="收起频道列表"><PanelLeftClose size={16} aria-hidden="true" /></button>}
     </header>
     <nav aria-label="频道">
       <div className="rail-global-actions" aria-label="全局工具">
@@ -357,10 +363,23 @@ export function WorkspaceLayout({
   conversation,
   features = null,
   rightPanel = null,
+  preview = null,
+  previewShown = false,
   overlays = null,
 }) {
   const topology = useSurfaceTopology();
+  const [headerScopeSlot, setHeaderScopeSlot] = useState(null);
   const [mobileChannelsOpen, setMobileChannelsOpen] = useState(false);
+  // On a tablet or desktop the channel list can be put away to give the
+  // conversation the whole width; the choice is remembered on this device.
+  const [railCollapsedPreference, setRailCollapsedPreference] = useState(() => {
+    try { return globalThis.localStorage?.getItem(RAIL_COLLAPSED_KEY) === '1'; } catch { return false; }
+  });
+  const setRailCollapsed = useCallback((value) => {
+    setRailCollapsedPreference(value);
+    try { globalThis.localStorage?.setItem(RAIL_COLLAPSED_KEY, value ? '1' : '0'); } catch { /* best effort */ }
+  }, []);
+  const railCollapsed = railCollapsedPreference && topology !== 'mobile';
   const [channelMenuOpen, setChannelMenuOpen] = useState(false);
   const channel = navigation.channel;
   const filesOpen = navigation.activeView === 'files';
@@ -399,6 +418,10 @@ export function WorkspaceLayout({
     if (!PANE_CONFIG[kind]) return;
     setPaneWidths((current) => current[kind] === null ? current : { ...current, [kind]: null });
     writePaneWidth(kind, null);
+  }, []);
+  const measurePreviewWidth = useCallback(() => {
+    const measured = Number(globalThis.document?.querySelector?.('.preview-layer[data-active="true"]')?.getBoundingClientRect?.().width);
+    return Number.isFinite(measured) && measured > 0 ? measured : PANE_CONFIG.artifact.defaultWidth;
   }, []);
   const measureRailWidth = useCallback(() => {
     const measured = Number(mobileRailRef.current?.getBoundingClientRect?.().width);
@@ -456,7 +479,12 @@ export function WorkspaceLayout({
     && !navigation.terminalVisible;
   const conversationElement = React.isValidElement(conversation?.element)
     ? React.cloneElement(conversation.element, {
-      ...(typeof conversation.element.type === 'string' ? {} : { surfaceVisible: messageSurfaceVisible }),
+      ...(typeof conversation.element.type === 'string' ? {} : {
+        surfaceVisible: messageSurfaceVisible,
+        // The filter lives in the header bar; a phone's bar is full, and there
+        // the pills float over the top of the timeline instead.
+        headerSlot: topology === 'mobile' ? null : headerScopeSlot,
+      }),
       'data-surface-visible': String(messageSurfaceVisible),
     })
     : conversation?.element;
@@ -640,11 +668,11 @@ export function WorkspaceLayout({
   };
   return <SurfaceShell
     topology={topology}
-    className={['shell', mobileChannelsOpen && 'mobile-channels-open', rightPanel && 'has-context'].filter(Boolean).join(' ')}
+    className={['shell', mobileChannelsOpen && 'mobile-channels-open', rightPanel && 'has-context', railCollapsed && 'rail-collapsed'].filter(Boolean).join(' ')}
     data-workspace-view={navigation.activeView}
     style={paneWidths.rail === null ? undefined : { '--rail-width': String(paneWidths.rail) + 'px' }}
   >
-    <WorkspaceRail session={session} navigation={navigation} onSelect={selectChannel} onClose={mobileChannelsOpen ? closeMobileChannels : null} closeButtonRef={mobileRailCloseRef} railRef={mobileRailRef} />
+    <WorkspaceRail session={session} navigation={navigation} onSelect={selectChannel} onClose={mobileChannelsOpen ? closeMobileChannels : null} onCollapse={topology === 'mobile' ? null : () => setRailCollapsed(true)} collapsed={railCollapsed} closeButtonRef={mobileRailCloseRef} railRef={mobileRailRef} />
     <PaneResizeHandle
       kind="rail"
       width={paneWidths.rail}
@@ -653,11 +681,44 @@ export function WorkspaceLayout({
       onCommit={(value) => commitPaneWidth('rail', value)}
       onReset={() => resetPaneWidth('rail')}
     />
-    <main className="workspace">
+    <main
+      className={previewShown ? 'workspace preview-open' : 'workspace'}
+      style={paneWidths.artifact === null ? undefined : { '--preview-width': String(paneWidths.artifact) + 'px' }}
+    >
       <header className="channel-header">
         <div className="channel-identity">
           <button ref={mobileChannelToggleRef} type="button" className="mobile-channel-toggle" onClick={openMobileChannels} aria-label="打开频道列表">‹</button>
+          {railCollapsed && <button type="button" className="rail-expand-toggle" onClick={() => setRailCollapsed(false)} aria-label="展开频道列表" title="展开频道列表"><PanelLeftOpen size={16} aria-hidden="true" /></button>}
           <div><p className="eyebrow">频道</p><h1 ref={channelHeadingRef} tabIndex={-1}>{channelLabel(channel, '选择频道')}</h1></div>
+        </div>
+        {/* One bar, as an app has: who, which view, what you can do. Views and
+            quick actions sit beside the channel name instead of a second row. */}
+        <nav className="channel-view-tabs" role="tablist" aria-label="频道主视图">
+          {VIEW_ENTRIES.map(([view, label], index) => <button
+            ref={(node) => { viewTabRefs.current[index] = node; }}
+            type="button"
+            role="tab"
+            aria-selected={view === 'conversation' ? navigation.activeView !== 'tasks' : navigation.activeView === view}
+            tabIndex={(view === 'conversation' ? navigation.activeView !== 'tasks' : navigation.activeView === view) ? 0 : -1}
+            className={(view === 'conversation' ? navigation.activeView !== 'tasks' : navigation.activeView === view) ? 'active' : ''}
+            key={view}
+            onKeyDown={(event) => moveViewTab(event, index)}
+            onClick={() => navigation.setActiveView(view === 'conversation' && filesOpen ? 'files' : view)}
+          >{label}</button>)}
+        </nav>
+        {topology !== 'mobile' && <div className="channel-header-scope" ref={setHeaderScopeSlot} />}
+        <div className="workspace-quick-actions">
+          <button ref={filesToggleRef} id="workspace-files-toggle" type="button" title="文件" className={`terminal-split-toggle${filesOpen ? ' active' : ''}`} aria-pressed={filesOpen} disabled={!channel} onClick={toggleFiles}><span aria-hidden="true">▤</span>文件</button>
+          {navigation.openTerminal && <button id="workspace-terminal-toggle" type="button" title="终端" className={`terminal-split-toggle${navigation.terminalVisible ? ' active' : ''}`} aria-pressed={navigation.terminalVisible} disabled={!channel || terminalTransitionPending} onClick={toggleTerminal}><span aria-hidden="true">▥</span>终端</button>}
+          {navigation.channelRestart && <button
+            id="workspace-channel-restart"
+            type="button"
+            className="channel-restart-action"
+            data-capability-state={navigation.channelRestart.available === false ? 'unsupported' : 'available'}
+            title={navigation.channelRestart.reason || '重启频道'}
+            disabled={!channel || typeof navigation.channelRestart.invoke !== 'function'}
+            onClick={() => navigation.channelRestart.invoke?.()}
+          ><span aria-hidden="true">⟳</span>重启频道</button>}
         </div>
         <div className="channel-header-actions">
           <span className="seq-label">SEQ {Number(conversation?.state?.lastSeq || 0)}</span>
@@ -684,32 +745,6 @@ export function WorkspaceLayout({
           </div>
         </div>
       </header>
-      <nav className="channel-view-tabs" role="tablist" aria-label="频道主视图">
-        {VIEW_ENTRIES.map(([view, label], index) => <button
-          ref={(node) => { viewTabRefs.current[index] = node; }}
-          type="button"
-          role="tab"
-          aria-selected={view === 'conversation' ? navigation.activeView !== 'tasks' : navigation.activeView === view}
-          tabIndex={(view === 'conversation' ? navigation.activeView !== 'tasks' : navigation.activeView === view) ? 0 : -1}
-          className={(view === 'conversation' ? navigation.activeView !== 'tasks' : navigation.activeView === view) ? 'active' : ''}
-          key={view}
-          onKeyDown={(event) => moveViewTab(event, index)}
-          onClick={() => navigation.setActiveView(view === 'conversation' && filesOpen ? 'files' : view)}
-        >{label}</button>)}
-      </nav>
-      <div className="workspace-quick-actions">
-        <button ref={filesToggleRef} id="workspace-files-toggle" type="button" className={`terminal-split-toggle${filesOpen ? ' active' : ''}`} aria-pressed={filesOpen} disabled={!channel} onClick={toggleFiles}><span aria-hidden="true">▤</span>文件</button>
-        {navigation.openTerminal && <button id="workspace-terminal-toggle" type="button" className={`terminal-split-toggle${navigation.terminalVisible ? ' active' : ''}`} aria-pressed={navigation.terminalVisible} disabled={!channel || terminalTransitionPending} onClick={toggleTerminal}><span aria-hidden="true">▥</span>终端</button>}
-        {navigation.channelRestart && <button
-          id="workspace-channel-restart"
-          type="button"
-          className="channel-restart-action"
-          data-capability-state={navigation.channelRestart.available === false ? 'unsupported' : 'available'}
-          title={navigation.channelRestart.reason || '重启频道'}
-          disabled={!channel || typeof navigation.channelRestart.invoke !== 'function'}
-          onClick={() => navigation.channelRestart.invoke?.()}
-        ><span aria-hidden="true">⟳</span>重启频道</button>}
-      </div>
       <div className="status-stack">
         {notices.error && <div className="top-error" role="alert"><span>{notices.error}</span><button type="button" onClick={notices.dismissError} aria-label="关闭错误">×</button></div>}
         {notices.channel && <div className="channel-notice" role="status"><span>{notices.channel}</span><button type="button" onClick={notices.dismissChannel} aria-label="关闭频道提示">×</button></div>}
@@ -723,6 +758,7 @@ export function WorkspaceLayout({
         filesOpen && 'files-split-open',
         mobileFilesComposerVisible && 'mobile-files-composer-open',
         navigation.activeView === 'tasks' && !navigation.terminalVisible && 'tasks-view-open',
+        previewShown && 'preview-open',
       ].filter(Boolean).join(' ')}>
         <div className="dynamic-message-pane" data-surface-visible={String(messageSurfaceVisible)}>
           {conversationElement}
@@ -737,6 +773,15 @@ export function WorkspaceLayout({
           >最近</button>}
         </div>
         {features}
+        {preview && <div className="preview-view">{preview}</div>}
+        {previewShown && <PaneResizeHandle
+          kind="artifact"
+          width={paneWidths.artifact}
+          measure={measurePreviewWidth}
+          onResize={(value) => previewPaneWidth('artifact', value)}
+          onCommit={(value) => commitPaneWidth('artifact', value)}
+          onReset={() => resetPaneWidth('artifact')}
+        />}
       </div>
     </main>
     {rightPanelElement}

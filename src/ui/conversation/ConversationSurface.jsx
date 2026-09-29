@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { actorNameMap } from '../../model/actor-display.js';
 import { MarkdownFileReferenceProvider } from '../MarkdownContent.jsx';
 import { MessageLayoutProvider } from '../timeline/MessageLayoutState.jsx';
@@ -26,6 +27,8 @@ const SHOW_CHANNEL_NARRATION = true;
  */
 export function ConversationSurface({
   state,
+  // A node in the channel header to render the scope/member filter into.
+  headerSlot = null,
   history = {},
   composer,
   viewSessions,
@@ -227,10 +230,55 @@ export function ConversationSurface({
     || viewport.historyBoundary?.kind === 'exhausted';
   const surfaceClass = ['conversation-surface', className].filter(Boolean).join(' ');
 
+  // Scope and member filter: in the channel's one header bar when the layout
+  // gives it a place there, otherwise the first row of the timeline.
+  const scopeBar = selfId && channelEntries.length > 0 ? (
+    <div className="timeline-scope-bar">
+      <div className="timeline-scope" role="group" aria-label="动态范围">
+        <button
+          type="button"
+          aria-pressed={scope === CONVERSATION_SCOPE.mine}
+          title={scope === CONVERSATION_SCOPE.mine ? '切换为全部动态' : '切换为与我相关'}
+          onClick={toggleScope}
+        >{scope === CONVERSATION_SCOPE.mine ? '与我相关' : '全部'}</button>
+        {actorFilterApplies && (filterableAgents.length > 0 || staleActorFilters.length > 0) && <div
+          className="timeline-actor-filter"
+          role="group"
+          aria-label="按成员过滤"
+        >
+          {filterableAgents.map((actor) => {
+            const on = actorFilter.has(actor.id);
+            // Running is the only activity state: a dot means the agent is working now.
+            const activityState = agentActivity?.agents?.[actor.id]?.state === 'active' ? 'active' : '';
+            const actorName = names.get(actor.id) || actor.id;
+            return <button
+              type="button"
+              key={actor.id}
+              className={[on && 'is-on', activityState && `activity-${activityState}`].filter(Boolean).join(' ')}
+              aria-pressed={on}
+              title={activityState === 'active'
+                ? `${actorName} 正在运行`
+                : on ? `取消只看 ${actorName}` : `只看我与 ${actorName} 的往来`}
+              onClick={() => toggleActorFilter(actor.id)}
+            >{activityState && <i className="agent-activity-dot" aria-hidden="true" />}{actorName}</button>;
+          })}
+          {staleActorFilters.map((actorID) => <button
+            type="button"
+            key={actorID}
+            className="is-on is-stale"
+            aria-pressed="true"
+            onClick={() => removeActorFilter(actorID)}
+          >已失效 · {actorID}</button>)}
+        </div>}
+      </div>
+    </div>
+  ) : null;
+
   return <ReadingIntentProvider value={readingIntent}>
     <MessageLayoutProvider store={messageLayoutStore}>
       <MarkdownFileReferenceProvider onOpen={openFileReference}>
           <div className={surfaceClass}>
+            {scopeBar && headerSlot && surfaceVisible && createPortal(scopeBar, headerSlot)}
             <div className="conversation-reading-slot">
               <section
                 id="workspace-panel-dynamic"
@@ -240,44 +288,7 @@ export function ConversationSurface({
                 data-viewport-mode={viewport.session.mode}
               >
                 <div className={`timeline-inner timeline-controls-overlay${emptyFeedbackKind ? ' timeline-empty-feedback-overlay' : ''}`}>
-                  {selfId && channelEntries.length > 0 && <div className="timeline-scope-bar">
-                    <div className="timeline-scope" role="group" aria-label="动态范围">
-                      <button
-                        type="button"
-                        aria-pressed={scope === CONVERSATION_SCOPE.mine}
-                        title={scope === CONVERSATION_SCOPE.mine ? '切换为全部动态' : '切换为与我相关'}
-                        onClick={toggleScope}
-                      >{scope === CONVERSATION_SCOPE.mine ? '与我相关' : '全部'}</button>
-                      {actorFilterApplies && (filterableAgents.length > 0 || staleActorFilters.length > 0) && <div
-                        className="timeline-actor-filter"
-                        role="group"
-                        aria-label="按成员过滤"
-                      >
-                        {filterableAgents.map((actor) => {
-                          const on = actorFilter.has(actor.id);
-                          const activityState = agentActivity?.agents?.[actor.id]?.state || '';
-                          const actorName = names.get(actor.id) || actor.id;
-                          return <button
-                            type="button"
-                            key={actor.id}
-                            className={[on && 'is-on', activityState && `activity-${activityState}`].filter(Boolean).join(' ')}
-                            aria-pressed={on}
-                            title={activityState === 'active'
-                              ? `${actorName} 正在运行`
-                              : on ? `取消只看 ${actorName}` : `只看我与 ${actorName} 的往来`}
-                            onClick={() => toggleActorFilter(actor.id)}
-                          >{activityState && <i className="agent-activity-dot" aria-hidden="true" />}{actorName}</button>;
-                        })}
-                        {staleActorFilters.map((actorID) => <button
-                          type="button"
-                          key={actorID}
-                          className="is-on is-stale"
-                          aria-pressed="true"
-                          onClick={() => removeActorFilter(actorID)}
-                        >已失效 · {actorID}</button>)}
-                      </div>}
-                    </div>
-                  </div>}
+                  {scopeBar && !headerSlot && scopeBar}
                   {emptyFeedbackKind && emptyFeedbackSettled && <div className="empty-ledger">
                     <span>{emptyFeedbackKind === 'channel' ? '#' : '@'}</span>
                     {emptyFeedbackKind === 'channel'

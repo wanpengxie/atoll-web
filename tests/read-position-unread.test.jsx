@@ -86,9 +86,27 @@ describe('new activity: one definition, one read position', () => {
     feed().enqueue(row(13, { id: 'agent-ask', kind: 'request', type: 'agent.ask', sender: { id: AGENT, kind: 'agent' }, audience: ['agent:codex:1'], payload: { body: { text: 'count lines' } } }));
     feed().enqueue(row(14, { id: 'agent-ask-done', kind: 'response', type: 'agent.ask', parent_id: 'agent-ask', sender: { id: 'agent:codex:1', kind: 'agent' }, audience: [AGENT], payload: { body: { status: 'completed', text: '856 lines.' } } }));
     feed().enqueue(note(15, OTHER, ['human:third:1']));
-    expect([...feed().unreadRootsFor('c0', ME)].sort()).toEqual(['agent-ask', 'self-call']);
+    // The agent reading the log on its own is process: not shown, not new.
+    expect([...feed().unreadRootsFor('c0', ME)]).toEqual(['agent-ask']);
     expect(feed().markSeen('c0', 15)).toBe(true);
     expect([...feed().unreadRootsFor('c0', ME)]).toEqual([]);
+    expect(feed().unreadFor('c0', ME)).toMatchObject({ count: 0 });
+    runtime.destroy();
+  });
+
+  // Background work coming back is reported by the agent in a run of its
+  // own, under the request that set it off: that report is new activity.
+  it('counts the agent reporting back after its background work returned', async () => {
+    const { runtime, feed } = await attached(10);
+    feed().enqueue(ask(11, ME, [AGENT]));
+    feed().enqueue(answer(12, 11));
+    feed().markSeen('c0', 12);
+    feed().enqueue({ channel_id: 'c0', seq: 13, generation: 1, source: 'live', envelope: {
+      id: 'run-13', kind: 'event', type: 'agent.provider.run', parent_id: 'ask-11', correlation_id: 'ask-11',
+      sender: { id: AGENT, kind: 'agent' }, audience: [], payload: { body: { call_id: 'toolu_1', task_summary: 'report', text: 'It came back: 856 lines.' } },
+    } });
+    expect(feed().unreadFor('c0', ME)).toMatchObject({ count: 1 });
+    feed().markSeen('c0', 13);
     expect(feed().unreadFor('c0', ME)).toMatchObject({ count: 0 });
     runtime.destroy();
   });

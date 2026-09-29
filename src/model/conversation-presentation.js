@@ -1,5 +1,5 @@
 import { argsOf, correlationOf } from '../protocol/envelope.js';
-import { TYPES } from '../protocol/vocab.js';
+import { isConversationCall, isOperationCall, TYPES } from '../protocol/vocab.js';
 import { isControlOnlyTurn } from './conversation-visibility.js';
 import { LIFECYCLE, memberRestarts, requestLifecycle } from './request-lifecycle.js';
 
@@ -628,7 +628,11 @@ const MEMBER_SENDER_KINDS = new Set(['agent', 'tool', 'peer']);
 function memberInitiatedRoot(envelope) {
   return MEMBER_SENDER_KINDS.has(envelope?.sender?.kind)
     && Boolean(envelope.sender.id)
-    && !envelope.parent_id;
+    && !envelope.parent_id
+    // A member working the machinery or calling a tool on its own is process,
+    // not something it said: a request seeds only when it addresses someone.
+    && !isOperationCall(envelope)
+    && (envelope.kind !== 'request' || isConversationCall(envelope));
 }
 
 // Mine is a relation over the canonical ledger, not a sender/audience test on
@@ -780,7 +784,7 @@ function attachSubTasks(items, state) {
     list.push(envelope);
     byRequest.set(envelope.parent_id, list);
   }
-  if (!byRequest.size) return items;
+  if (!byRequest.size && !items.some((entry) => entry?.envelope?.type === TYPES.agentTask)) return items;
   const holders = new Map();
   items.forEach((entry, index) => {
     if (entry?.kind !== 'turn') return;
@@ -796,16 +800,73 @@ function attachSubTasks(items, state) {
     list.push(...byRequest.get(requestID));
     attached.set(index, list);
   }
+  // Steps whose request is not on screen (an old request, or none: a task
+  // started before the agent restarted) still read as one piece of work, not a
+  // row per step or per task: one row per request (per call when there is no
+  // request), carrying every step. The row stays where the work first showed
+  // up: later steps update it in place instead of moving it to the bottom.
+  const orphanSteps = new Map();
+  const orphanAnchor = new Map();
+  const orphanKey = (envelope) => String(envelope.parent_id
+    ? `request:${envelope.parent_id}`
+    : `call:${argsOf(envelope)?.call_id || envelope.id}`);
+  const isOrphanStep = (entry) => entry?.kind === 'standalone' && entry.envelope?.type === TYPES.agentTask
+    && !holders.has(entry.envelope.parent_id);
+  items.forEach((entry, index) => {
+    if (!isOrphanStep(entry)) return;
+    const key = orphanKey(entry.envelope);
+    const list = orphanSteps.get(key) || [];
+    list.push(entry.envelope);
+    orphanSteps.set(key, list);
+    if (!orphanAnchor.has(key)) orphanAnchor.set(key, index);
+  });
+  // Tasks with no request at all (their call was forgotten, e.g. across an
+  // agent restart) cannot be grouped by request; those the same agent started
+  // back to back — nothing else between them — are one burst of work and read
+  // as one row too.
+  const blockOf = new Map();
+  const blocks = new Map();
+  const openBlocks = new Map();
+  items.forEach((entry, index) => {
+    if (!isOrphanStep(entry)) { openBlocks.clear(); return; }
+    const key = orphanKey(entry.envelope);
+    if (orphanAnchor.get(key) !== index) return;
+    const sender = String(entry.envelope.sender?.id || '');
+    const block = key.startsWith('call:') && openBlocks.get(sender) ? openBlocks.get(sender) : key;
+    blockOf.set(key, block);
+    blocks.set(block, [...(blocks.get(block) || []), key]);
+    if (key.startsWith('call:')) openBlocks.set(sender, block);
+  });
   const out = [];
   items.forEach((entry, index) => {
-    if (entry?.kind === 'standalone' && entry.envelope?.type === TYPES.agentTask
-      && holders.has(entry.envelope.parent_id)) return;
+    if (entry?.kind === 'standalone' && entry.envelope?.type === TYPES.agentTask) {
+      if (holders.has(entry.envelope.parent_id)) return;
+      const key = orphanKey(entry.envelope);
+      if (orphanAnchor.get(key) !== index || blockOf.get(key) !== key) return;
+      const steps = blocks.get(key).flatMap((member) => orphanSteps.get(member));
+      out.push({ ...entry, subTasks: steps, subTaskRevision: subTaskRevision(steps) });
+      return;
+    }
     const steps = attached.get(index);
     if (!steps) { out.push(entry); return; }
     steps.sort((left, right) => (Number(left.ts) || 0) - (Number(right.ts) || 0));
-    out.push({ ...entry, subTasks: steps, subTaskRevision: steps.length });
+    out.push({ ...entry, subTasks: steps, subTaskRevision: subTaskRevision(steps) });
   });
   return out;
+}
+
+// When a row holding background work must be drawn again. A task starting,
+// ending or its sub agent speaking redraws at once; running progress only
+// every 15s — dozens of busy sub agents otherwise redraw the row on every
+// tool they use.
+function subTaskRevision(steps) {
+  let settled = 0;
+  let progressAt = 0;
+  for (const envelope of steps) {
+    if (argsOf(envelope)?.phase === 'progress') progressAt = Math.max(progressAt, Number(envelope.ts) || 0);
+    else settled += 1;
+  }
+  return `${settled}.${Math.floor(progressAt / 15000)}`;
 }
 
 // Semantic projection is exported from the Presentation owner. It consumes the

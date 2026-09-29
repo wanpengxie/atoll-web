@@ -1,6 +1,16 @@
 /* Collaboration workspace: navigation, ledger, and contextual detail */
 .shell { position: relative; display: grid; grid-template-columns: var(--rail-width, 264px) minmax(420px, 1fr); grid-template-rows: minmax(0, 1fr); width: 100%; height: 100%; min-height: 0; overflow: hidden; background: var(--channel-rail); }
 .shell.has-context { grid-template-columns: var(--rail-width, 264px) minmax(420px, 1fr); }
+/* The channel list put away (tablet, desktop): the conversation takes the full
+   width; the list comes back from the button at the start of the header. */
+.shell.rail-collapsed, .shell.rail-collapsed.has-context { grid-template-columns: 0 minmax(0, 1fr); }
+.shell.rail-collapsed > .channel-rail { border-right: 0; }
+.shell.rail-collapsed .pane-resizer-rail { display: none; }
+.rail-collapse-toggle, .rail-expand-toggle { display: inline-grid; width: 32px; height: 32px; flex: 0 0 auto; place-content: center; padding: 0; border: 0; border-radius: var(--radius-control); background: transparent; color: var(--text-muted); cursor: pointer; }
+.rail-collapse-toggle:hover, .rail-expand-toggle:hover, .rail-collapse-toggle:focus-visible, .rail-expand-toggle:focus-visible { background: var(--surface-muted); color: var(--text); }
+.rail-collapse-toggle { margin-left: 4px; }
+.rail-expand-toggle { margin-left: -8px; }
+
 .context-host { position: absolute; z-index: 50; inset: 0; display: grid; min-width: 0; min-height: 0; grid-template-columns: minmax(0, 1fr) var(--context-width, minmax(320px, 360px)); overflow: hidden; }
 .context-host[data-context-type="artifact"] { grid-template-columns: minmax(0, 1fr) var(--context-width, clamp(520px, 52vw, 760px)); }
 .context-backdrop { grid-column: 1 / -1; grid-row: 1; width: 100%; height: 100%; padding: 0; border: 0; background: var(--scrim-soft); cursor: default; }
@@ -64,14 +74,15 @@
 
 /* Main channel */
 .workspace { position: relative; min-width: 0; min-height: 0; display: grid; height: 100%; grid-template-rows: auto auto auto minmax(0, 1fr) auto; overflow: hidden; background: var(--workspace); }
-.channel-header { grid-row: 1; display: flex; height: 58px; min-height: 58px; align-items: center; justify-content: space-between; overflow: visible; padding: 9px 18px; border-bottom: 1px solid var(--line-subtle); background: var(--workspace); }
-.channel-header .eyebrow { color: var(--text-dim); }
-.channel-identity { min-width: 0; display: flex; align-items: center; gap: 8px; }
+.channel-header { container: channel-header / inline-size; grid-row: 1; display: flex; height: 48px; min-height: 48px; align-items: stretch; gap: 16px; overflow: visible; padding: 0 12px 0 18px; border-bottom: 1px solid var(--line-subtle); background: var(--workspace); }
+.channel-header > * { align-self: center; }
+.channel-header .eyebrow { display: none; }
+.channel-identity { flex: 0 1 auto; min-width: min(9em, 22%); display: flex; align-items: center; gap: 8px; }
 .channel-identity > div { min-width: 0; }
 .mobile-channel-toggle { display: none; width: 36px; height: 36px; flex: 0 0 auto; place-content: center; border: 1px solid var(--line-control-strong); border-radius: 7px; background: var(--surface-soft); color: var(--text); cursor: pointer; font-size: 20px; }
-.channel-header h1 { margin: 0; overflow: hidden; color: var(--text); font: 700 17px/1.1 var(--sans); letter-spacing: -.02em; text-overflow: ellipsis; }
+.channel-header h1 { margin: 0; overflow: hidden; color: var(--text); font: 700 16px/1.1 var(--sans); letter-spacing: -.02em; text-overflow: ellipsis; white-space: nowrap; }
 .seq-label { color: var(--text-dim); font: 10px var(--mono); }
-.channel-header-actions { display: flex; align-items: center; gap: 6px; }
+.channel-header-actions { display: flex; flex: none; align-items: center; gap: 6px; }
 .header-action { min-height: 36px; padding: 5px 9px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 11px; }
 .header-action:hover, .header-action.active { border-color: var(--line-control-strong); background: var(--surface-soft); color: var(--text); }
 .header-action:disabled { opacity: .4; cursor: not-allowed; }
@@ -81,11 +92,34 @@
 .channel-menu-popover button { padding: 8px 9px; border: 0; border-radius: 5px; background: transparent; color: var(--text); text-align: left; cursor: pointer; font-size: 11px; }
 .channel-menu-popover button:hover { background: var(--surface-muted); }
 .mobile-channel-menu-action { display: none; }
-.channel-view-tabs { grid-row: 2; grid-column: 1; display: flex; min-height: 38px; align-items: end; gap: 24px; padding: 0 250px 0 18px; border-bottom: 1px solid var(--line-subtle); background: var(--workspace); }
+.channel-header > .channel-view-tabs { align-self: stretch; }
+.channel-view-tabs { display: flex; flex: none; align-items: stretch; gap: 20px; padding: 0; background: var(--workspace); }
 .channel-view-tabs button { align-self: stretch; padding: 0 2px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 12px; }
 .channel-view-tabs button:hover { color: var(--text); }
 .channel-view-tabs button.active { border-bottom-color: var(--text); color: var(--text); font-weight: 650; }
-.workspace-quick-actions { z-index: 1; grid-row: 2; grid-column: 1; justify-self: end; align-self: center; display: flex; align-items: center; gap: 8px; margin-right: 18px; }
+.workspace-quick-actions { z-index: 1; display: flex; flex: none; align-items: center; gap: 8px; margin-left: auto; }
+/* The timeline's scope and member filter, living in the header bar: one row of
+   pills beside the views, not a strip of its own above the messages. */
+.channel-header-scope { display: flex; min-width: 0; flex: 0 1 auto; align-items: center; overflow-x: auto; scrollbar-width: none; }
+.channel-header-scope::-webkit-scrollbar { display: none; }
+.channel-header-scope:empty { display: none; }
+.channel-header-scope .timeline-scope-bar { position: static; width: auto; min-height: 0; flex: 0 1 auto; margin: 0; padding: 0; pointer-events: auto; }
+.channel-header-scope .timeline-scope { flex-direction: row; flex-wrap: nowrap; align-items: center; gap: 6px; overflow: hidden; transform: none; }
+.channel-header-scope .timeline-actor-filter { flex-direction: row; flex-wrap: nowrap; align-items: center; gap: 4px; overflow: hidden; }
+.channel-header-scope .timeline-scope > button { min-height: 26px; padding: 3px 10px; opacity: 1; box-shadow: none; white-space: nowrap; }
+.channel-header-scope .timeline-actor-filter button { flex: 0 1 auto; min-width: 0; white-space: nowrap; }
+.channel-header-scope .timeline-actor-filter button { box-shadow: none; }
+/* One header bar at any width: when the bar itself is narrow (a narrow window,
+   or a wide channel list), the ledger seq steps aside and the quick actions
+   keep only their icons — their names stay their accessible names and titles. */
+@container channel-header (max-width: 1000px) {
+  .seq-label { display: none; }
+  .workspace-quick-actions { gap: 4px; }
+  .workspace-quick-actions button { gap: 0; padding-right: 8px; padding-left: 8px; font-size: 0; }
+  .workspace-quick-actions button > span { margin: 0; font-size: 14px; }
+  .channel-view-tabs { gap: 12px; }
+  .channel-identity { min-width: min(7em, 20%); }
+}
 .channel-restart-action { display: inline-flex; min-height: 28px; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid var(--line-control-strong); border-radius: 6px; background: var(--surface-soft); color: var(--text-muted); cursor: pointer; font-size: 11px; }
 .channel-restart-action:hover:not(:disabled), .channel-restart-action:focus-visible { border-color: var(--danger-line); background: var(--danger-bg); color: var(--danger); }
 .channel-restart-action:disabled { opacity: .4; cursor: not-allowed; }
@@ -127,6 +161,20 @@
 .dynamic-workspace.files-split-open.terminal-split-open > .dynamic-message-pane { grid-row: 1 / 3; grid-column: 1; }
 .dynamic-workspace.files-split-open.terminal-split-open > .artifacts-view { grid-row: 1; grid-column: 2; }
 .dynamic-workspace.files-split-open.terminal-split-open > .terminal-view { grid-row: 2; grid-column: 2; border-top: 1px solid var(--terminal-line); }
+/* The channel's open preview floats at the right of the workspace, full height,
+   as a panel with a shadow — nothing is dimmed or blocked, and only its ×
+   closes it. Its title bar sits beside the page's top bar at the same height,
+   never under it; the top bar gives the panel its width, so no action of the
+   page is covered. Each channel's rendered preview is a layer; the shown
+   channel's is visible, the others keep content and scroll hidden in place. */
+.dynamic-workspace > .preview-view { display: contents; }
+.preview-layer { position: absolute; z-index: 6; top: 0; right: 0; bottom: 0; width: var(--preview-width, clamp(520px, 52%, 760px)); max-width: 100%; min-height: 0; overflow: hidden; border-left: 1px solid var(--line-structural); background: var(--channel-rail); box-shadow: var(--shadow-context); }
+.preview-layer > * { height: 100%; }
+.preview-layer[data-active="false"] { visibility: hidden; pointer-events: none; }
+.preview-layer .side-panel { border-left: 0; }
+.preview-layer .side-panel-header { height: 48px; min-height: 48px; padding-top: 0; padding-bottom: 0; }
+.shell:not(.compact-shell):not(.mobile-shell) .workspace.preview-open > .channel-header { padding-right: calc(var(--preview-width, clamp(520px, 52%, 760px)) + 8px); }
+.dynamic-workspace > .pane-resizer-artifact { z-index: 7; right: calc(var(--preview-width, clamp(520px, 52%, 760px)) - 4px); left: auto; }
 .workspace-task-view { grid-template-rows: auto minmax(0, 1fr); }
 .workspace-view-header { display: flex; min-height: 64px; align-items: center; justify-content: space-between; gap: 20px; padding: 12px 18px; border-bottom: 1px solid var(--line-subtle); }
 .workspace-view-header h2 { margin: 0; color: var(--text); font: 600 18px/1.2 var(--sans); }

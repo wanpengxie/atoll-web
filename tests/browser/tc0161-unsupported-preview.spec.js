@@ -39,21 +39,26 @@ test('TC-0161 F2-006 长文件名与不支持预览安全降级，窄屏无横�
   const preview = page.getByRole('complementary', { name: '文件详情' });
   await expect(preview).toContainText('此文件暂不支持站内预览');
 
+  // The preview is the channel's pane, not a modal: it fills the content area
+  // beside the channel list (which stays usable) and never overflows.
   const readGeometry = () => page.evaluate(() => {
-    const pane = document.querySelector('.context-pane').getBoundingClientRect();
+    const pane = document.querySelector('.preview-layer[data-active="true"]').getBoundingClientRect();
+    const rail = document.querySelector('.channel-rail')?.getBoundingClientRect();
     return {
       viewportWidth: innerWidth,
       scrollWidth: document.documentElement.scrollWidth,
+      railRight: rail && rail.width > 0 && getComputedStyle(document.querySelector('.channel-rail')).visibility !== 'hidden' ? rail.right : 0,
       paneLeft: pane.left,
       paneRight: pane.right,
-      paneWidth: pane.width,
+      backdrop: document.querySelectorAll('.context-backdrop').length,
     };
   });
   await page.setViewportSize({ width: 800, height: 720 });
-  await expect.poll(async () => (await readGeometry()).paneLeft).toBe(0);
+  await expect.poll(async () => { const g = await readGeometry(); return g.paneLeft === g.railRight; }).toBe(true);
   const tabletGeometry = await readGeometry();
   expect(tabletGeometry.paneRight).toBe(tabletGeometry.viewportWidth);
-  expect(tabletGeometry.paneWidth).toBe(tabletGeometry.viewportWidth);
+  expect(tabletGeometry.backdrop).toBe(0);
+  expect(tabletGeometry.scrollWidth).toBeLessThanOrEqual(tabletGeometry.viewportWidth);
 
   await page.setViewportSize({ width: 320, height: 720 });
   await expect.poll(async () => (await readGeometry()).paneLeft).toBe(0);

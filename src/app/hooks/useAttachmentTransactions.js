@@ -13,6 +13,8 @@ import { newId } from '../../util/id.js';
 const WORLD_FIELD = '_atoll_world_epoch';
 const FILE_READING_HISTORY_LIMIT = 24;
 const FILE_PREVIEW_STACK_LIMIT = 20;
+// How many channels keep their rendered preview on this page at once.
+const PREVIEW_CACHE_LIMIT = 6;
 const FILE_READING_HISTORY_PREFIX = 'atoll.web.file-reading-history.v1.';
 const PREVIEW_LIMITS = Object.freeze({
   text: 512 * 1024,
@@ -27,9 +29,23 @@ const TEXT_EXTENSIONS = new Set([
   'tsx', 'txt', 'xml', 'yaml', 'yml',
 ]);
 
-function previewDescriptor(entry) {
-  const mediaType = String(entry?.mediaType || entry?.media_type || 'application/octet-stream').split(';')[0].trim().toLowerCase();
-  const extension = String(entry?.name || '').split('.').pop()?.toLowerCase() || '';
+// When a file arrives without a real type (a path in a message, a generic
+// application/octet-stream), its extension is the only evidence of what it
+// is: a .png is an image whatever the transport called it.
+const MEDIA_BY_EXTENSION = Object.freeze({
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
+  svg: 'image/svg+xml', bmp: 'image/bmp', ico: 'image/x-icon', avif: 'image/avif',
+  mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime', m4v: 'video/mp4',
+  mp3: 'audio/mpeg', wav: 'audio/wav', m4a: 'audio/mp4', ogg: 'audio/ogg', flac: 'audio/flac', aac: 'audio/aac',
+});
+const GENERIC_MEDIA_TYPES = new Set(['', 'application/octet-stream', 'binary/octet-stream', 'application/unknown']);
+
+export function previewDescriptor(entry) {
+  const declared = String(entry?.mediaType || entry?.media_type || '').split(';')[0].trim().toLowerCase();
+  const extension = String(entry?.name || entry?.resourceId || entry?.resource_id || '').split(/[?#]/)[0].split('.').pop()?.toLowerCase() || '';
+  const mediaType = GENERIC_MEDIA_TYPES.has(declared)
+    ? (MEDIA_BY_EXTENSION[extension] || 'application/octet-stream')
+    : declared;
   if (mediaType.startsWith('image/')) return { kind: 'image', mediaType };
   if (mediaType.startsWith('video/')) return { kind: 'video', mediaType };
   if (mediaType.startsWith('audio/')) return { kind: 'audio', mediaType };
@@ -132,6 +148,37 @@ function readRecentFiles(principalId, worldEpoch) {
 function writeRecentFiles(principalId, worldEpoch, rows) {
   if (!principalId || !worldEpoch) return;
   try { globalThis.localStorage?.setItem(historyStorageKey(principalId, worldEpoch), JSON.stringify(rows)); } catch { /* in-memory state remains usable */ }
+}
+
+// Each channel's open preview (its back history, newest last) is part of the
+// channel's state: it survives switching channels, views, and a reload. Only
+// which files are open is kept, never their content.
+function previewStorageKey(principalId, worldEpoch) {
+  return `atoll.previews.v1.${encodeURIComponent(String(principalId || ''))}.${encodeURIComponent(String(worldEpoch || ''))}`;
+}
+
+function readStoredPreviews(principalId, worldEpoch) {
+  if (!principalId || !worldEpoch) return {};
+  try {
+    const value = JSON.parse(globalThis.localStorage?.getItem(previewStorageKey(principalId, worldEpoch)) || '{}');
+    const out = {};
+    for (const [channelId, stack] of Object.entries(value && typeof value === 'object' ? value : {})) {
+      const rows = (Array.isArray(stack) ? stack : []).map(safeRecentFile).filter(Boolean).slice(-FILE_PREVIEW_STACK_LIMIT);
+      if (rows.length) out[channelId] = rows;
+    }
+    return out;
+  } catch { return {}; }
+}
+
+function writeStoredPreview(principalId, worldEpoch, channelId, stack) {
+  if (!principalId || !worldEpoch || !channelId) return;
+  try {
+    const all = readStoredPreviews(principalId, worldEpoch);
+    const rows = (stack || []).map(safeRecentFile).filter(Boolean).slice(-FILE_PREVIEW_STACK_LIMIT);
+    if (rows.length) all[channelId] = rows;
+    else delete all[channelId];
+    globalThis.localStorage?.setItem(previewStorageKey(principalId, worldEpoch), JSON.stringify(all));
+  } catch { /* in-memory state remains usable */ }
 }
 
 function samePreview(left, right) {
@@ -308,6 +355,10 @@ export function useAttachmentTransactions({
   const deviceRequestRef = useRef({ generation: 0, request: null });
   const directoryRequestRef = useRef({ generation: 0, request: null });
   const previewRequestRef = useRef({ generation: 0, request: null });
+  const previewArtifactRef = useRef(null);
+  const storageRestoredRef = useRef(new Set());
+  const previewCacheRef = useRef(new Map());
+  const [previewCacheVersion, setPreviewCacheVersion] = useState(0);
   const previewObjectURLRef = useRef('');
   const fileSessionsRef = useRef(new Map());
   const activeFileChannelRef = useRef(activeChannelId || '');
@@ -375,17 +426,48 @@ export function useAttachmentTransactions({
     requestRef.current = { generation: current.generation + 1, request: null };
   }, []);
 
+  // Each channel's last loaded preview, kept so coming back to the channel
+  // shows it at once instead of fetching and rendering it again. A blob URL is
+  // released only when neither the live preview nor any kept one uses it.
+  const cachedURL = (url) => Boolean(url) && [...previewCacheRef.current.values()].some((entry) => entry.preview?.url === url);
+  const releaseURL = (url) => {
+    if (url && url !== previewObjectURLRef.current && !cachedURL(url)) URL.revokeObjectURL(url);
+  };
   const publishArtifactPreview = useCallback((preview) => {
     const nextURL = preview?.url || '';
-    if (previewObjectURLRef.current && previewObjectURLRef.current !== nextURL) {
-      URL.revokeObjectURL(previewObjectURLRef.current);
-    }
+    const previous = previewObjectURLRef.current;
     previewObjectURLRef.current = nextURL;
+    if (previous && previous !== nextURL) releaseURL(previous);
     setArtifactPreview(preview || { status: 'idle' });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const keepPreview = useCallback((channelId, artifact, preview) => {
+    if (!channelId) return;
+    const cache = previewCacheRef.current;
+    const previous = cache.get(channelId);
+    cache.delete(channelId);
+    cache.set(channelId, { artifact, preview });
+    if (previous?.preview?.url && previous.preview.url !== preview?.url) releaseURL(previous.preview.url);
+    while (cache.size > PREVIEW_CACHE_LIMIT) {
+      const [oldest, entry] = cache.entries().next().value;
+      cache.delete(oldest);
+      releaseURL(entry.preview?.url);
+    }
+    setPreviewCacheVersion((value) => value + 1);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const dropPreview = useCallback((channelId) => {
+    const entry = previewCacheRef.current.get(channelId);
+    if (!entry) return;
+    previewCacheRef.current.delete(channelId);
+    releaseURL(entry.preview?.url);
+    setPreviewCacheVersion((value) => value + 1);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const selectArtifact = useCallback((entry) => {
     abortRequest(previewRequestRef);
+    if (!entry) dropPreview(activeChannelRef.current);
     setSelectedKey(entry?.key || '');
     setSelectedArtifactState(entry || null);
     if (!entry) setPreviewStack([]);
@@ -664,9 +746,18 @@ export function useAttachmentTransactions({
     }
     if (changingChannel) skipChannelDirectoryEffectRef.current = activeChannelId || '';
     activeFileChannelRef.current = activeChannelId || '';
-    const restored = previousChannelId === activeChannelId
+    let restored = previousChannelId === activeChannelId
       ? { deviceId, directory, selectedKey, selectedArtifact, previewStack, scrollTop: filesScrollTop }
       : fileSessionsRef.current.get(activeChannelId) || null;
+    // The first time a channel is shown on this page, its preview comes from
+    // the device (a reload); after that the in-memory session is the truth.
+    if (activeChannelId && !storageRestoredRef.current.has(activeChannelId)) {
+      storageRestoredRef.current.add(activeChannelId);
+      const stored = readStoredPreviews(principalId, serverWorld)[activeChannelId];
+      if (stored && !restored?.previewStack?.length) {
+        restored = { ...(restored || {}), previewStack: stored, selectedArtifact: stored.at(-1), selectedKey: stored.at(-1).key };
+      }
+    }
     pendingDeviceIdRef.current = changingChannel ? (restored?.deviceId || '') : '';
     abortRequest(deviceRequestRef);
     abortRequest(directoryRequestRef);
@@ -690,13 +781,20 @@ export function useAttachmentTransactions({
     setSelectedArtifactState(restored?.selectedArtifact || null);
     setPreviewStack(restored?.previewStack || []);
     setFilesScrollTop(Number(restored?.scrollTop || 0));
-    publishArtifactPreview({ status: 'idle' });
+    const reopen = restored?.previewStack?.at(-1);
+    const kept = reopen ? previewCacheRef.current.get(activeChannelId) : null;
+    const keptReady = Boolean(kept && samePreview(kept.artifact, reopen) && kept.preview?.status === 'ready');
+    // A preview this page already rendered comes back as it was; only one it
+    // has not loaded (a reload, or one evicted) is fetched again.
+    publishArtifactPreview(keptReady ? kept.preview : { status: 'idle' });
     setFilesError('');
     if (!activeChannelId || wireState !== 'open') {
       skipChannelDirectoryEffectRef.current = '';
       return;
     }
     void refreshDevices(activeChannelId);
+    // The channel's preview comes back with it: load what it had open.
+    if (reopen && !keptReady) void previewArtifactRef.current?.(reopen, activeChannelId, 'back');
   // Switching channels is the ownership boundary. The values intentionally
   // come from the last committed channel render, not from dependencies that
   // would make ordinary directory navigation reset the browser.
@@ -865,6 +963,7 @@ export function useAttachmentTransactions({
         return null;
       }
       publishArtifactPreview(preview);
+      keepPreview(channelId, artifact, preview);
       return preview;
     } catch (error) {
       if (previewRequestRef.current.request === request && !request.controller.signal.aborted) {
@@ -875,6 +974,13 @@ export function useAttachmentTransactions({
       finishRequest(previewRequestRef, request);
     }
   }, [activeChannelRef, beginRequest, finishRequest, publishArtifactPreview, rememberRecentFile, runFileOperation]);
+
+  previewArtifactRef.current = previewArtifact;
+  // Keep this channel's open preview on the device, so a reload finds it.
+  useEffect(() => {
+    if (activeFileChannelRef.current !== activeChannelId) return;
+    writeStoredPreview(principalId, serverWorld, activeChannelId, previewStack);
+  }, [activeChannelId, previewStack, principalId, serverWorld]);
 
   const backArtifactPreview = useCallback(() => {
     const previous = previewStack.at(-2);
@@ -1156,8 +1262,9 @@ export function useAttachmentTransactions({
     setSelectedArtifactState(null);
     setPreviewStack([]);
     fileSessionsRef.current.clear();
+    for (const channelId of [...previewCacheRef.current.keys()]) dropPreview(channelId);
     publishArtifactPreview({ status: 'idle' });
-  }, [abortFileOperations, abortRequest, abortUploads, publishArtifactPreview]);
+  }, [abortFileOperations, abortRequest, abortUploads, dropPreview, publishArtifactPreview]);
 
   useEffect(() => () => {
     abortRequest(deviceRequestRef);
@@ -1168,13 +1275,23 @@ export function useAttachmentTransactions({
     uploadQueuesRef.current.clear();
     if (previewObjectURLRef.current) URL.revokeObjectURL(previewObjectURLRef.current);
     previewObjectURLRef.current = '';
+    for (const entry of previewCacheRef.current.values()) if (entry.preview?.url) URL.revokeObjectURL(entry.preview.url);
+    previewCacheRef.current.clear();
   }, [abortFileOperations, abortRequest, abortUploads]);
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const channelPreviews = useMemo(() => Object.freeze(Object.fromEntries(previewCacheRef.current)), [previewCacheVersion]);
 
   return {
     attach,
     artifactPreview,
     backArtifactPreview,
     canGoBack: previewStack.length > 1,
+    // A preview is open in this channel while it has anything in its history.
+    previewOpen: previewStack.length > 0,
+    // channelId → { artifact, preview } for every channel whose preview this
+    // page has loaded, so each can stay mounted while another is shown.
+    channelPreviews,
     clear,
     composerAttachments,
     createDirectory,

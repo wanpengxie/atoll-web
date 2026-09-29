@@ -21,6 +21,9 @@ test('F6-003 1280/800/600/320 与 200% 等价视口没有页面横向溢出', as
   }
 
   await page.setViewportSize({ width: 320, height: 720 });
+  // At rest a phone's composer is one line; its toolbar — send included —
+  // opens when the reader starts writing. Measure it open.
+  await page.getByLabel('消息').click();
   for (const selector of ['.mobile-channel-toggle', '.header-action', '.channel-view-tabs button', '.send-button']) {
     // 只量"画出来了"的：display:none 的件（窄屏下的 .mock-advance-action）盒子是
     // 0×0，手指点不到它，拿 44 去要求它只会把一条真判据变成假警报。node.hidden

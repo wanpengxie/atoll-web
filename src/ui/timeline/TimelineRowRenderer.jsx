@@ -5,7 +5,7 @@ import { redactSensitive, terminalContentEnvelope, terminalResultState, turnProc
 import { isMobileProfile } from '../../model/device-profile.js';
 import { hasReadableTerminalContent } from '../../model/conversation-visibility.js';
 import { argsOf, hasCanonicalBody } from '../../protocol/envelope.js';
-import { DECISIONS, isSystemWord, TYPES } from '../../protocol/vocab.js';
+import { DECISIONS, isConversationCall, isSystemWord, TYPES } from '../../protocol/vocab.js';
 import { messageTimeLabel } from '../../util/time.js';
 import { MarkdownContent } from '../MarkdownContent.jsx';
 import { FoldableBody } from './FoldableBody.jsx';
@@ -1209,6 +1209,11 @@ function groupSubTasks(steps) {
     }
     tasks.set(key, task);
   }
+  // A sub agent's last words are usually the very report it hands back: say
+  // it once, as the result.
+  for (const task of tasks.values()) {
+    if (task.result && task.messages.at(-1)?.trim() === task.result.trim()) task.messages.pop();
+  }
   return [...tasks.values()];
 }
 
@@ -1233,6 +1238,29 @@ function SubTaskLeaf({ task, names }) {
     {task.messages.length > 0 && <ol className="sub-task-messages">{task.messages.map((text, index) => <li key={index}><MarkdownContent contentKey={`sub-task:${task.key}:message:${index}`} text={text} /></li>)}</ol>}
     {task.result && <div className="sub-task-result"><MarkdownContent contentKey={`sub-task:${task.key}:result`} text={task.result} /></div>}
   </details>;
+}
+
+// Many background tasks read as one line until opened: an agent fanning out
+// to a dozen sub agents must not push the conversation off the screen.
+const SUB_TASK_GROUP_THRESHOLD = 3;
+function SubTaskGroup({ groupKey, tasks, names }) {
+  const [open, setOpen] = useMessageLayoutState(`sub-task-group:${groupKey}`, false);
+  const counts = { started: 0, completed: 0, failed: 0 };
+  for (const task of tasks) counts[task.phase] = (counts[task.phase] || 0) + 1;
+  const agents = tasks.filter((task) => task.kind !== 'shell').length;
+  const label = agents === tasks.length ? '子 Agent' : agents === 0 ? '后台命令' : '后台任务';
+  const owners = [...new Set(tasks.map((task) => task.sender).filter(Boolean))];
+  return <div className="sub-task sub-task-group">
+    <button type="button" className="sub-task-line sub-task-group-toggle" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+      <span className="sub-task-kind">{label} {tasks.length} 个</span>
+      {counts.started > 0 && <span className="sub-task-state state-started">{counts.started} 进行中</span>}
+      {counts.completed > 0 && <span className="sub-task-state state-completed">{counts.completed} 已完成</span>}
+      {counts.failed > 0 && <span className="sub-task-state state-failed">{counts.failed} 失败</span>}
+      {owners.length > 0 && <span className="sub-task-owner">{owners.map((id) => nameOf(id, names)).join('、')}</span>}
+      <span aria-hidden="true">{open ? '⌃' : '⌄'}</span>
+    </button>
+    {open && <ol className="sub-task-group-list">{tasks.map((task) => <li key={task.key}><SubTaskLeaf task={task} names={names} /></li>)}</ol>}
+  </div>;
 }
 
 // The report a provider run was answering, as the leaf under what the agent
@@ -1332,7 +1360,12 @@ function agentTreeItems(root, thread, subTasks) {
     list.push(envelope);
     tasksByRequest.set(envelope.parent_id, list);
   }
-  const members = (thread || []).filter((item) => item?.turn?.request?.sender?.kind && item.turn.request.sender.kind !== 'human');
+  // The tree is the collaboration: a member asking an agent or a person (and,
+  // as leaves, the sub agents it started). Calling a tool or working the
+  // channel's machinery is how an answer was reached — it stays folded in the
+  // calls list, not a node.
+  const members = (thread || []).filter((item) => item?.turn?.request?.sender?.kind
+    && item.turn.request.sender.kind !== 'human' && isConversationCall(item.turn.request));
   const known = new Set(members.map((item) => item.turn.requestId));
   const children = new Map();
   for (const item of members) {
@@ -1350,8 +1383,11 @@ function agentTreeItems(root, thread, subTasks) {
       items.push({ key: item.turn.requestId, depth, turn: item.turn, status: item.turn.status });
       visit(item.turn.requestId, depth + 1, seen);
     }
-    for (const task of groupSubTasks(tasksByRequest.get(requestID) || [])) {
-      items.push({ key: `task:${task.key}`, depth, leaf: true, task, status: task.phase });
+    const tasks = groupSubTasks(tasksByRequest.get(requestID) || []);
+    if (tasks.length > SUB_TASK_GROUP_THRESHOLD) {
+      items.push({ key: `tasks:${requestID}`, depth, leaf: true, group: tasks, status: tasks.some((task) => task.phase === 'started') ? 'started' : 'completed' });
+    } else {
+      for (const task of tasks) items.push({ key: `task:${task.key}`, depth, leaf: true, task, status: task.phase });
     }
   };
   visit(root.requestId, 1, new Set([root.requestId]));
@@ -1360,7 +1396,9 @@ function agentTreeItems(root, thread, subTasks) {
 
 function AgentThreadTree({ items, names }) {
   const [expanded, setExpanded] = useMessageLayoutState('agent-thread-expanded', []);
-  return <ThreadTree items={items} label="Agent 协作消息" render={(item) => (item.leaf
+  return <ThreadTree items={items} label="Agent 协作消息" render={(item) => (item.group
+    ? <SubTaskGroup groupKey={item.key} tasks={item.group} names={names} />
+    : item.leaf
     ? <SubTaskLeaf task={item.task} names={names} />
     : <ThreadMessage turn={item.turn} names={names} expanded={expanded.includes(item.key)} onToggle={() => setExpanded((current) => {
       const next = new Set(current);
@@ -1370,11 +1408,25 @@ function AgentThreadTree({ items, names }) {
     })} />)} />;
 }
 
-function Standalone({ envelope, names, selfId, continuation, fold, onDownload, onPreview, onReply, onCreateTask }) {
+// Background work whose request is not on screen: one row, and one line when
+// there is more than a little of it.
+function OrphanSubTasks({ envelope, steps, names }) {
+  const tasks = groupSubTasks(steps);
+  const items = tasks.length > SUB_TASK_GROUP_THRESHOLD
+    ? [{ key: `orphan:${envelope.parent_id || envelope.id}`, depth: 1, leaf: true, group: tasks }]
+    : tasks.map((task) => ({ key: task.key, depth: 1, leaf: true, task, status: task.phase }));
+  return <ThreadTree items={items} label="后台任务" render={(item) => (item.group
+    ? <SubTaskGroup groupKey={item.key} tasks={item.group} names={names} />
+    : <SubTaskLeaf task={item.task} names={names} />)} />;
+}
+
+function Standalone({ envelope, subTasks, names, selfId, continuation, fold, onDownload, onPreview, onReply, onCreateTask }) {
   const senderName = nameOf(envelope.sender?.id, names);
-  return <ReplyableMessageFrame envelope={envelope} onReply={onReply} onCreateTask={onCreateTask} className={`standalone-row${continuation ? ' continuation' : ''}${envelope.sender?.id === selfId ? ' self' : ''}`} identity={continuation ? <time className="continuation-time" aria-label={`${senderName}，${messageTimeLabel(envelope.ts)}`}>{messageTimeLabel(envelope.ts)}</time> : actorIcon(envelope, names)}>
+  // A background task's steps are a record, not a message one replies to.
+  const task = envelope.type === TYPES.agentTask;
+  return <ReplyableMessageFrame envelope={envelope} onReply={task ? undefined : onReply} onCreateTask={task ? undefined : onCreateTask} className={`standalone-row${continuation ? ' continuation' : ''}${envelope.sender?.id === selfId ? ' self' : ''}`} identity={continuation ? <time className="continuation-time" aria-label={`${senderName}，${messageTimeLabel(envelope.ts)}`}>{messageTimeLabel(envelope.ts)}</time> : actorIcon(envelope, names)}>
     {!continuation && <header><strong>{senderName}</strong>{envelope.sender?.kind === 'agent' && <small className="ai-label">AI</small>}<time>{messageTimeLabel(envelope.ts)}</time></header>}{envelope.type === TYPES.agentTask
-      ? <ThreadTree items={groupSubTasks([envelope]).map((task) => ({ key: task.key, depth: 1, leaf: true, task, status: task.phase }))} label="后台任务" render={(item) => <SubTaskLeaf task={item.task} names={names} />} />
+      ? <OrphanSubTasks envelope={envelope} steps={subTasks?.length ? subTasks : [envelope]} names={names} />
       : <EnvelopeBody envelope={envelope} fold={fold} onDownload={onDownload} onPreview={onPreview} />}
     {envelope.type === TYPES.agentProviderRun && argsOf(envelope)?.task_summary
       && <ThreadTree items={[{ key: 'report', depth: 1, leaf: true, status: 'completed' }]} label="后台任务" render={() => <ProviderRunLeaf envelope={envelope} />} />}
@@ -1428,7 +1480,7 @@ export function useTimelineRowRenderer({ state, names, selfId, access = '', targ
       onPreview={port?.onPreviewResource ? (attachment) => port.onPreviewResource(state.channelId, attachment) : undefined}
       onReply={port?.onReply} onCreateTask={port?.onCreateTask} onOpen={port?.onOpenTurn}
     />;
-    else if (entry?.envelope) content = <Standalone envelope={entry.envelope} names={names} selfId={selfId} continuation={row.continuation} fold={rowFold}
+    else if (entry?.envelope) content = <Standalone envelope={entry.envelope} subTasks={entry.subTasks} names={names} selfId={selfId} continuation={row.continuation} fold={rowFold}
       onDownload={port?.onDownloadResource ? (attachment) => port.onDownloadResource(state.channelId, attachment) : undefined}
       onPreview={port?.onPreviewResource ? (attachment) => port.onPreviewResource(state.channelId, attachment) : undefined}
       onReply={port?.onReply} onCreateTask={port?.onCreateTask}

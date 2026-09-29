@@ -2,6 +2,7 @@
 @media (max-width: 1050px) {
   .shell { grid-template-columns: var(--rail-width, 220px) minmax(0, 1fr); }
   .shell.has-context { grid-template-columns: var(--rail-width, 220px) minmax(0, 1fr); }
+  .shell.rail-collapsed, .shell.rail-collapsed.has-context { grid-template-columns: 0 minmax(0, 1fr); }
   .pane-resizer-rail { left: calc(var(--rail-width, 220px) - 3px); }
   .timeline-inner { padding: 16px; }
 	.timeline-virtual-item { padding-right: 16px; padding-left: 16px; }
@@ -10,9 +11,14 @@
 }
 
 .compact-shell .pane-resizer, .mobile-shell .pane-resizer { display: none; }
+/* Too narrow to float beside anything: the channel's preview covers the
+   content area — the header and channel list stay usable, × brings it back. */
+.compact-shell .preview-layer, .mobile-shell .preview-layer { width: 100%; border-left: 0; box-shadow: none; }
 .shell.compact-shell, .shell.mobile-shell { position: relative; grid-template-columns: 210px minmax(0, 1fr); }
 .shell.compact-shell.has-context, .shell.mobile-shell.has-context { grid-template-columns: 210px minmax(0, 1fr); }
+.shell.compact-shell.rail-collapsed, .shell.compact-shell.rail-collapsed.has-context { grid-template-columns: 0 minmax(0, 1fr); }
 .compact-shell .conversation-surface { --conversation-composer-base-height: 120px; }
+
 .compact-shell .context-host, .mobile-shell .context-host { grid-template-columns: 210px minmax(0, 1fr); }
   /* 文件不是辅助信息抽屉。窄屏继续给左栏留 210px 会让预览在移动端横屏只剩
      四百多像素；文件打开后直接使用完整视口，关闭后再回到原工作区。 */
@@ -87,6 +93,10 @@
   width: var(--visual-viewport-width);
   height: calc(var(--visual-viewport-height) - 5px);
 }
+/* A phone gives the header every pixel it can: no brand stripe above it. */
+#root:has(.shell.mobile-shell) { padding-top: 0; }
+#root:has(.shell.mobile-shell)::before { display: none; }
+.shell.mobile-shell[data-visual-viewport-owned="true"] { top: var(--visual-viewport-offset-top); height: var(--visual-viewport-height); }
   /* 文件在桌面是对话旁的工作面，在窄屏是互斥 Surface；主 tab 只保留
      动态/任务，与频道入口、成员和更多菜单共用单行 44px header。 */
   .mobile-shell .workspace { grid-template-columns: minmax(0, 1fr) auto auto; grid-template-rows: 44px auto minmax(0, 1fr); }
@@ -125,7 +135,11 @@
   .mobile-shell .reading-history-edge-tab { display: none; }
   .mobile-shell .channel-view-tabs { grid-row: 1; grid-column: 2; min-height: 44px; align-items: center; gap: 0; padding: 0; border-bottom: 1px solid var(--line-subtle); }
   .mobile-shell .channel-view-tabs button { min-width: 44px; min-height: 44px; height: 44px; align-self: auto; border-bottom: 0; border-radius: 5px; font-size: 10px; }
-  .mobile-shell .channel-view-tabs button.active { border-bottom-color: transparent; background: var(--surface-selected); }
+  /* The bar reads light, as an app's does: the current view is marked by
+     weight and a short underline, not a filled block the bar's full height. */
+  .mobile-shell .channel-view-tabs button { color: var(--text-muted); }
+  .mobile-shell .channel-view-tabs button.active { border-bottom-color: transparent; background: transparent; color: var(--text); font-weight: 700; box-shadow: inset 0 -2px 0 var(--text); border-radius: 0; }
+  .mobile-shell .mobile-channel-toggle { border: 0; background: transparent; }
   .mobile-shell .workspace-quick-actions { display: none; }
   .mobile-shell .status-stack { grid-row: 2; grid-column: 1 / -1; }
   .mobile-shell .dynamic-workspace { grid-row: 3; grid-column: 1 / -1; }
@@ -138,7 +152,14 @@
   .mobile-shell .workspace > .conversation-surface,
   .mobile-shell .workspace > .workspace-view,
   .mobile-shell .workspace > .channel-private-empty { grid-row: 3; grid-column: 1 / -1; }
-  .mobile-shell .conversation-surface { --conversation-composer-base-height: 120px; }
+  /* Like a chat app, the composer rests as one line — the recipient tab above
+     an input — and opens its toolbar when the reader starts writing. The
+     reading area reserves the resting height; the open composer overlays the
+     bottom of the reading area only while the keyboard is up anyway. */
+  .mobile-shell .conversation-surface { --conversation-composer-base-height: 50px; --conversation-reading-gap: 24px; }
+  .mobile-shell .composer-box { min-height: 40px; }
+  .mobile-shell .composer-state-rail:empty { display: none; }
+  .mobile-shell .composer-wrap.is-empty:not(:focus-within) .composer-toolbar { display: none; }
   .mobile-shell .send-button, .mobile-shell .task-create-modal > header button, .mobile-shell .task-create-modal footer button,
   .mobile-shell .global-search > header button, .mobile-shell .tasks-header-actions button, .mobile-shell .artifact-upload { min-height: 44px; }
   .mobile-shell .composer-tools > button,
@@ -178,6 +199,14 @@
   .mobile-shell .timeline-scope-bar { top: 4px; min-height: 29px; flex-basis: 29px; margin-bottom: 0; }
   .mobile-shell .timeline-scope > button { min-height: 26px; padding: 2px 9px; font-size: 10px; }
   .mobile-shell .timeline-actor-filter button { min-height: 20px; max-width: 7em; padding: 1px 7px; font-size: 9px; }
+  /* As in a phone app, the scope and member pills float over the top-right of
+     the timeline: no strip of their own, the messages run to the header. */
+  .mobile-shell .timeline-virtualized > .timeline-controls-overlay:not(.timeline-empty-feedback-overlay) { position: absolute; z-index: 5; top: 6px; right: 8px; width: auto; min-height: 0; pointer-events: none; }
+  .mobile-shell .timeline-virtualized > .timeline-controls-overlay .timeline-scope-bar { width: auto; min-height: 0; margin: 0; padding: 0; }
+  .mobile-shell .timeline-virtualized > .timeline-controls-overlay .timeline-scope > button,
+  .mobile-shell .timeline-virtualized > .timeline-controls-overlay .timeline-actor-filter button { box-shadow: 0 2px 10px var(--shadow-2), 0 1px 2px var(--shadow); }
+  /* Floating over messages, an idle pill needs a solid face; a selected one keeps its own. */
+  .mobile-shell .timeline-virtualized > .timeline-controls-overlay .timeline-actor-filter button:not(.is-on) { background: var(--raised); }
   .mobile-shell .send-button { min-width: 58px; padding: 8px 12px; }
   .mobile-shell .send-button span, .mobile-shell .composer-help span:first-child { display: none; }
   .mobile-shell .workspace-view-header { display: block; min-height: auto; padding: 12px; }

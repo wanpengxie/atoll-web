@@ -139,3 +139,25 @@ export const SYSTEM_DECL_IDS = Object.freeze(['registrar', 'svcactor']);
 export const isNarrationEnvelope = (envelope) => envelope?.visibility === 'system';
 
 export const isSystemWord = (type = '') => type.startsWith('system.');
+
+// An operation is a member working the channel's machinery — asking the system
+// door (log, members, timers), describing an actor — not talking to anyone.
+// It is part of how a turn got its answer, never a message of its own.
+export const isOperationCall = (envelope) => {
+  const type = String(envelope?.type || '');
+  const audience = Array.isArray(envelope?.audience) ? envelope.audience : [];
+  return isSystemWord(type) || type === TYPES.describe
+    || (audience.length > 0 && audience.every((id) => id === SYSTEM_ACTOR_ID));
+};
+
+// A conversation call is one member addressing another who answers in words:
+// an agent or a person (and an agent in another channel, reached through its
+// peer door with an ask). Calling a tool or working the machinery is process.
+export const isConversationCall = (envelope) => {
+  if (isOperationCall(envelope)) return false;
+  const audience = Array.isArray(envelope?.audience) ? envelope.audience : [];
+  return audience.some((id) => {
+    const kind = String(id || '').split(':')[0];
+    return kind === 'agent' || kind === 'human' || (kind === 'peer' && envelope?.type === TYPES.agentAsk);
+  });
+};

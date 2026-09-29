@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createChannelReplicaStore } from '../src/model/channel-replica.js';
 import { CONVERSATION_SCOPE, selectTimelineItems } from '../src/model/conversation-presentation.js';
+import { argsOf } from '../src/protocol/envelope.js';
 
 const CHANNEL = 'c0';
 const SELF = 'human:root:1';
@@ -48,17 +49,23 @@ describe('mine scope: work members start on their own is part of the conversatio
     ])).toEqual(['run-1']);
   });
 
-  it('shows an agent scheduling itself through the system door, with its answer', () => {
+  it('leaves an agent working the machinery or calling a tool on its own out: that is process', () => {
     expect(mine([
       row(1, {
-        id: 'timer-set', kind: 'request', type: 'system.timer.set', sender: CODEX, audience: ['system'],
-        body: { after: '10m' },
+        id: 'log-read', kind: 'request', type: 'system.log.recent', sender: CODEX, audience: ['system'],
+        body: { limit: 20 },
       }),
       row(2, {
-        id: 'timer-set-done', kind: 'response', type: 'system.timer.set', sender: 'system:c0:1',
-        audience: [CODEX], parentId: 'timer-set', body: { status: 'completed' },
+        id: 'log-read-done', kind: 'response', type: 'system.log.recent', sender: 'system:c0:1',
+        audience: [CODEX], parentId: 'log-read', body: { status: 'completed' },
       }),
-    ])).toEqual(['timer-set']);
+      row(3, {
+        id: 'describe', kind: 'request', type: 'actor.describe', sender: CLAUDE, audience: [CODEX], body: {},
+      }),
+      row(4, {
+        id: 'tool-call', kind: 'request', type: 'xhs.publish', sender: CLAUDE, audience: ['tool:xhs:1'], body: { text: 'post' },
+      }),
+    ])).toEqual([]);
   });
 
   it('shows one agent asking another on its own, progress and answer included', () => {
@@ -141,6 +148,59 @@ describe('sub tasks: background work sits in the card of the request that set it
     const result = items([ask, done, nested, step(4, 'c1', 'nested', 'started')]);
     expect(result).toHaveLength(1);
     expect(result[0].subTasks.map((envelope) => envelope.id)).toEqual(['c1']);
+  });
+
+  it('shows the steps of a task with no request on screen as one row that stays put', () => {
+    const orphan = (seq, id, phase) => row(seq, {
+      id, type: 'agent.task', sender: CLAUDE, body: { call_id: 'toolu_lost', phase, kind: 'agent', text: phase },
+    });
+    const result = items([orphan(1, 'o1', 'progress'), ask, orphan(3, 'o2', 'progress'), orphan(4, 'o3', 'completed')]);
+    const rows = result.filter((entry) => entry.kind === 'standalone');
+    expect(rows).toHaveLength(1);
+    // Anchored at the first step: later steps update it, never move it down.
+    expect(rows[0].envelope.id).toBe('o1');
+    expect(rows[0].subTasks.map((envelope) => envelope.id)).toEqual(['o1', 'o2', 'o3']);
+  });
+
+  it('folds every task of one off-screen request into a single row', () => {
+    const task = (seq, id, call, phase) => row(seq, {
+      id, type: 'agent.task', sender: CODEX, parentId: 'old-request', correlationId: 'ask',
+      body: { call_id: call, phase, kind: 'agent', title: call },
+    });
+    // The request that started them is part of the reader's conversation but
+    // no longer loaded on the page.
+    const result = items([ask, task(11, 'a1', 'luna_00', 'started'), task(12, 'b1', 'luna_01', 'started'),
+      task(13, 'a2', 'luna_00', 'completed'), task(14, 'c1', 'luna_02', 'started'), task(15, 'b2', 'luna_01', 'failed')]);
+    const rows = result.filter((entry) => entry.kind === 'standalone');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].subTasks).toHaveLength(5);
+  });
+
+  it('folds requestless tasks one agent started back to back into a single row', () => {
+    const lost = (seq, call, sender = CLAUDE) => row(seq, {
+      id: `lost-${seq}`, type: 'agent.task', sender, body: { call_id: call, phase: 'completed', kind: 'agent', title: call },
+    });
+    const between = row(5, { id: 'note', kind: 'request', type: 'agent.ask', sender: SELF, audience: [CLAUDE], body: { text: 'next' } });
+    const answered = row(7, { id: 'note-done', kind: 'response', type: 'agent.ask', sender: CLAUDE, audience: [SELF], parentId: 'note', body: { status: 'completed', text: 'ok' } });
+    const result = items([lost(1, 'b00'), lost(2, 'b01'), lost(3, 'b02'), lost(4, 'x', CODEX), between, lost(6, 'b08'), answered]);
+    const rows = result.filter((entry) => entry.kind === 'standalone');
+    // claude's b00–b02 are one burst; codex's task is its own; b08 comes after
+    // a message and starts a new row.
+    expect(rows.map((entry) => entry.subTasks.map((envelope) => argsOf(envelope).call_id))).toEqual([['b00', 'b01', 'b02'], ['x'], ['b08']]);
+  });
+
+  it('redraws a row for progress at most every 15 seconds, at once for anything else', () => {
+    const step = (seq, id, phase, ts) => {
+      const value = row(seq, { id, type: 'agent.task', sender: CLAUDE, parentId: 'ask', correlationId: 'ask', body: { call_id: 't', phase } });
+      value.envelope.ts = ts;
+      return value;
+    };
+    const revision = (rows) => items([ask, done, ...rows])[0].subTaskRevision;
+    const base = [step(3, 's', 'started', 1_000)];
+    const first = revision([...base, step(4, 'p1', 'progress', 2_000)]);
+    expect(revision([...base, step(4, 'p1', 'progress', 2_000), step(5, 'p2', 'progress', 9_000)])).toBe(first);
+    expect(revision([...base, step(4, 'p1', 'progress', 2_000), step(5, 'p2', 'progress', 16_000)])).not.toBe(first);
+    expect(revision([...base, step(4, 'p1', 'progress', 2_000), step(5, 'm', 'message', 3_000)])).not.toBe(first);
   });
 
   it('keeps a step whose request is not on screen as its own row', () => {

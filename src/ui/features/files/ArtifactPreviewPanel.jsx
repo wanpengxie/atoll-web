@@ -115,9 +115,11 @@ export function ArtifactPreviewPanel({ channel, port = {}, onClose }) {
   const previewCommand = port.commands?.preview;
   const format = textPreviewFormat(artifact || {});
   const targetLine = Number.isSafeInteger(Number(artifact?.line)) && Number(artifact.line) > 0 ? Number(artifact.line) : 0;
-  const [textMode, setTextMode] = useState(format.rich && !targetLine ? 'preview' : 'source');
+  // A document opens as the reader will read it — rendered — even when the link
+  // names a line; 源码 is one tap away and still lands on that line.
+  const [textMode, setTextMode] = useState(format.rich ? 'preview' : 'source');
   useEffect(() => {
-    setTextMode(format.rich && !targetLine ? 'preview' : 'source');
+    setTextMode(format.rich ? 'preview' : 'source');
   }, [artifact?.resourceId, artifact?.resource_id, format.rich, targetLine]);
   const copyable = preview.status === 'ready' && typeof preview.text === 'string' ? preview.text : null;
   const canGoBack = port.canGoBack === true || preview.canGoBack === true;

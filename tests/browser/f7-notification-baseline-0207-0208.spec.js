@@ -9,6 +9,9 @@ async function login(page) {
 }
 
 async function chooseSteward(page) {
+  // A phone's resting composer is one line; its toolbar (with the Agent
+  // choice) opens once the reader starts writing.
+  await page.getByLabel('消息').click();
   const choose = page.getByRole('button', { name: '选择 Agent' });
   await expect(choose).toBeVisible();
   await choose.click();
