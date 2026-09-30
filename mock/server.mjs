@@ -18,7 +18,7 @@ import {
   SESSION_COOKIE,
   validatePayload,
 } from './protocol.mjs';
-import { createMockDomain, defaultLayers, envelope as domainEnvelope, item as domainItem, measure as domainMeasure, observation as domainObservation, rosterItem as domainRosterItem, rowLayer, setRosterLayers } from './domain.mjs';
+import { createMockDomain, envelope as domainEnvelope, item as domainItem, measure as domainMeasure, observation as domainObservation, rosterItem as domainRosterItem, rowBuilt } from './domain.mjs';
 import { loadScenario, scenarioIds } from './scenarios.mjs';
 
 const ROOT_ID = 'root';
@@ -147,7 +147,7 @@ function rosterItem({ id, kind, body = '', name = id, description = '', bound = 
     measures.push(measure('device_online', online));
   }
   measures.sort((left, right) => left.name.localeCompare(right.name));
-  return setRosterLayers(item(declared, measures), defaultLayers(kind), now());
+  return item(declared, measures);
 }
 
 // ui.form 演示表单：一个密钥字段（写进 global/deepseek_prod）、一个枚举、一个可选文本。
@@ -1028,6 +1028,13 @@ export function createMockServer({
       payload: { status: 'completed', ...fields },
     })));
 
+    // 没建好的成员没有投递端点：请求留在账本里，不回复（与真后端一样，
+    // actor.describe 也不例外），由请求自己的过期收尾。
+    const targetRow = target ? (rosters.get(channelId) || []).find((entry) => entry.declared.id === target.id) : null;
+    if (kind === 'request' && target && target.id !== SYSTEM_ACTOR_ID && targetRow && targetRow.declared.kind !== 'human' && !rowBuilt(targetRow)) {
+      return;
+    }
+
     if (payload.msg_type === 'actor.describe' && target) {
       const describe = target.kind === 'agent'
         ? mockDescribe(target.id, { taskCapability: domain.behavior.task_capability })
@@ -1041,13 +1048,6 @@ export function createMockServer({
       return;
     }
 
-    // 业务层没就绪前，除 actor.describe 外什么都不投递给它（与真后端 actorhost 同）。
-    const targetRow = target ? (rosters.get(channelId) || []).find((entry) => entry.declared.id === target.id) : null;
-    const targetBusiness = targetRow ? rowLayer(targetRow, 'business') : undefined;
-    if (kind === 'request' && target && target.id !== SYSTEM_ACTOR_ID && targetBusiness && targetBusiness.state !== 'ready') {
-      fail('not_ready', `business layer is ${targetBusiness.state}${targetBusiness.reason ? `: ${targetBusiness.reason}` : ''}`);
-      return;
-    }
 
     // 频道面与空间面都只有一个收件人：本频道的 system actor。
     if (target?.id === SYSTEM_ACTOR_ID && String(payload.msg_type).startsWith('system.')) {
@@ -1083,18 +1083,15 @@ export function createMockServer({
           // ---- 频道面（system actor 自己答）----
           case 'system.member.list': {
             assertClosedPayload(body, []);
-            // present = 能服务 = 业务层就绪；两层各带没就绪的原因；body 说它从什么造。
+            // present = 建好了；body 说它从什么造。
             const actors = (rosters.get(channelId) || [])
               .filter((entry) => entry.declared.id !== SYSTEM_ACTOR_ID)
               .map((entry) => {
                 const row = entry.declared;
-                const standard = rowLayer(entry, 'standard');
-                const business = rowLayer(entry, 'business');
                 return {
                   id: row.id, kind: row.kind, ...(row.name ? { name: row.name } : {}),
                   body: domain.memberSummary(channelId, row),
-                  present: business ? business.state === 'ready' : true,
-                  ...(standard ? { standard } : {}), ...(business ? { business } : {}),
+                  present: row.kind === 'human' ? true : rowBuilt(entry),
                 };
               });
             completeFlat({ actors });

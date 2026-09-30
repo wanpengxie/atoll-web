@@ -15,8 +15,6 @@ import {
   insertGlobalReference,
   MEMBER_SOURCE_LABELS,
   memberBodyLabel,
-  memberLayerFromMeasure,
-  memberLayerIssue,
   memberSourceRows,
   mergePatch,
   missingGlobalReferences,
@@ -118,22 +116,6 @@ describe('JSON Schema form model', () => {
 });
 
 describe('member layers and config patch', () => {
-  it('reads OBS measures and member.get layers into one shape, unknown staying absent', () => {
-    expect(memberLayerFromMeasure({ name: 'business', value: 'stuck', unknown: false, reason: 'missing global resource global/k', since: 55 }))
-      .toEqual({ state: 'stuck', reason: 'missing global resource global/k', since: 55 });
-    expect(memberLayerFromMeasure({ name: 'business', value: null, unknown: true, reason: 'no_testimony' })).toBeUndefined();
-  });
-
-  it('names the layer and reason of a member that cannot serve, standard first', () => {
-    expect(memberLayerIssue({ standard: { state: 'ready' }, business: { state: 'ready' } })).toBeNull();
-    expect(memberLayerIssue({})).toBeNull();
-    expect(memberLayerIssue({ standard: { state: 'ready' }, business: { state: 'stuck', reason: 'missing global resource global/deepseek_prod' } }))
-      .toMatchObject({ layer: 'business', label: '卡住', text: '业务层卡住：missing global resource global/deepseek_prod' });
-    expect(memberLayerIssue({ standard: { state: 'unreachable', reason: 'stream closed' }, business: { state: 'initializing' } }))
-      .toMatchObject({ layer: 'standard', label: '不可达', text: '标准层不可达：stream closed' });
-    expect(memberLayerIssue({ business: { state: 'retrying' } }).text).toBe('业务层重试中');
-  });
-
   it('computes an RFC 7396 merge patch: nested objects recurse, removed keys become null, untouched keys stay out', () => {
     const before = { model: 'a', api_key: '$global.k', nested: { x: 1, y: [1, 2] }, redacted: '已隐藏' };
     const after = { model: 'b', nested: { y: [1, 2], x: 1 }, redacted: '已隐藏', temperature: 0.2 };

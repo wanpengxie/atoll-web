@@ -5,7 +5,7 @@ import { createMockServer } from '../mock/server.mjs';
 import { createIdentityClient } from '../src/net/identity.js';
 import { createWire } from '../src/net/wire.js';
 
-// actor-config 场景的 mock 契约：两层状态、member.get/set/config.set、构建记录、global/ 资源面、ui.form
+// actor-config 场景的 mock 契约：建好了没有（对外只有这一个状态）、member.get/set/config.set、构建记录、global/ 资源面、ui.form
 // 的 resolve（result / error）。前端的真 wire 直接连 mock，走的就是浏览器那条路。
 
 const servers = new Set();
@@ -46,17 +46,18 @@ async function projectRoster(h) {
 afterEach(async () => Promise.all([...servers].map(close)));
 
 describe('actor-config mock', () => {
-  it('reports both layers on the roster and on member.list/get, and answers member.get from the description', async () => {
+  it('reports only built or not on the roster and on member.list/get, and answers member.get from the description', async () => {
     const h = await harness();
     const rows = await projectRoster(h);
     const row = (name) => rows.find((entry) => entry.declared.kind !== 'human' && memberName(entry.declared.id) === name);
+    const bound = (entry) => entry.actual.measures.find((measure) => measure.name === 'bound').value;
     expect(row('deepseek').declared).toMatchObject({ kind: 'agent', body: 'actor deepseek@1' });
-    expect(row('deepseek').actual.measures).toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: 'standard', value: 'ready', unknown: false }),
-      expect.objectContaining({ name: 'business', value: 'stuck', reason: 'missing global resource global/deepseek_prod' }),
-    ]));
-    expect(row('search-tool').actual.measures).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'business', value: 'retrying' })]));
-    expect(row('project-agent').actual.measures).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'business', value: 'ready' })]));
+    // 起不来的成员对外只是"没建好"：没有两层、没有卡住或重试中。
+    expect(bound(row('deepseek'))).toBe(false);
+    expect(bound(row('search-tool'))).toBe(false);
+    expect(bound(row('project-agent'))).toBe(true);
+    for (const entry of rows) expect(entry.actual.measures.map((measure) => measure.name)).not.toEqual(expect.arrayContaining(['standard']));
+    for (const entry of rows) expect(entry.actual.measures.map((measure) => measure.name)).not.toEqual(expect.arrayContaining(['business']));
     // writer 还有占位没填：构建失败，不在名册上。
     expect(row('writer')).toBeUndefined();
     // 运行时生成的成员 body 是 generated。
@@ -64,8 +65,10 @@ describe('actor-config mock', () => {
 
     const list = await project(h, 'system.member.list', {});
     const deepseek = list.actors.find((entry) => memberName(entry.id) === 'deepseek');
-    expect(deepseek).toMatchObject({ present: false, body: 'actor deepseek@1', standard: { state: 'ready' }, business: { state: 'stuck', reason: 'missing global resource global/deepseek_prod' } });
-    expect(list.actors.find((entry) => memberName(entry.id) === 'project-agent')).toMatchObject({ present: true, body: 'class codex', business: { state: 'ready' } });
+    expect(deepseek).toMatchObject({ present: false, body: 'actor deepseek@1' });
+    expect(deepseek).not.toHaveProperty('standard');
+    expect(deepseek).not.toHaveProperty('business');
+    expect(list.actors.find((entry) => memberName(entry.id) === 'project-agent')).toMatchObject({ present: true, body: 'class codex' });
     expect(list.actors.find((entry) => entry.id === 'svcactor')).toMatchObject({ body: 'generated' });
 
     const get = await project(h, 'system.member.get', { member: 'search-tool' });
@@ -77,9 +80,11 @@ describe('actor-config mock', () => {
       own_config: { values: {}, revision: 0 },
       effective: { endpoint: 'http://127.0.0.1:9000/mcp' },
       sources: { endpoint: 'member' },
-      business: { state: 'retrying' },
-      build: { object: { kind: 'member', channel: PROJECT, name: 'search-tool' }, result: 'failed', state: 'retrying' },
+      build: { object: { kind: 'member', channel: PROJECT, name: 'search-tool' } },
     });
+    // 起不来的这次构建只有开始回执，没有结束（不补回执）。
+    expect(get.build).not.toHaveProperty('result');
+    expect(get).not.toHaveProperty('business');
     expect(memberName(get.actor_id)).toBe('search-tool');
 
     // 描述里有、没在跑的成员也答：还缺的占位和停下的构建。
@@ -89,7 +94,7 @@ describe('actor-config mock', () => {
       class: 'claude', body: { actor: 'writer@1' }, params: { temperature: 0.3 },
       missing: [{ key: 'service.api_key', hint: '写作服务的 API key' }],
       sources: { model: 'actor', 'service.api_key': 'actor', 'service.region': 'actor', temperature: 'member', effort: 'default' },
-      build: { result: 'failed', state: 'stopped', attempt: 4 },
+      build: { result: 'failed', state: 'stopped' },
     });
     expect(writer.build.reason).toContain('service.api_key is a placeholder still unfilled');
 
@@ -124,7 +129,7 @@ describe('actor-config mock', () => {
     // params 是合并补丁：null 删键，其余的键留着。
     const cleared = await project(h, 'system.member.set', { member: 'search-tool', params: { extra: null } });
     expect(cleared.value.entry.params).toEqual({ endpoint: 'http://127.0.0.1:9100/mcp' });
-    expect(await project(h, 'system.member.get', { member: 'search-tool' })).toMatchObject({ present: true, business: { state: 'ready' }, build: { result: 'ok', state: 'ready' } });
+    expect(await project(h, 'system.member.get', { member: 'search-tool' })).toMatchObject({ present: true, build: { result: 'ok', state: 'ready' } });
 
     // body 换成另一个 class：成员按新 body 重建。
     await project(h, 'system.member.set', { member: 'search-tool', body: { class: 'mcp-tool' } });
@@ -173,7 +178,7 @@ describe('actor-config mock', () => {
     // 运行设备指到一台没挂到本频道的设备：构建失败并说清为什么。
     await project(h, 'system.member.config.set', { member: 'writer', desired_host: 'device-x' });
     const moved = await project(h, 'system.member.get', { member: 'writer' });
-    expect(moved.build).toMatchObject({ result: 'failed', state: 'retrying' });
+    expect(moved.build).toMatchObject({ result: 'failed', state: 'stopped' });
     expect(moved.build.reason).toContain('desired_host device-x');
 
     // 不在频道描述里的名字没有自己的配置。
@@ -202,7 +207,7 @@ describe('actor-config mock', () => {
     // 补上 key 再重启，卡住的成员起来。
     const deepseekId = (await projectRoster(h)).find((entry) => memberName(entry.declared.id) === 'deepseek').declared.id;
     await project(h, 'system.member.restart', { member: deepseekId });
-    expect(await project(h, 'system.member.get', { member: 'deepseek' })).toMatchObject({ present: true, business: { state: 'ready' } });
+    expect(await project(h, 'system.member.get', { member: 'deepseek' })).toMatchObject({ present: true });
     await resource('c0', { op: 'delete', resource_id: 'global/deepseek_prod' });
     expect(await resource('c0', { op: 'stat', resource_id: 'global/deepseek_prod' })).toMatchObject({ exists: false });
     h.wire.close();
@@ -232,13 +237,15 @@ describe('actor-config mock', () => {
     h.wire.close();
   });
 
-  it('refuses to deliver work to a member whose business layer is not ready', async () => {
+  // 没建好的成员没有投递端点：请求留在账本里、不回复（actor.describe 也一样），
+  // 由请求自己的过期收尾——和基线一样，没有 not_ready。
+  it('delivers nothing to a member that is not built, and answers nothing', async () => {
     const h = await harness();
     const deepseekId = (await projectRoster(h)).find((entry) => memberName(entry.declared.id) === 'deepseek').declared.id;
-    const receipt = await h.wire.submit({ channel_id: PROJECT, msg_type: 'agent.ask', kind: 'request', payload: { text: 'hi' }, audience: [deepseekId] });
-    const terminal = await waitFor(() => h.envelopes.find((row) => row.parent_id === receipt.message_id && row.payload?.body?.status === 'failed'));
-    expect(terminal.payload.body).toMatchObject({ error_code: 'not_ready' });
-    expect(terminal.payload.body.detail).toContain('missing global resource global/deepseek_prod');
+    const asked = await h.wire.submit({ channel_id: PROJECT, msg_type: 'agent.ask', kind: 'request', payload: { text: 'hi' }, audience: [deepseekId] });
+    const described = await h.wire.submit({ channel_id: PROJECT, msg_type: 'actor.describe', kind: 'request', payload: {}, audience: [deepseekId] });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    for (const receipt of [asked, described]) expect(h.envelopes.some((row) => row.parent_id === receipt.message_id)).toBe(false);
     h.wire.close();
   });
 });

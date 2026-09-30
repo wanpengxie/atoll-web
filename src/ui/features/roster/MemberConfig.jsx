@@ -4,9 +4,7 @@ import {
   hasRedactedValue,
   insertGlobalReference,
   isEditableMemberKind,
-  MEMBER_LAYER_NAMES,
   memberBodyLabel,
-  memberLayerLabel,
   memberSourceRows,
   mergePatch,
   missingGlobalReferences,
@@ -21,34 +19,6 @@ import { BuildLine } from '../governance/BuildLine.jsx';
 function errorText(error) {
   const detail = error?.detail || error?.message || String(error);
   return error?.code && !String(detail).includes(error.code) ? `${error.code}：${detail}` : detail;
-}
-
-function sinceLabel(since) {
-  const date = new Date(Number(since));
-  if (!Number.isFinite(date.getTime()) || Number(since) <= 0) return '';
-  return new Intl.DateTimeFormat('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(date);
-}
-
-// 成员的两层。标准层（能力、连接）先就绪，业务层（class 构造 + Proc）在它之上
-// 初始化；没就绪的那层给出原因和进入这个状态的时间。
-export function MemberLayers({ member }) {
-  const layers = ['standard', 'business'].filter((layer) => member?.[layer]?.state);
-  if (!layers.length) return <p className="governance-empty">名册还没有这个成员的两层状态。</p>;
-  return <dl className="member-layers" aria-label="成员两层状态">
-    {layers.map((layer) => {
-      const value = member[layer];
-      const ready = value.state === 'ready';
-      const since = !ready ? sinceLabel(value.since) : '';
-      return <div className={`member-layer layer-${value.state}`} key={layer} data-layer={layer}>
-        <dt>{MEMBER_LAYER_NAMES[layer]}</dt>
-        <dd>
-          <strong>{memberLayerLabel(layer, value.state)}</strong>
-          {!ready && value.reason && <span className="member-layer-reason">{value.reason}</span>}
-          {since && <small>自 {since}</small>}
-        </dd>
-      </div>;
-    })}
-  </dl>;
 }
 
 function plainObject(value) {

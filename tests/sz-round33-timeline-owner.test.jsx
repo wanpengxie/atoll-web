@@ -162,10 +162,10 @@ describe('S-Z current Timeline system-event owner', () => {
       type: TYPES.narration.buildFinished,
       visibility: 'system',
       sender: { id: 'system', kind: 'system' },
-      payload: { body: { ...record, result: 'failed', state: 'retrying', reason: 'service.api_key is a placeholder still unfilled' } },
+      payload: { body: { ...record, result: 'failed', state: 'stopped', reason: 'service.api_key is a placeholder still unfilled' } },
     }} />);
-    const line = screen.getByText('成员 writer构建失败（第 1 次尝试，下次巡检会再试）：service.api_key is a placeholder still unfilled');
-    expect(line.className).toBe('build-event build-retrying');
+    const line = screen.getByText('成员 writer构建失败（第 1 次尝试，已停止：改描述或配置、或重启后才会再构建）：service.api_key is a placeholder still unfilled');
+    expect(line.className).toBe('build-event build-stopped');
     expect(screen.queryByText(TYPES.narration.buildFinished)).toBeNull();
   });
 

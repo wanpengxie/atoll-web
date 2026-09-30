@@ -7,7 +7,6 @@ import {
   buildStateLabel,
   buildSummaryText,
   buildTone,
-  MAX_BUILD_RETRIES,
 } from '../src/model/build-record.js';
 
 // system.build.finished 的 payload 形状（见 CONFIG_REALIGN_BUILD_SPEC 附录 A）。
@@ -19,7 +18,7 @@ function finished(overrides = {}) {
     attempt: 2,
     cause: 'config',
     result: 'failed',
-    state: 'retrying',
+    state: 'stopped',
     reason: 'member writer: service.api_key is a placeholder still unfilled',
     started_at: 10,
     finished_at: 20,
@@ -38,7 +37,7 @@ describe('build record model', () => {
       attempt: 2,
       cause: 'config',
       result: 'failed',
-      state: 'retrying',
+      state: 'stopped',
       reason: 'member writer: service.api_key is a placeholder still unfilled',
       startedAt: 10,
       finishedAt: 20,
@@ -62,18 +61,16 @@ describe('build record model', () => {
 
   it('labels the object, the result, the state and the attempt', () => {
     expect(buildObjectLabel(buildRecord(finished()))).toBe('成员 writer');
-    expect(buildObjectLabel(buildRecord(finished({ object: { kind: 'service', channel: 'c0.a' } })))).toBe('服务设置');
     expect(buildObjectLabel(buildRecord(finished({ object: { kind: 'channel', channel: 'c0.a' } })))).toBe('频道 c0.a');
     expect(buildObjectLabel(buildRecord(finished({ object: { kind: 'other' } })))).toBe('other');
     expect(buildResultLabel(buildRecord(finished({ result: 'ok' })))).toBe('成功');
     expect(buildResultLabel(buildRecord(finished({ result: 'superseded' })))).toBe('被新值取代');
     expect(buildResultLabel(buildRecord(finished({ result: undefined })))).toBe('构建中');
     expect(buildResultLabel(null)).toBe('');
-    expect(buildStateLabel(buildRecord(finished({ state: 'stopped' })))).toBe('已停止：改描述或配置后才会再构建');
+    expect(buildStateLabel(buildRecord(finished({ state: 'stopped' })))).toBe('已停止：改描述或配置、或重启后才会再构建');
     expect(buildStateLabel(buildRecord(finished({ state: 'serving' })))).toBe('服务中');
     expect(buildStateLabel(buildRecord(finished({ state: '' })))).toBe('');
-    expect(MAX_BUILD_RETRIES).toBe(3);
-    expect(buildAttemptLabel(buildRecord(finished()))).toBe('第 2 次尝试（最多 4 次）');
+    expect(buildAttemptLabel(buildRecord(finished()))).toBe('第 2 次尝试');
   });
 
   it('says one sentence per record for the timeline and summaries', () => {
@@ -83,9 +80,9 @@ describe('build record model', () => {
     expect(buildSummaryText(buildRecord(finished({ result: 'ok', state: '', reason: '' })))).toBe('成员 writer构建成功');
     expect(buildSummaryText(buildRecord(finished({ result: 'superseded' })))).toBe('成员 writer的这次构建被更新的值取代');
     expect(buildSummaryText(buildRecord(finished())))
-      .toBe('成员 writer构建失败（第 2 次尝试，下次巡检会再试）：member writer: service.api_key is a placeholder still unfilled');
-    expect(buildSummaryText(buildRecord(finished({ attempt: 4, state: 'stopped', reason: '' }))))
-      .toBe('成员 writer构建失败（第 4 次尝试，已停止：改描述或配置后才会再构建）');
+      .toBe('成员 writer构建失败（第 2 次尝试，已停止：改描述或配置、或重启后才会再构建）：member writer: service.api_key is a placeholder still unfilled');
+    expect(buildSummaryText(buildRecord(finished({ attempt: 4, reason: '' }))))
+      .toBe('成员 writer构建失败（第 4 次尝试，已停止：改描述或配置、或重启后才会再构建）');
     expect(buildSummaryText(null)).toBe('');
   });
 
@@ -93,8 +90,8 @@ describe('build record model', () => {
     expect(buildTone(buildRecord(finished({ result: undefined })))).toBe('pending');
     expect(buildTone(buildRecord(finished({ result: 'ok' })))).toBe('ok');
     expect(buildTone(buildRecord(finished({ result: 'superseded' })))).toBe('muted');
-    expect(buildTone(buildRecord(finished()))).toBe('retrying');
-    expect(buildTone(buildRecord(finished({ state: 'stopped' })))).toBe('stopped');
+    // 失败就停：没有"下次再试"这一档。
+    expect(buildTone(buildRecord(finished()))).toBe('stopped');
     expect(buildTone(null)).toBe('pending');
   });
 });

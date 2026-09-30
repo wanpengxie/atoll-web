@@ -116,42 +116,21 @@ export function observation(subject, kind, items, complete = true, extra = {}) {
   return { subject, kind, complete, items, ...extra };
 }
 
-function layerMeasure(name, layer, observedAt) {
-  if (!layer?.state) return { name, value: null, unknown: true, reason: 'no_testimony', observed_at: observedAt, since: null };
-  return {
-    name,
-    value: layer.state,
-    unknown: false,
-    ...(layer.reason ? { reason: layer.reason } : {}),
-    observed_at: observedAt,
-    since: layer.since > 0 ? layer.since : null,
-  };
-}
-
-// 两层状态随名册行一起出（与真后端 OBS 同形：standard/business 两个 measure，
-// value 是状态字符串，reason 说为什么没就绪，since 是进入这个状态的时刻）。
-// 干活的成员默认两层都就绪；人没有证词。
-export function defaultLayers(kind) {
-  return kind === 'human' ? null : { standard: { state: 'ready' }, business: { state: 'ready' } };
-}
-
-export function setRosterLayers(row, layers, observedAt = STAMP) {
-  const measures = (row.actual?.measures || []).filter((entry) => entry.name !== 'standard' && entry.name !== 'business');
-  measures.push(layerMeasure('standard', layers?.standard, observedAt), layerMeasure('business', layers?.business, observedAt));
+// 名册行上的"建好了"就是 bound（与真后端一样：对外只有一个状态）。
+export function setRowBuilt(row, built, observedAt = STAMP) {
+  const measures = (row.actual?.measures || []).filter((entry) => entry.name !== 'bound');
+  measures.push(measure('bound', Boolean(built), observedAt));
   measures.sort((left, right) => left.name.localeCompare(right.name));
   row.actual = { ...(row.actual || {}), measures };
   return row;
 }
 
-// 名册行上的两层读回 member.list / member.get 的形状：{state, reason?, since_ms?}。
-// 事实只有一处（行上的 measure），不另存一份。
-export function rowLayer(row, name) {
-  const measure = row?.actual?.measures?.find((entry) => entry.name === name);
-  if (!measure || measure.unknown || typeof measure.value !== 'string') return undefined;
-  return { state: measure.value, ...(measure.reason ? { reason: measure.reason } : {}), ...(measure.since > 0 ? { since_ms: measure.since } : {}) };
+export function rowBuilt(row) {
+  const bound = row?.actual?.measures?.find((entry) => entry.name === 'bound');
+  return Boolean(bound && !bound.unknown && bound.value);
 }
 
-export function rosterItem({ id, kind, body = '', name = id, description = '', principal = '', bound = true, online = null, layers = defaultLayers(kind) }, observedAt = STAMP) {
+export function rosterItem({ id, kind, body = '', name = id, description = '', principal = '', bound = true, online = null }, observedAt = STAMP) {
   const declared = {
     id,
     kind,
@@ -167,7 +146,7 @@ export function rosterItem({ id, kind, body = '', name = id, description = '', p
     measures.push(measure('device_online', online, observedAt));
   }
   measures.sort((left, right) => left.name.localeCompare(right.name));
-  return setRosterLayers(item(declared, measures), layers, observedAt);
+  return item(declared, measures);
 }
 
 export function envelope({ id, channelId, sender, kind, type, payload = {}, parentId = '', correlationId = '', visibility = 'public', audience = [], ts }) {
@@ -291,9 +270,9 @@ export class MockDomain {
     this.events = [];
   }
 
-  // actor-config 场景（c0.project 里）：一个引用了不存在的全局 key、业务层卡住的
-  // agent（deepseek）；一个连不上端点正在重试的 tool（search-tool）；一个还有占位
-  // 没填、构建已经停下的 agent（writer）。外加一把已有的全局 key 给编辑器插引用用。
+  // actor-config 场景（c0.project 里）：一个引用了不存在的全局 key、起不来的
+  // agent（deepseek）；一个连不上端点、起不来的 tool（search-tool）；一个还有占位
+  // 没填、构建失败停下的 agent（writer）。外加一把已有的全局 key 给编辑器插引用用。
   seedActorLayersDemo() {
     const stamp = STAMP;
     this.putActorDescription({ name: 'deepseek', class: 'deepseek-agent', description: 'Mock DeepSeek agent', params: { model: 'deepseek-chat', api_key: `${GLOBAL_REFERENCE}deepseek_prod` } }, stamp);
@@ -309,9 +288,6 @@ export class MockDomain {
     );
     description.revision += 1;
     for (const name of ['deepseek', 'search-tool', 'writer']) this.buildMember(channelId, name, { at: stamp });
-    // writer 已经试满了：停下，等描述或配置换新值。
-    const writer = this.builds.get(this.memberKey(channelId, 'writer'));
-    if (writer) Object.assign(writer, { attempt: 4, state: 'stopped' });
   }
 
   memberKey(channelId, name) {
@@ -464,7 +440,7 @@ export class MockDomain {
       const rows = this.rosters.get(channelId) || [];
       const index = rows.findIndex((row) => row.declared.kind !== 'human' && memberNameOf(row.declared.id) === name);
       if (index >= 0) rows.splice(index, 1);
-      record = this.buildRecord(channelId, name, { result: 'failed', state: 'retrying', reason, cause, at });
+      record = this.buildRecord(channelId, name, { result: 'failed', state: 'stopped', reason, cause, at });
     } else {
       const kind = MOCK_CLASSES[klass].kind;
       let row = this.memberRow(channelId, name);
@@ -479,11 +455,16 @@ export class MockDomain {
       } else {
         row.declared.body = bodyPhrase(entry.body);
       }
-      const business = this.businessOf({ class: klass, effective });
-      setRosterLayers(row, { standard: { state: 'ready' }, business: { ...business, ...(business.state === 'ready' ? {} : { since: this.clock }) } }, this.clock);
-      record = business.state === 'ready'
-        ? this.buildRecord(channelId, name, { result: 'ok', state: 'ready', cause, at })
-        : this.buildRecord(channelId, name, { result: 'failed', state: 'retrying', reason: `member ${name}: its business did not start: ${business.reason}`, cause, at });
+      // 业务起不来（缺全局 key、class 拒绝、端点连不上）：actor 自己结束、由
+      // supervisor 退避重建，对外只是"没建好"——名册上 bound=false，这次构建只有
+      // 开始回执，没有结束回执（owner 09-30：不补回执）。
+      const failure = this.startupFailure({ class: klass, effective });
+      setRowBuilt(row, !failure, this.clock);
+      if (failure) {
+        this.builds.set(key, started);
+        return started;
+      }
+      record = this.buildRecord(channelId, name, { result: 'ok', state: 'ready', cause, at });
     }
     this.builds.set(key, record);
     this.events.push({ channelId, type: 'system.build.finished', payload: structuredClone(record) });
@@ -510,18 +491,16 @@ export class MockDomain {
     return events;
   }
 
-  // 业务层是合成配置的函数：引用的全局 key 缺了 → stuck；class 拒绝配置 → stuck；
-  // tool 的端点还指着那个死端口 → retrying；否则 ready。
-  businessOf({ class: klass, effective }) {
+  // 这个成员此刻起不起得来（actor 内部的事，对外只看建没建好）：引用的全局 key
+  // 缺了、class 拒绝配置、tool 的端点还指着那个死端口，都起不来。
+  startupFailure({ class: klass, effective }) {
     for (const name of globalReferences(effective)) {
-      if (!this.globals.has(`${GLOBAL_PREFIX}${name}`)) return { state: 'stuck', reason: `missing global resource ${GLOBAL_PREFIX}${name}` };
+      if (!this.globals.has(`${GLOBAL_PREFIX}${name}`)) return `missing global resource ${GLOBAL_PREFIX}${name}`;
     }
     const refused = MOCK_CLASSES[klass]?.refuse?.(effective) || '';
-    if (refused) return { state: 'stuck', reason: `config refused by ${klass}: ${refused}` };
-    if (klass === 'mcp-tool' && String(effective.endpoint || '').includes(':9000')) {
-      return { state: 'retrying', reason: `dial tcp ${String(effective.endpoint).replace(/^\w+:\/\//, '').split('/')[0]}: connection refused; retry in 8s` };
-    }
-    return { state: 'ready' };
+    if (refused) return `config refused by ${klass}: ${refused}`;
+    if (klass === 'mcp-tool' && String(effective.endpoint || '').includes(':9000')) return 'connection refused';
+    return '';
   }
 
   memberSummary(channelId, row) {
@@ -530,22 +509,19 @@ export class MockDomain {
     return entry ? bodyPhrase(entry.body) : GENERATED_BODY;
   }
 
-  // system.member.get：成员事实 + 两层 + 它的各层（条目、这一台的配置、合成值、
+  // system.member.get：成员事实（建好了没有）+ 它的各层（条目、这一台的配置、合成值、
   // 来源、占位、最近一次构建）。描述里有但没在跑的成员也答（从描述里答）。
   memberInfo(channelId, target) {
     const row = this.memberRow(channelId, target);
     const name = row ? memberNameOf(row.declared.id) : String(target || '');
     const entry = row?.declared.kind === 'human' ? null : this.entry(channelId, name);
     if (!row && !entry) throw operationError('not_found', `${target} is not a member of this channel; see system.member.list`);
-    const standard = row ? rowLayer(row, 'standard') : undefined;
-    const business = row ? rowLayer(row, 'business') : undefined;
+    const built = row ? (row.declared.kind === 'human' ? true : rowBuilt(row)) : false;
     const status = {
       actor_id: row?.declared.id || '',
       member: Boolean(row),
-      present: row ? (business ? business.state === 'ready' : true) : false,
-      ...(row ? { uptime_ms: 60_000 } : {}),
-      ...(standard ? { standard } : {}),
-      ...(business ? { business } : {}),
+      present: built,
+      ...(built ? { uptime_ms: 60_000 } : {}),
       name,
     };
     if (!entry) return row?.declared.kind === 'human' ? status : { ...status, generated: true };

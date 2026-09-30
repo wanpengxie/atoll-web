@@ -24,9 +24,3 @@
 .legend-dot.online { background: var(--online); }
 .legend-dot.bound { background: var(--agent); }
 /* 没就绪的成员：状态标签说是哪种不就绪，下一行说是哪一层、为什么。就绪的行不变。 */
-.presence.layer-stuck, .presence.layer-unreachable { color: var(--danger); }
-.presence.layer-retrying, .presence.layer-initializing, .presence.layer-connecting { color: var(--warning-text); }
-.roster-row > div > span.member-layer-issue { color: var(--danger); white-space: normal; overflow-wrap: anywhere; }
-.roster-row > div > span.member-layer-issue.layer-retrying,
-.roster-row > div > span.member-layer-issue.layer-initializing,
-.roster-row > div > span.member-layer-issue.layer-connecting { color: var(--warning-text); }

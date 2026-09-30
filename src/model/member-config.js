@@ -1,69 +1,7 @@
 import { GLOBAL_PREFIX, GLOBAL_REFERENCE_PREFIX, isGlobalName } from './global-keys.js';
 
-// 成员的两层与配置编辑的纯函数一半。
-//
-// 每个 actor 分两层起来：标准层（能力、连接）先就绪，业务层（class 构造 + Proc）
-// 在它之上初始化，报就绪才接活。present 只说"能不能服务"；哪一层没起来、为什么，
-// 要看这两层自己的状态。名册（OBS 的 standard/business measure）和
-// system.member.list/get 都带着这两层，这里把两种形状读成同一个事实。
-
-export const MEMBER_LAYER_NAMES = Object.freeze({
-  standard: '标准层',
-  business: '业务层',
-});
-
-const LAYER_STATE_LABELS = Object.freeze({
-  standard: Object.freeze({ connecting: '连接中', ready: '就绪', unreachable: '不可达' }),
-  business: Object.freeze({ initializing: '初始化中', ready: '就绪', stuck: '卡住', retrying: '重试中' }),
-});
-
-export function memberLayerLabel(layer, state) {
-  return LAYER_STATE_LABELS[layer]?.[state] || String(state || '未知');
-}
-
-// member.list / member.get 的形状：{state, reason?, since_ms?}。
-export function memberLayer(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const state = String(value.state || '').trim();
-  if (!state) return undefined;
-  const reason = String(value.reason || '').trim();
-  const since = Number(value.since_ms ?? value.since ?? 0);
-  return Object.freeze({
-    state,
-    ...(reason ? { reason } : {}),
-    ...(Number.isFinite(since) && since > 0 ? { since } : {}),
-  });
-}
-
-// OBS 名册的形状：measure {name, value:<state>, unknown, reason?, since}。
-// unknown（没有证词）不是"没就绪"，是"不知道"——读成 undefined，行保持原样。
-export function memberLayerFromMeasure(measure) {
-  if (!measure || measure.unknown === true) return undefined;
-  if (typeof measure.value !== 'string' || !measure.value) return undefined;
-  return memberLayer({ state: measure.value, reason: measure.reason, since_ms: measure.since });
-}
-
-// 一个成员此刻为什么不能服务：先看标准层（它没起来，上面什么都起不来），再看
-// 业务层。都就绪或都没有证词时返回 null——就绪成员的行和从前一样薄。
-export function memberLayerIssue(row) {
-  for (const layer of ['standard', 'business']) {
-    const value = row?.[layer];
-    if (!value?.state || value.state === 'ready') continue;
-    const label = memberLayerLabel(layer, value.state);
-    const reason = String(value.reason || '');
-    return Object.freeze({
-      layer,
-      layerName: MEMBER_LAYER_NAMES[layer],
-      state: value.state,
-      label,
-      reason,
-      ...(value.since ? { since: value.since } : {}),
-      // 例："业务层卡住：missing global resource global/deepseek_prod"
-      text: `${MEMBER_LAYER_NAMES[layer]}${label}${reason ? `：${reason}` : ''}`,
-    });
-  }
-  return null;
-}
+// 成员配置编辑的纯函数一半。成员对外只有一个状态：建好了（在名册上、在线）
+// 或没建好；它内部怎么分阶段起来，不在这里出现。
 
 // 只有干活的成员（agent / tool）有 class 和配置可改；人、system、peer 没有。
 export function isEditableMemberKind(kind) {

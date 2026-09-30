@@ -161,19 +161,16 @@ describe('GlobalKeysPanel', () => {
   });
 });
 
-describe('member layers in the roster and member config', () => {
-  it('keeps ready rows thin and names the layer and reason of a member that cannot serve', () => {
+describe('the roster and member config', () => {
+  // 对外只有一个状态：在名册上的行只说在线/绑定，不说它内部哪一层。
+  it('shows a roster row by its presence only, never a layer', () => {
     render(<RosterFeature port={{ rows: [
-      { id: 'steward', kind: 'agent', name: 'steward', bound: true, deviceOnline: null, standard: { state: 'ready' }, business: { state: 'ready' } },
-      { id: 'deepseek', kind: 'agent', name: 'DeepSeek', bound: true, standard: { state: 'ready' }, business: { state: 'stuck', reason: 'missing global resource global/deepseek_prod' } },
-      { id: 'search-tool', kind: 'tool', name: 'Search Tool', bound: true, standard: { state: 'ready' }, business: { state: 'retrying', reason: 'connection refused' } },
+      { id: 'steward', kind: 'agent', name: 'steward', bound: true, deviceOnline: null },
     ] }} />);
     const rows = screen.getAllByRole('button').filter((node) => node.classList.contains('roster-row'));
-    expect(rows[0].textContent).not.toContain('业务层');
     expect(rows[0].textContent).toContain('已绑定');
-    expect(rows[1].textContent).toContain('卡住');
-    expect(rows[1].textContent).toContain('业务层卡住：missing global resource global/deepseek_prod');
-    expect(rows[2].textContent).toContain('业务层重试中：connection refused');
+    expect(rows[0].textContent).not.toContain('业务层');
+    expect(rows[0].textContent).not.toContain('标准层');
   });
 
   // system.member.get 对一个描述里的成员的回答（actor-config 场景的 writer）。
@@ -221,8 +218,8 @@ describe('member layers in the roster and member config', () => {
     expect(missing.textContent).toContain('还缺 1 个值');
     expect(missing.textContent).toContain('写作服务的 API key');
     const build = screen.getByLabelText('最近一次构建');
-    expect(build.textContent).toContain('失败 · 已停止：改描述或配置后才会再构建');
-    expect(build.textContent).toContain('第 4 次尝试（最多 4 次） · 描述第 3 版 · writer@1 · 配置第 2 版');
+    expect(build.textContent).toContain('失败 · 已停止：改描述或配置、或重启后才会再构建');
+    expect(build.textContent).toContain('第 4 次尝试 · 描述第 3 版 · writer@1 · 配置第 2 版');
     expect(build.textContent).toContain('service.api_key is a placeholder still unfilled');
   });
 

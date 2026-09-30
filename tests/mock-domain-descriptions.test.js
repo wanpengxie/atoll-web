@@ -44,7 +44,7 @@ describe('mock domain: descriptions, member config and builds', () => {
 
   it('turns a failed build ok when member.config.set fills the placeholder', () => {
     const mock = domain();
-    expect(mock.memberInfo('c0.project', 'writer')).toMatchObject({ member: false, build: { result: 'failed', state: 'stopped', attempt: 4 } });
+    expect(mock.memberInfo('c0.project', 'writer')).toMatchObject({ member: false, build: { result: 'failed', state: 'stopped' } });
     mock.takeEvents();
     const reply = mock.setMemberConfig('c0.project', { member: 'writer', values: { service: { api_key: '$global.openai_prod' } } });
     expect(reply).toEqual({ member: 'writer', desired_host: '', values: { service: { api_key: '$global.openai_prod' } }, revision: 1 });
@@ -59,7 +59,7 @@ describe('mock domain: descriptions, member config and builds', () => {
     ]);
     // values 是合并补丁：null 把键删掉，占位又露出来。
     mock.setMemberConfig('c0.project', { member: 'writer', values: { service: { api_key: null } } });
-    expect(mock.memberInfo('c0.project', 'writer')).toMatchObject({ member: false, missing: [{ key: 'service.api_key' }], build: { result: 'failed', state: 'retrying' } });
+    expect(mock.memberInfo('c0.project', 'writer')).toMatchObject({ member: false, missing: [{ key: 'service.api_key' }], build: { result: 'failed', state: 'stopped' } });
   });
 
   it('refuses member.set and member.create in c0, whose members are fixed, but still edits their own config', () => {
