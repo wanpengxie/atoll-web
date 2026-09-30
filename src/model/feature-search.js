@@ -1,7 +1,7 @@
 import { selectTimelineItems } from './conversation-presentation.js';
 import { terminalResultPayload } from './terminal-result.js';
 import { argsOf } from '../protocol/envelope.js';
-import { isStandardActorIdentity } from './actor-visibility.js';
+import { isGeneratedMember } from './actor-visibility.js';
 
 const READABLE_ACCESS = new Set([
   'member_active',
@@ -357,7 +357,7 @@ function fileSearchRow(entry, fallbackChannelId, channelById) {
 
 function participantSearchRow(actor, channel) {
   const actorId = string(actor?.id || actor?.actorId);
-  if (!actorId || isStandardActorIdentity({ id: actorId, kind: actor?.kind, body: actor?.body })) return null;
+  if (!actorId || isGeneratedMember(actor)) return null;
   return Object.freeze({
     key: `search:${channel.id}:participant:${actorId}`,
     id: actorId,

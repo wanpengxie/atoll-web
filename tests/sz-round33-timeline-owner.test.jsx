@@ -112,31 +112,31 @@ describe('S-Z current Timeline system-event owner', () => {
     expect(screen.getByText('Steward 已离开频道（原因：retired）')).toBeTruthy();
   });
 
-  it('hides a canonical standard actor member event', () => {
-    const view = render(<NarrationHarness envelope={{
-      id: 'svcactor-created',
-      kind: 'event',
-      type: TYPES.narration.memberCreated,
-      visibility: 'system',
-      sender: { id: 'system', kind: 'system' },
-      payload: { body: { member: 'svcactor', by: 'runtime', class: 'svcactor' } },
-    }} />);
-
-    expect(view.container.querySelector('.timeline-narration p')).toBeNull();
-  });
-
-  it('hides a runtime-generated member by the class the runtime wrote down', () => {
-    // 运行时生成 peer / handle 时在事件里写下它的 class；成员 id 本身看不出来。
+  it('hides a runtime-generated member by the body the runtime wrote down', () => {
+    // 成员加入时后端写下它由什么建成；运行时自己的是 "generated"，成员 id 本身看不出来。
     const view = render(<NarrationHarness envelope={{
       id: 'peer-created',
       kind: 'event',
       type: TYPES.narration.memberCreated,
       visibility: 'system',
       sender: { id: 'system', kind: 'system' },
-      payload: { body: { member: 'agent:c0-other:7', by: 'runtime', class: 'peeractor' } },
+      payload: { body: { member: 'peer:c0-other:7', by: 'runtime', class: 'peeractor', body: 'generated' } },
     }} />);
 
     expect(view.container.querySelector('.timeline-narration p')).toBeNull();
+  });
+
+  it('shows a peer written into the channel description like any member', () => {
+    const view = render(<NarrationHarness envelope={{
+      id: 'partner-created',
+      kind: 'event',
+      type: TYPES.narration.memberCreated,
+      visibility: 'system',
+      sender: { id: 'system', kind: 'system' },
+      payload: { body: { member: 'peer:partner:7', by: 'runtime', class: 'peeractor', body: 'class peeractor' } },
+    }} />);
+
+    expect(view.container.querySelector('.timeline-narration p')?.textContent).toContain('已加入频道');
   });
 
   it('says one sentence for a build start and a failed build finish, toned by result', () => {

@@ -281,7 +281,7 @@ export function MemberConfigSection({ actor, port = {} }) {
 
   const described = Boolean(info) && !info.generated && plainObject(info.body);
   const sources = info ? memberSourceRows(info) : [];
-  const effective = info?.effective ?? info?.config;
+  const effective = info?.effective;
   return <section className="panel-card member-config" aria-label="成员配置">
     <header className="panel-card-header">
       <h3>描述与配置</h3>

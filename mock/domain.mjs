@@ -130,7 +130,7 @@ export function rowBuilt(row) {
   return Boolean(bound && !bound.unknown && bound.value);
 }
 
-export function rosterItem({ id, kind, body = '', name = id, description = '', principal = '', bound = true, online = null }, observedAt = STAMP) {
+export function rosterItem({ id, kind, body = kind === 'human' ? 'human' : '', name = id, description = '', principal = '', bound = true, online = null }, observedAt = STAMP) {
   const declared = {
     id,
     kind,
@@ -168,7 +168,7 @@ export function envelope({ id, channelId, sender, kind, type, payload = {}, pare
 function createRoster(channel, memberships, clock, { seedBusiness = true, canonicalActorIds = false } = {}) {
   // 与真实后端一致：每个频道都有 system 与 svcactor(peer)，registrar 只在 c0。
   const rows = [
-    rosterItem({ id: 'system', kind: 'system', name: 'system', description: 'Channel system actor' }, clock),
+    rosterItem({ id: 'system', kind: 'system', body: GENERATED_BODY, name: 'system', description: 'Channel system actor' }, clock),
     rosterItem({ id: 'svcactor', kind: 'peer', body: GENERATED_BODY, name: 'Service Actor', description: 'Service actor' }, clock),
   ];
   if (channel.id === 'c0') {
@@ -572,8 +572,8 @@ export class MockDomain {
 
   // system.member.delete：人就是请出去；其余是条目离开描述，这一台的配置一起删。
   deleteMember(channelId, member) {
-    if (['system', 'svcactor', 'registrar'].includes(member)) throw operationError('protected_actor', 'protected system actor cannot be removed');
     const row = this.memberRow(channelId, member);
+    if (row?.declared.body === GENERATED_BODY) throw operationError('protected_actor', 'the runtime keeps this member itself; it is not in the channel description');
     const person = row?.declared.kind === 'human';
     const name = person ? String(row.declared.name || memberNameOf(row.declared.id)) : row ? memberNameOf(row.declared.id) : String(member || '');
     const channel = this.channel(channelId);
@@ -750,7 +750,8 @@ export class MockDomain {
   }
 
   removeActor(channelId, actorId) {
-    if (['system', 'svcactor', 'registrar'].includes(actorId)) {
+    const target = (this.rosters.get(channelId) || []).find((entry) => entry.declared.id === actorId);
+    if (target?.declared.body === GENERATED_BODY) {
       const error = new TypeError('protected system actor cannot be removed');
       error.code = 'protected_actor';
       throw error;
@@ -768,7 +769,7 @@ export class MockDomain {
   restartActor(channelId, actorId) {
     const row = (this.rosters.get(channelId) || []).find((entry) => entry.declared.id === actorId);
     if (!row) throw new TypeError('actor does not exist');
-    if (['system', 'svcactor', 'registrar'].includes(actorId) || row.declared.body === GENERATED_BODY) {
+    if (row.declared.body === GENERATED_BODY) {
       const error = new TypeError('protected system actor cannot be restarted');
       error.code = 'protected_actor';
       throw error;

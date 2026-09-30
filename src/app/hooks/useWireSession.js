@@ -15,6 +15,7 @@ import { createObsClient } from '../../net/obs.js';
 import { foregroundWake } from '../../net/wake.js';
 import { createWire } from '../../net/wire.js';
 import { newId } from '../../util/id.js';
+import { LOBBY_CHANNEL_ID, ROOT_CHANNEL_ID } from '../../protocol/vocab.js';
 
 const SERVER_WORLD_KEY = 'atoll.server.boot.v2';
 const CHANNEL_NAME_KEY = 'atoll.channel.names.v1';
@@ -298,11 +299,7 @@ function accessMode(state, connected) {
 
 function isHiddenChannel(profile) {
   const id = String(profile?.id || '');
-  if (id === 'c0') return false;
-  return id === 'c0.lobby'
-    || profile?.name === 'lobby'
-    || profile?.systemReserved === true
-    || profile?.type === 'actor';
+  return id === LOBBY_CHANNEL_ID || profile?.type === 'actor';
 }
 
 function createSessionAccess({ principalId }) {
@@ -344,7 +341,7 @@ function createSessionAccess({ principalId }) {
           next.existence = profile.status === 'retired' ? 'retired' : 'present';
           next.runtime = profile.open === false ? 'closed' : profile.open === true ? 'open' : 'unknown';
           next.unavailable = profile.open === true ? false : next.unavailable;
-          if (profile.id === 'c0' && profile.owner_principal === principalId) {
+          if (profile.id === ROOT_CHANNEL_ID && profile.owner_principal === principalId) {
             next.relationship = 'member';
             next.freshness = connected ? 'fresh' : 'stale';
             next.unavailable = false;
@@ -378,7 +375,7 @@ function createSessionAccess({ principalId }) {
             if (row.actor_id) next.selfActorId = row.actor_id;
           });
         } else if (row.status === 'revoked'
-          && !(state.channelId === 'c0' && state.profile?.owner_principal === principalId)) {
+          && !(state.channelId === ROOT_CHANNEL_ID && state.profile?.owner_principal === principalId)) {
           changeAuthority(state, (next) => {
             next.relationship = 'denied';
             next.freshness = 'fresh';
@@ -388,7 +385,7 @@ function createSessionAccess({ principalId }) {
         }
       }
       if (complete) for (const state of states.values()) {
-        if (state.relationship === 'member' && !active.has(state.channelId) && !(state.channelId === 'c0' && state.profile?.owner_principal === principalId)) {
+        if (state.relationship === 'member' && !active.has(state.channelId) && !(state.channelId === ROOT_CHANNEL_ID && state.profile?.owner_principal === principalId)) {
           changeAuthority(state, (next) => {
             next.relationship = 'denied';
             next.freshness = 'fresh';
@@ -722,8 +719,8 @@ export function useChannelNavigation({ accessRef, rosterRef, onSelect = () => {}
         && state?.existence !== 'retired';
     });
     return [...visible].sort((left, right) => {
-      if (left.id === 'c0') return -1;
-      if (right.id === 'c0') return 1;
+      if (left.id === ROOT_CHANNEL_ID) return -1;
+      if (right.id === ROOT_CHANNEL_ID) return 1;
       return String(left.qualified_name || left.name || left.id).localeCompare(String(right.qualified_name || right.name || right.id));
     });
   }, [accessRef, profiles, revision]);

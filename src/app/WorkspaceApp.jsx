@@ -49,7 +49,7 @@ import {
   readGlobalValue,
   writeGlobalValue,
 } from '../model/global-keys.js';
-import { SYSTEM_ACTOR_ID, TYPES } from '../protocol/vocab.js';
+import { isPlatformChannel, SYSTEM_ACTOR_ID, TYPES } from '../protocol/vocab.js';
 import { Auth } from '../ui/Auth.jsx';
 import { VersionIncompatible } from '../ui/VersionIncompatible.jsx';
 import { ConversationSurface } from '../ui/conversation/ConversationSurface.jsx';
@@ -1752,7 +1752,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
         : EMPTY_ARRAY,
       candidatesUnavailable: !directory.support?.principals || !directory.support?.actorDescriptions,
       // 可以复制描述的频道：我是成员的、平台自己搭的（c0、大厅）除外。
-      copyableChannels: navigation.channels.filter((row) => row.id && row.id !== 'c0' && isMemberAccess(row.access)),
+      copyableChannels: navigation.channels.filter((row) => row.id && !isPlatformChannel(row.id) && isMemberAccess(row.access)),
       // 空间里的设备（可挂到本频道）和本频道此刻能用的设备。
       spaceDevices: directory.devices,
       channelDevices: attachments.devices,

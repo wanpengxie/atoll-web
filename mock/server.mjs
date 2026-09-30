@@ -300,7 +300,7 @@ function seededHistory(channelId, behavior = {}) {
       sender: system,
       kind: 'event',
       type: 'system.member.created',
-      payload: { member: actorId, by: 'runtime', class: actorId === 'steward' ? 'codex' : 'svcactor' },
+      payload: { member: actorId, by: 'runtime', class: actorId === 'steward' ? 'codex' : 'svcactor', body: actorId === 'steward' ? 'class codex' : 'generated' },
       visibility: 'system',
       ts: base + 50_000 + index,
     }));
@@ -1128,7 +1128,7 @@ export function createMockServer({
           case 'system.member.admit': {
             assertClosedPayload(body, ['principal']);
             const value = domain.admitPerson(channelId, body.principal);
-            narrate('system.member.created', { member: domain.activeMembership(body.principal, channelId)?.actor_id || body.principal, principal: body.principal });
+            narrate('system.member.created', { member: domain.activeMembership(body.principal, channelId)?.actor_id || body.principal, principal: body.principal, body: 'human' });
             complete(value);
             pushMemberships();
             return;
@@ -2303,7 +2303,7 @@ export function createMockServer({
         sender: { kind: 'system', id: SYSTEM_ACTOR_ID },
         kind: 'event',
         type: 'system.member.created',
-        payload: { member: actorId, by: 'runtime', class: 'codex' },
+        payload: { member: actorId, by: 'runtime', class: 'codex', body: 'class codex' },
         visibility: 'system',
       }));
       json(response, 200, { actor_id: actorId });

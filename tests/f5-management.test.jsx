@@ -23,7 +23,7 @@ describe('F5 成员与全局表面', () => {
       port={{
         roster: [
           { id: 'root', name: 'Root', kind: 'human', principal: 'root' },
-          { id: 'system', name: 'system', kind: 'system' },
+          { id: 'system', name: 'system', kind: 'system', body: 'generated' },
           { id: 'registrar', name: 'registrar', kind: 'system', body: 'generated' },
           { id: 'svcactor', name: 'svcactor', kind: 'peer', body: 'generated' },
           // 运行时生成的 handle：kind 是 agent，但 body 说它不在频道描述里。

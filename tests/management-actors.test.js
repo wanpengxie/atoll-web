@@ -2,44 +2,39 @@ import { describe, expect, it } from 'vitest';
 import {
   actorDescriptionRef,
   actorMemberName,
-  isStandardActorIdentity,
+  isGeneratedMember,
   isVisibleActor,
   latestActorDescriptions,
 } from '../src/model/actor-visibility.js';
 import { buildComposerModel, createComposerCommandRequest, parseComposerCommand } from '../src/ui/composer/composer-model.js';
-import { GENERATED_BODY, SYSTEM_ACTOR_ID, SYSTEM_MEMBER_NAMES, TYPES } from '../src/protocol/vocab.js';
+import { GENERATED_BODY, SYSTEM_ACTOR_ID, TYPES } from '../src/protocol/vocab.js';
 
 const AGENT = { id: 'agent:steward:1', kind: 'agent', name: 'Steward' };
 
 describe('current management actor ownership', () => {
   it('keeps the channel system actor and runtime-generated members out of business roster rows', () => {
     const rows = [
-      { id: 'human:root:1', kind: 'human' },
-      AGENT,
-      { id: SYSTEM_ACTOR_ID, kind: 'system' },
-      { id: 'registrar', kind: 'system', body: GENERATED_BODY },
-      { id: 'svcactor', kind: 'peer', body: GENERATED_BODY },
+      { id: 'human:root:1', kind: 'human', body: 'human' },
+      { ...AGENT, body: 'class codex' },
+      { id: SYSTEM_ACTOR_ID, kind: 'system', body: GENERATED_BODY },
+      { id: 'system:registrar:4', kind: 'system', body: GENERATED_BODY },
+      { id: 'peer:svcactor:2', kind: 'peer', body: GENERATED_BODY },
       // 运行时生成的 handle：kind 看着像业务成员，body 说它不在描述里。
-      { id: 'agent:c0-child:3', kind: 'agent', body: GENERATED_BODY },
+      { id: 'tool:c0-child:3', kind: 'tool', body: GENERATED_BODY },
       { id: 'tool:search:2', kind: 'tool', body: 'actor search@1' },
+      // 手写在描述里的 peer 照常显示、能删。
+      { id: 'peer:partner:5', kind: 'peer', body: 'class peeractor' },
     ];
 
-    expect(rows.filter(isVisibleActor).map((row) => row.id)).toEqual(['human:root:1', AGENT.id, 'tool:search:2']);
-    expect(isStandardActorIdentity({ id: SYSTEM_ACTOR_ID })).toBe(true);
-    expect(SYSTEM_MEMBER_NAMES).toEqual(['registrar', 'svcactor']);
+    expect(rows.filter(isVisibleActor).map((row) => row.id)).toEqual(['human:root:1', AGENT.id, 'tool:search:2', 'peer:partner:5']);
     expect(GENERATED_BODY).toBe('generated');
   });
 
-  it('recognizes standard identity by kind, body or member name without hiding ordinary agents', () => {
-    expect(isStandardActorIdentity({ id: 'registrar' })).toBe(true);
-    expect(isStandardActorIdentity({ id: 'svcactor' })).toBe(true);
-    // 老缓存里没有 body 的行按名字兜底：<kind>:<名字>:<届次> 的中间段。
-    expect(isStandardActorIdentity({ id: 'system:registrar:4' })).toBe(true);
-    expect(isStandardActorIdentity({ id: 'custom', kind: 'peer' })).toBe(true);
-    expect(isStandardActorIdentity({ id: 'custom', kind: 'agent', body: GENERATED_BODY })).toBe(true);
-    expect(isStandardActorIdentity({ id: AGENT.id, kind: 'agent', body: 'class codex' })).toBe(false);
-    // 人恒可见，哪怕名字撞上系统名。
-    expect(isStandardActorIdentity({ id: 'human:registrar:1', kind: 'human' })).toBe(false);
+  it('knows the runtime\'s own members by body alone, never by kind or name', () => {
+    expect(isGeneratedMember({ id: 'registrar', kind: 'system' })).toBe(false);
+    expect(isGeneratedMember({ id: 'custom', kind: 'peer', body: 'class peeractor' })).toBe(false);
+    expect(isGeneratedMember({ id: 'custom', kind: 'agent', body: GENERATED_BODY })).toBe(true);
+    expect(isGeneratedMember({ id: 'human:registrar:1', kind: 'human', body: 'human' })).toBe(false);
     expect(isVisibleActor(AGENT)).toBe(true);
     expect(actorMemberName('agent:c0-a:b:9')).toBe('c0-a:b');
     expect(actorMemberName('steward')).toBe('steward');

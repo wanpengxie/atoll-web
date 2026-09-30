@@ -234,7 +234,7 @@ describe('A-D round 18 public owner evidence: create failure and governance', ()
       roster: [
         { id: 'human:root:1', kind: 'human', name: 'Root' },
         { id: 'agent:worker:1', kind: 'agent', name: 'Worker', body: 'class codex' },
-        { id: 'system', kind: 'system', name: 'System' },
+        { id: 'system', kind: 'system', name: 'System', body: 'generated' },
         { id: 'registrar', kind: 'system', name: 'Registrar', body: 'generated' },
       ],
       actorDescriptions: [

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { actorNameFromMap } from '../../model/actor-display.js';
-import { isStandardActorIdentity } from '../../model/actor-visibility.js';
+import { isGeneratedMember } from '../../model/actor-visibility.js';
 import { buildRecord, buildSummaryText, buildTone } from '../../model/build-record.js';
 import { terminalContentEnvelope, terminalResultState, turnProcessObservations } from '../../model/terminal-result.js';
 import { isMobileProfile } from '../../model/device-profile.js';
@@ -191,8 +191,8 @@ function memberEvent(envelope, kind) {
   return {
     kind,
     memberId,
-    // 运行时生成成员时写下它的 class（peeractor、svcactor…）。
-    className: textFact(body.class),
+    // 成员加入时后端写下它由什么建成，运行时自己的成员是 "generated"。
+    body: textFact(body.body),
     principalId: textFact(body.principal),
     reason: kind === 'member_left' ? textFact(body.reason) : '',
   };
@@ -218,8 +218,6 @@ const SYSTEM_EVENT_DECODERS = new Map([
     return record ? { kind: 'build_finished', record } : null;
   }],
 ]);
-
-const GENERATED_CLASSES = new Set(['peeractor', 'svcactor', 'registrar']);
 
 function decodeSystemEvent(envelope) {
   const type = textFact(envelope?.type);
@@ -271,9 +269,7 @@ function systemEventPresentation(envelope, names) {
 
   const event = decodeSystemEvent(envelope);
   if (event.kind === 'member_joined' || event.kind === 'member_left') {
-    const hidden = GENERATED_CLASSES.has(event.className)
-      || isStandardActorIdentity({ id: event.memberId, kind: event.memberId.split(':')[0] });
-    if (hidden) return { handled: true, hidden: true, text: '', standalone: true, event };
+    if (isGeneratedMember(event)) return { handled: true, hidden: true, text: '', standalone: true, event };
     const name = nameOf(event.memberId, names);
     const title = event.kind === 'member_joined' ? `${name} 已加入频道` : `${name} 已离开频道`;
     const detail = event.kind === 'member_left' && event.reason ? `（原因：${event.reason}）` : '';
