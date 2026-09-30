@@ -26,15 +26,9 @@ async function submitTerminal(h, msgType, payload, audience = ['system'], channe
   return waitFor(() => h.envelopes.find((row) => row.parent_id === receipt.message_id && ['completed', 'failed'].includes(row.payload?.body?.status)));
 }
 
-// channel.create 改了成员清单，mock 在回复落地后让连接重连一次（attach 回执带
-// 清单）；重连期间的回复收不到，等它重新 attach 再往下走。
+// channel.create 改了成员清单：网关推一份新清单（memberships 帧），连接不断。
 async function createChannel(h, payload) {
-  const attachedBefore = h.states.filter((state) => state === 'attached').length;
-  const terminal = await submitTerminal(h, 'system.channel.create', payload);
-  if (terminal.payload.body.status === 'completed') {
-    await waitFor(() => h.states.filter((state) => state === 'attached').length > attachedBefore, 5000);
-  }
-  return terminal;
+  return submitTerminal(h, 'system.channel.create', payload);
 }
 
 afterEach(async () => Promise.all([...servers].map(close)));
@@ -91,7 +85,8 @@ describe('phase E stateful mock', () => {
     const copied = await createChannel(h, { name: 'copy', parent: 'c0', humans: ['root'], copy_from: 'c0.project' });
     expect(copied.payload.body.value).toEqual({ channel_id: 'c0.copy', revision: 1 });
     const description = await submitTerminal(h, 'system.channel.description.get', { channel: 'c0.copy' });
-    expect(description.payload.body.value).toEqual({ body: view.payload.body.value.description.body, revision: 1 });
+    const sourceBody = view.payload.body.value.description.body;
+    expect(description.payload.body.value).toEqual({ body: { ...sourceBody, members: [...sourceBody.members, { name: 'root', body: { human: true }, principal: 'root' }] }, revision: 1 });
     const state = await h.fetchSession('/mock/control/state').then((response) => response.json());
     expect(state.member_configs.filter((row) => row.member === 'project-agent').map((row) => row.channel_id)).toEqual(['c0.project']);
     expect(state.builds).toEqual(expect.arrayContaining([expect.objectContaining({ object: { kind: 'member', channel: 'c0.copy', name: 'project-agent' }, result: 'ok' })]));
@@ -106,7 +101,7 @@ describe('phase E stateful mock', () => {
     const picked = await createChannel(h, { name: 'picked', parent: 'c0', humans: ['root'], description: { description: '挑的', members: [{ name: 'helper', body: { actor: 'analyst@1' }, params: { effort: 'low' } }] } });
     expect(picked.payload.body.value).toEqual({ channel_id: 'c0.picked', revision: 1 });
     const pickedDescription = await submitTerminal(h, 'system.channel.description.get', { channel: 'c0.picked' });
-    expect(pickedDescription.payload.body.value.body).toMatchObject({ description: '挑的', serving: 0, members: [{ name: 'helper', body: { actor: 'analyst@1' }, params: { effort: 'low' } }] });
+    expect(pickedDescription.payload.body.value.body).toMatchObject({ description: '挑的', serving: 0, members: [{ name: 'helper', body: { actor: 'analyst@1' }, params: { effort: 'low' } }, { name: 'root', body: { human: true }, principal: 'root' }] });
     h.wire.close(); await close(h.server);
   });
 

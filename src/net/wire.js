@@ -42,6 +42,8 @@ export function createWire({
   onPageEnd = () => {},
   onError = () => {},
   onObserveEnded = () => {},
+  // 网关推来的成员关系变化（整份新清单）。不是探测：只在节点那边真的变了才来。
+  onMemberships = () => {},
   onState = () => {},
   // Attach metadata is a fast control-plane fact. The callback must install
   // its in-memory epoch synchronously; any returned persistence work is
@@ -287,6 +289,12 @@ export function createWire({
     }
     if (parsed.kind === DOWN.observe_ended) {
       onObserveEnded(payload.channel_id, payload.reason);
+      return;
+    }
+    if (parsed.kind === DOWN.memberships) {
+      if (!attached) return;
+      diagnostic('info', 'wire.memberships', { generation, memberships: payload.memberships?.length || 0 });
+      onMemberships({ memberships: Array.isArray(payload.memberships) ? payload.memberships : [], generation });
       return;
     }
     if (parsed.kind === DOWN.page_end) {

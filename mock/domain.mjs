@@ -374,7 +374,9 @@ export class MockDomain {
       seen.add(entry.name);
       const hasClass = Boolean(entry.body?.class);
       const hasActor = Boolean(entry.body?.actor);
-      if (hasClass === hasActor) throw operationError('invalid_args', `member ${entry.name}: body names exactly one of class and actor ("name@version")`);
+      const isPerson = entry.body?.human === true;
+      if (Number(hasClass) + Number(hasActor) + Number(isPerson) !== 1) throw operationError('invalid_args', `member ${entry.name}: body names exactly one of class, actor ("name@version") or human (true: a person)`);
+      if (isPerson && entry.principal && entry.principal !== entry.name) throw operationError('invalid_args', `member ${entry.name}: a person's member name is their principal`);
       if (hasActor && !/^[a-z0-9-]+@[1-9][0-9]*$/.test(entry.body.actor)) throw operationError('invalid_args', `member ${entry.name}: actor ${JSON.stringify(entry.body.actor)} is not name@version`);
       if (entry.params != null && !plainObject(entry.params)) throw operationError('invalid_args', `member ${entry.name}: params must be a JSON object`);
     }
@@ -490,7 +492,8 @@ export class MockDomain {
 
   // 让一个频道的成员对上它的描述：多的删、少的建、变了的重建。
   realize(channelId, { cause = '', only = null } = {}) {
-    const names = new Set(this.entriesOf(channelId).map((entry) => entry.name));
+    // 人由成员关系（memberships）表示，按人的条目放进放出；这里只建 agent/tool。
+    const names = new Set(this.entriesOf(channelId).filter((entry) => entry.body?.human !== true).map((entry) => entry.name));
     const rows = this.rosters.get(channelId) || [];
     for (let index = rows.length - 1; index >= 0; index -= 1) {
       const row = rows[index].declared;
@@ -595,14 +598,17 @@ export class MockDomain {
   deleteMember(channelId, member) {
     if (['system', 'svcactor', 'registrar'].includes(member)) throw operationError('protected_actor', 'protected system actor cannot be removed');
     const row = this.memberRow(channelId, member);
-    if (row?.declared.kind === 'human') return this.removeActor(channelId, row.declared.id);
-    const name = row ? memberNameOf(row.declared.id) : String(member || '');
+    const person = row?.declared.kind === 'human';
+    const name = person ? String(row.declared.name || memberNameOf(row.declared.id)) : row ? memberNameOf(row.declared.id) : String(member || '');
+    const channel = this.channel(channelId);
+    if (person && channel?.owner_principal === name) throw operationError('reserved', `${JSON.stringify(name)} is the channel's owner, who stays in the channel`);
     const { revision } = this.editDescription(channelId, (description) => {
       const before = description.members.length;
       description.members = description.members.filter((entry) => entry.name !== name);
       if (description.members.length === before) throw operationError('invalid_args', `the channel description has no member named ${JSON.stringify(name)}; members the runtime keeps itself (the service door, peers, handles) leave when what they follow from changes`);
     });
     this.memberConfigs.delete(this.memberKey(channelId, name));
+    if (person) this.removeActor(channelId, row.declared.id);
     return { written: true, description_revision: revision };
   }
 
@@ -737,6 +743,20 @@ export class MockDomain {
   }
 
   // system.member.admit：只收 principal。
+  // system.member.admit：往描述里写这个人的条目（registrar 的回复形状），人随即进来。
+  admitPerson(channelId, principal) {
+    if (!principal) throw operationError('invalid_args', 'principal required: the person to let in (see system.principal.list)');
+    if (!this.humanPrincipals.has(principal)) throw operationError('not_found', `principal ${principal} does not exist or is not a person; see system.principal.list`);
+    const entry = { name: principal, body: { human: true }, principal };
+    const { revision } = this.editDescription(channelId, (description) => {
+      const existing = description.members.find((row) => row.name === principal);
+      if (existing && existing.body?.human !== true) throw operationError('invalid_args', `the channel description already has a member named ${JSON.stringify(principal)} that is not this person`);
+      if (!existing) description.members.push(entry);
+    });
+    this.admitMember(channelId, principal);
+    return { written: true, description_revision: revision, entry };
+  }
+
   admitMember(channelId, principal) {
     const channel = this.channel(channelId);
     if (!channel || channel.status !== 'present') throw new TypeError('channel does not exist');
@@ -803,9 +823,13 @@ export class MockDomain {
       if (!copied) throw operationError('invalid_args', `${source.qualified_name} is built by the platform and has no description to copy`);
       body = structuredClone(copied.body);
     }
-    this.validateDescription(body);
     if (!Array.isArray(humans)) throw operationError('invalid_args', 'humans must be an array of principal ids');
     for (const human of humans) if (!this.humanPrincipals.has(human)) throw operationError('not_found', `principal ${human} does not exist; see system.principal.list`);
+    // 一开始放进来的人就是新描述里的人的条目。
+    for (const human of new Set(humans)) {
+      if (!body.members.some((entry) => entry.name === human)) body.members.push({ name: human, body: { human: true }, principal: human });
+    }
+    this.validateDescription(body);
     const id = `${parentRow.id}.${clean}`;
     if (this.channels.has(id)) throw operationError('conflict_exists', `channel ${id} already exists (${id})`);
     const channel = { id, name: clean, qualified_name: id, parent_id: parentRow.id, owner_principal: principalId, internal: false, open: true, status: 'present' };

@@ -23,6 +23,8 @@ export const DOWN = Object.freeze({
   error: 'error',
   observe_ended: 'observe_ended',
   page_end: 'page_end',
+  // 成员关系变了：网关重算后推来整份新清单，形状同 attach 回执里的 memberships。
+  memberships: 'memberships',
 });
 
 export const ERROR_CODES = Object.freeze([

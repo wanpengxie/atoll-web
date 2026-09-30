@@ -1049,6 +1049,27 @@ export function useWireConnection({
     let wire = null;
     let attachedGeneration = 0;
     let rosterAuthority = null;
+    // 成员关系（attach 回执里的一份，或网关之后推来的一份）落到本地：access、
+    // 启动缓存、名册里的"我"。
+    const applyMemberships = (memberships, complete) => {
+      const rows = memberships
+        .filter((entry) => entry?.channel_id)
+        .map((entry) => ({ channel_id: entry.channel_id, status: 'active', actor_id: entry.actor_id || '' }));
+      const memberedBefore = access.rows()
+        .filter((row) => row.accessState?.relationship === 'member')
+        .map((row) => row.id);
+      access.membershipsObserved(rows, { complete, supported: true });
+      writeWorkspaceBootstrap(principalId, access.snapshot());
+      for (const entry of rows) {
+        if (!roster?.noteSelf(entry.channel_id, entry.actor_id, rosterAuthority)) continue;
+        reconcileIdentity(entry.channel_id, entry.actor_id);
+      }
+      for (const channelId of memberedBefore) {
+        if (access.state(channelId)?.relationship !== 'member') {
+          roster?.clearSelf(channelId, rosterAuthority);
+        }
+      }
+    };
     // A lifecycle callback belongs to the transport generation that emitted
     // it.  The wire normally serializes these callbacks, but a browser can
     // deliver a late close/error from an obsolete socket after its successor
@@ -1165,6 +1186,11 @@ export function useWireConnection({
           setTopError(`${error.code}: ${displayError(error)}`);
         }
       },
+      onMemberships: (detail) => {
+        if (!acceptsLifecycle(detail)) return;
+        applyMemberships(detail.memberships, true);
+        bumpAccess();
+      },
       onObserveEnded: (channelId, reason) => {
         diagnostic('warn', 'wire.observe_ended', { channelId, reason });
         if (reason === 'channel_retired') access.retire(channelId, reason);
@@ -1195,23 +1221,7 @@ export function useWireConnection({
           agentActivityRef.current.attach(detail);
           access.wire('attached', newId());
           if (Array.isArray(detail?.memberships)) {
-            const rows = detail.memberships
-              .filter((entry) => entry?.channel_id)
-              .map((entry) => ({ channel_id: entry.channel_id, status: 'active', actor_id: entry.actor_id || '' }));
-            const memberedBefore = access.rows()
-              .filter((row) => row.accessState?.relationship === 'member')
-              .map((row) => row.id);
-            access.membershipsObserved(rows, { complete: detail.memberships_complete === true, supported: true });
-            writeWorkspaceBootstrap(principalId, access.snapshot());
-            for (const entry of rows) {
-              if (!roster?.noteSelf(entry.channel_id, entry.actor_id, rosterAuthority)) continue;
-              reconcileIdentity(entry.channel_id, entry.actor_id);
-            }
-            for (const channelId of memberedBefore) {
-              if (access.state(channelId)?.relationship !== 'member') {
-                roster?.clearSelf(channelId, rosterAuthority);
-              }
-            }
+            applyMemberships(detail.memberships, detail.memberships_complete === true);
           }
           flushSync(() => setState('open'));
           if (attachedOnce) scheduleAccessRefresh();

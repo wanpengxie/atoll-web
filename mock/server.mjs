@@ -626,6 +626,15 @@ export function createMockServer({
     return true;
   }
 
+  // 网关在成员关系变了之后推给每条连接一份整的新清单（memberships 帧）。
+  function pushMemberships() {
+    for (const socket of sockets) {
+      if (!attached.has(socket)) continue;
+      const principal = socketPrincipals.get(socket) || '';
+      sendFrame(socket, 'memberships', '', { memberships: domain.attachMemberships(principal) });
+    }
+  }
+
   function broadcast(row) {
     const fault = domain.takeFault('feed', { msgType: row?.envelope?.type });
     if (fault?.mode === 'drop') {
@@ -1121,9 +1130,10 @@ export function createMockServer({
           }
           case 'system.member.admit': {
             assertClosedPayload(body, ['principal']);
-            const value = domain.admitMember(channelId, body.principal);
-            narrate('system.member.created', { member: value.member, principal: body.principal });
-            completeFlat(value);
+            const value = domain.admitPerson(channelId, body.principal);
+            narrate('system.member.created', { member: domain.activeMembership(body.principal, channelId)?.actor_id || body.principal, principal: body.principal });
+            complete(value);
+            pushMemberships();
             return;
           }
           case 'system.member.delete': {
@@ -1131,9 +1141,9 @@ export function createMockServer({
             const row = domain.memberRow(channelId, body.member);
             const value = domain.deleteMember(channelId, body.member);
             if (row) narrate('system.member.deleted', { member: row.declared.id, reason: 'removed' });
-            // 人在本频道里请出去（本地回复）；其余是 registrar 改描述（{value}）。
-            if (row?.declared.kind === 'human') completeFlat(value);
-            else complete(value);
+            // 人和别的成员一样是描述里的条目：registrar 改描述（{value}）。
+            complete(value);
+            if (row?.declared.kind === 'human') pushMemberships();
             return;
           }
           case 'system.member.restart': {
@@ -1153,10 +1163,8 @@ export function createMockServer({
           case 'system.channel.create': {
             assertClosedPayload(body, ['name', 'parent', 'type', 'temporary', 'humans', 'description', 'copy_from']);
             complete(domain.createChannel(channelId, body, principal));
-            // attach carries the authoritative membership snapshot. Creating a
-            // channel changes that snapshot, so reconnect after the response
-            // has landed just like explicit grant/revoke does below.
-            later(75, () => { for (const socket of sockets) socket.close(1012, 'membership changed'); });
+            // 成员关系变了：网关推一份新清单（不再断线重连）。
+            later(75, pushMemberships);
             return;
           }
           case 'system.channel.list': {
@@ -2388,16 +2396,14 @@ export function createMockServer({
         }
         if (body.type === 'revoke_membership') {
           const changed = domain.revokeMembership(ROOT_ID, body.channel_id);
-          // Membership is an attach-time authority snapshot. Force a fresh
-          // attach after the test mutates it out of band, just as a gateway
-          // entitlement change invalidates the existing delivery session.
-          if (changed) later(0, () => { for (const socket of sockets) socket.close(1012, 'membership changed'); });
+          // The gateway pushes the new memberships to every connection.
+          if (changed) later(0, pushMemberships);
           json(response, 200, { type: body.type, changed });
           return;
         }
         if (body.type === 'grant_membership') {
           const membership = domain.grantMembership(ROOT_ID, body.channel_id, body.actor_id);
-          later(0, () => { for (const socket of sockets) socket.close(1012, 'membership changed'); });
+          later(0, pushMemberships);
           json(response, 200, { type: body.type, membership });
           return;
         }

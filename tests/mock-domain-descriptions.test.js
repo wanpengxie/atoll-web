@@ -21,7 +21,8 @@ describe('mock domain: descriptions, member config and builds', () => {
     const source = mock.channelDescription('c0.project');
     const created = mock.createChannel('c0', { name: 'copy', parent: 'c0', humans: ['root'], copy_from: 'c0.project' });
     expect(created).toEqual({ channel_id: 'c0.copy', revision: 1 });
-    expect(mock.channelDescription('c0.copy')).toEqual({ body: source.body, revision: 1 });
+    // humans 里的人成了新描述里的人的条目。
+    expect(mock.channelDescription('c0.copy')).toEqual({ body: { ...source.body, members: [...source.body.members, { name: 'root', body: { human: true }, principal: 'root' }] }, revision: 1 });
     // 配置没跟过来：writer 的占位在新频道里又缺了，构建失败，不在名册上。
     expect(mock.memberConfig('c0.copy', 'writer')).toEqual({ member: 'writer', desired_host: '', values: {}, revision: 0 });
     expect(mock.memberInfo('c0.copy', 'writer')).toMatchObject({ member: false, missing: [{ key: 'service.api_key' }], build: { result: 'failed' } });
