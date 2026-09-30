@@ -1998,7 +1998,7 @@ export function createMockServer({
       return;
     }
     if (type === 'resource') {
-      try { sendReceipt(socket, ref, domain.resource(payload.channel_id, payload)); }
+      try { sendReceipt(socket, ref, domain.resource(payload.channel_id, payload, socketPrincipals.get(socket) || '')); }
       catch (error) { sendError(socket, { ref, frame: type, code: error.message.includes('already') ? 'conflict_exists' : 'bad_payload', detail: error.message }); }
       return;
     }

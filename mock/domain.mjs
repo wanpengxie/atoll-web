@@ -902,9 +902,11 @@ export class MockDomain {
 
   // global/ 不是这个频道的：任何频道的资源面都落到同一份空间存储。只有 kv；
   // 名字必须满足 [a-z0-9_-]{1,64}，和 $global.<name> 引用能写的一样。
-  globalResource(channelId, payload) {
+  // principal 是发这帧的人；成员资格已由 server 在收帧时判过（和真节点一样只看
+  // "是不是这个频道的活跃成员"），这里只用它记创建者。
+  globalResource(channelId, payload, principal = ROOT_ID) {
     const { op, resource_id: id, args } = payload;
-    const creator = `${channelId}/${this.activeMembership(ROOT_ID, channelId)?.actor_id || ROOT_ID}`;
+    const creator = `${channelId}/${this.activeMembership(principal, channelId)?.actor_id || principal}`;
     if (op === 'list') {
       const prefix = String(payload.query?.prefix || GLOBAL_PREFIX);
       const items = [...this.globals.keys()].filter((key) => key.startsWith(prefix)).sort()
@@ -929,10 +931,10 @@ export class MockDomain {
     throw new TypeError('unsupported resource operation');
   }
 
-  resource(channelId, payload) {
+  resource(channelId, payload, principal = ROOT_ID) {
     const store = this.resources.get(channelId); if (!store) throw new TypeError('channel does not exist');
     const target = String(payload.resource_id || (payload.op === 'list' ? payload.query?.prefix || '' : ''));
-    if (target.startsWith(GLOBAL_PREFIX)) return this.globalResource(channelId, payload);
+    if (target.startsWith(GLOBAL_PREFIX)) return this.globalResource(channelId, payload, principal);
     const { op, resource_id: id, args } = payload;
     if (op === 'list') {
       const prefix = String(payload.query?.prefix || '');
