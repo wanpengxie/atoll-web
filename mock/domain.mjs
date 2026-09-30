@@ -247,7 +247,6 @@ export class MockDomain {
     this.memberConfigs = new Map();
     // 每个成员 / 频道最近一次构建记录。
     this.builds = new Map();
-    this.channelBuilds = new Map();
     this.events = [];
     for (const channel of this.channels.values()) {
       const entries = (this.rosters.get(channel.id) || [])
@@ -391,14 +390,13 @@ export class MockDomain {
   }
 
   // 频道描述的唯一写口：c0 和大厅没有描述。改完重新校验、版本加一、重建。
-  editDescription(channelId, mutate, { dryRun = false } = {}) {
+  editDescription(channelId, mutate) {
     const current = this.descriptions.get(channelId);
-    if (!current) throw operationError('forbidden', 'this channel is built by the platform and has no description: its members are fixed (a member\'s own configuration can still be changed with system.member.config.set)');
+    if (!current) throw operationError('reserved', 'lagoon: this channel is built by the platform and has no description');
     const next = structuredClone(current.body);
     const result = mutate(next);
     const body = this.normalizedDescription(next);
     this.validateDescription(body);
-    if (dryRun) return { revision: current.revision, result };
     current.body = body;
     current.revision += 1;
     this.realize(channelId);
@@ -568,17 +566,17 @@ export class MockDomain {
   }
 
   // system.member.create：频道描述里加一个条目。
-  createMemberEntry(channelId, { name, body, params, requires, dry_run: dryRun } = {}) {
+  createMemberEntry(channelId, { name, body, params, requires } = {}) {
     const entry = { name: String(name || '').trim(), body: structuredClone(body || {}), ...(params ? { params: structuredClone(params) } : {}), ...(requires?.length ? { requires: [...requires] } : {}) };
     const { revision } = this.editDescription(channelId, (description) => {
       if (description.members.some((row) => row.name === entry.name)) throw operationError('invalid_args', `the channel description already has a member named ${JSON.stringify(entry.name)}; change it with system.member.set, or pick another name`);
       description.members.push(entry);
-    }, { dryRun });
-    return { written: !dryRun, description_revision: revision, ...(dryRun ? { dry_run: true } : {}), entry };
+    });
+    return { written: true, description_revision: revision, entry };
   }
 
   // system.member.set：条目原地改——body 整个换、params 合并补丁、requires 整个换（null 清空）。
-  setMemberEntry(channelId, { member, body, params, requires, dry_run: dryRun } = {}) {
+  setMemberEntry(channelId, { member, body, params, requires } = {}) {
     const name = this.memberRow(channelId, member) ? memberNameOf(this.memberRow(channelId, member).declared.id) : String(member || '');
     let result = null;
     const { revision } = this.editDescription(channelId, (description) => {
@@ -589,8 +587,8 @@ export class MockDomain {
       if (requires === null) delete entry.requires;
       else if (Array.isArray(requires)) entry.requires = [...requires];
       result = structuredClone(entry);
-    }, { dryRun });
-    return { written: !dryRun, description_revision: revision, ...(dryRun ? { dry_run: true } : {}), entry: result };
+    });
+    return { written: true, description_revision: revision, entry: result };
   }
 
   // system.member.delete：人就是请出去；其余是条目离开描述，这一台的配置一起删。
@@ -616,7 +614,7 @@ export class MockDomain {
 
   // system.member.config.set：这一台的设备和 values 的合并补丁。值本身不检查，
   // 构建会说它行不行。
-  setMemberConfig(channelId, { member, desired_host: desiredHost, values, dry_run: dryRun } = {}) {
+  setMemberConfig(channelId, { member, desired_host: desiredHost, values } = {}) {
     const name = this.memberRow(channelId, member) ? memberNameOf(this.memberRow(channelId, member).declared.id) : String(member || '');
     if (!this.entry(channelId, name)) throw operationError('invalid_args', `${JSON.stringify(name)} is not a member of this channel's description, so it has no configuration of its own here; see system.channel.description.get`);
     if (values != null && !plainObject(values)) throw operationError('invalid_args', 'values must be a JSON object (a merge patch)');
@@ -627,7 +625,6 @@ export class MockDomain {
       values: values ? applyMergePatch(current.values, values) : structuredClone(current.values),
       revision: current.revision,
     };
-    if (dryRun) return { member: name, desired_host: next.desired_host, values: next.values, revision: next.revision, dry_run: true };
     next.revision += 1;
     this.memberConfigs.set(key, next);
     this.buildMember(channelId, name);
@@ -821,18 +818,15 @@ export class MockDomain {
     this.histories.set(id, []);
     this.resources.set(id, new Map());
     this.descriptions.set(id, { body, revision: 1 });
-    this.channelBuilds.set(id, { object: { kind: 'channel', channel: id }, description: { channel_revision: 1 }, attempt: 1, result: 'ok', state: 'serving', started_at: this.clock, finished_at: this.clock });
     this.realize(id);
     return { channel_id: id, revision: 1 };
   }
 
-  // system.channel.get：目录行、描述、这个节点对它的运行账（health、它自己和每个
-  // 成员最近一次构建）。
+  // system.channel.get：只答注册库里的事实——目录行和描述。
   channelView(channelId) {
     const channel = this.channel(channelId) || [...this.channels.values()].find((row) => row.qualified_name === channelId);
     if (!channel) throw operationError('not_found', `channel ${channelId} does not exist; see system.channel.list`);
     const description = this.descriptions.get(channel.id);
-    const members = [...this.builds.entries()].filter(([key]) => key.startsWith(`${channel.id}\u0000`)).map(([, record]) => structuredClone(record));
     return {
       id: channel.id,
       ...(channel.parent_id ? { parent_id: channel.parent_id } : {}),
@@ -844,9 +838,6 @@ export class MockDomain {
       created_at: STAMP,
       temporary: false,
       ...(description ? { description: { body: structuredClone(description.body), revision: description.revision } } : {}),
-      ...(channel.open ? {} : { health: 'broken', health_reason: 'the channel is not open on this node' }),
-      ...(this.channelBuilds.get(channel.id) ? { build: structuredClone(this.channelBuilds.get(channel.id)) } : {}),
-      ...(members.length ? { members } : {}),
     };
   }
 

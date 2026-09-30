@@ -98,11 +98,13 @@ describe('actor-config mock', () => {
     h.wire.close();
   });
 
-  it('applies member.set to the description entry: body replaced, params merged, dry_run and refusals', async () => {
+  it('applies member.set to the description entry: body replaced, params merged, and refusals', async () => {
     const h = await harness();
     const before = (await project(h, 'system.channel.description.get', { channel: PROJECT })).value;
+    // 没有 dry_run：它是个不认识的字段，被拒绝，什么都没写。
     const dry = await project(h, 'system.member.set', { member: 'search-tool', params: { endpoint: 'http://127.0.0.1:9100/mcp', extra: 1 }, dry_run: true });
-    expect(dry).toMatchObject({ status: 'completed', written: false, dry_run: true, description_revision: before.revision, entry: { name: 'search-tool', params: { endpoint: 'http://127.0.0.1:9100/mcp', extra: 1 } } });
+    expect(dry).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
+    expect(dry.detail).toContain('dry_run');
     expect((await project(h, 'system.channel.description.get', { channel: PROJECT })).value.revision).toBe(before.revision);
 
     const badBody = await project(h, 'system.member.set', { member: 'search-tool', body: { actor: 'search' } });
@@ -118,10 +120,10 @@ describe('actor-config mock', () => {
     expect(legacy.status).toBe('failed');
 
     const fixed = await project(h, 'system.member.set', { member: 'search-tool', params: { endpoint: 'http://127.0.0.1:9100/mcp', extra: 1 } });
-    expect(fixed).toMatchObject({ status: 'completed', written: true, description_revision: before.revision + 1 });
+    expect(fixed).toMatchObject({ status: 'completed', value: { written: true, description_revision: before.revision + 1 } });
     // params 是合并补丁：null 删键，其余的键留着。
     const cleared = await project(h, 'system.member.set', { member: 'search-tool', params: { extra: null } });
-    expect(cleared.entry.params).toEqual({ endpoint: 'http://127.0.0.1:9100/mcp' });
+    expect(cleared.value.entry.params).toEqual({ endpoint: 'http://127.0.0.1:9100/mcp' });
     expect(await project(h, 'system.member.get', { member: 'search-tool' })).toMatchObject({ present: true, business: { state: 'ready' }, build: { result: 'ok', state: 'ready' } });
 
     // body 换成另一个 class：成员按新 body 重建。
@@ -133,10 +135,10 @@ describe('actor-config mock', () => {
   it('refuses member.set in c0, whose members are fixed, but still takes their own config', async () => {
     const h = await harness();
     const refused = await system(h, 'system.member.set', { member: 'steward', params: { model: 'x' } });
-    expect(refused).toMatchObject({ status: 'failed', error_code: 'forbidden' });
+    expect(refused).toMatchObject({ status: 'failed', error_code: 'reserved' });
     expect(refused.detail).toContain('no description');
     const created = await system(h, 'system.member.create', { name: 'helper', body: { class: 'codex' } });
-    expect(created).toMatchObject({ status: 'failed', error_code: 'forbidden' });
+    expect(created).toMatchObject({ status: 'failed', error_code: 'reserved' });
     const own = await system(h, 'system.member.config.set', { member: 'steward', values: { effort: 'high' } });
     expect(own).toMatchObject({ status: 'completed', member: 'steward', values: { effort: 'high' }, revision: 1 });
     expect(await system(h, 'system.member.get', { member: 'steward' })).toMatchObject({ effective: { effort: 'high' }, sources: { effort: 'config' } });
@@ -146,7 +148,8 @@ describe('actor-config mock', () => {
   it('turns a failed build ok once member.config.set fills the placeholder, and narrates the build', async () => {
     const h = await harness();
     const dry = await project(h, 'system.member.config.set', { member: 'writer', values: { service: { api_key: 'sk-write' } }, dry_run: true });
-    expect(dry).toMatchObject({ status: 'completed', dry_run: true, revision: 0, values: { service: { api_key: 'sk-write' } } });
+    expect(dry).toMatchObject({ status: 'failed', error_code: 'bad_payload' });
+    expect(dry.detail).toContain('dry_run');
     expect(await project(h, 'system.member.get', { member: 'writer' })).toMatchObject({ member: false, build: { state: 'stopped' } });
 
     // 前端填占位时发的就是 patchAtPath 算出来的那一小块补丁。

@@ -107,10 +107,9 @@ function GlobalReferencePicker({ textRef, text, setText, keys, keysError, global
   </>;
 }
 
-function EditorActions({ busy, locked, ready, onCancel, onCheck, saveLabel }) {
+function EditorActions({ busy, locked, ready, onCancel, saveLabel }) {
   return <div className="form-actions">
     <button type="button" disabled={Boolean(busy)} onClick={onCancel}>取消</button>
-    <button type="button" disabled={locked || !ready} onClick={onCheck}>{busy === 'dry-run' ? '检查中…' : '检查变更'}</button>
     <button type="submit" className="primary-button" disabled={locked || !ready}>{busy === 'save' ? '正在保存…' : saveLabel}</button>
   </div>;
 }
@@ -125,7 +124,6 @@ function MemberEntryEditor({ actor, info, commands, disabled, onSaved, onCancel 
   const [requiresText, setRequiresText] = useState((Array.isArray(info?.requires) ? info.requires : []).join(', '));
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
-  const [preview, setPreview] = useState(null);
   const parsed = useMemo(() => parseJSONObject(text, 'params'), [text]);
   const nextBody = ref.trim() ? { [mode]: ref.trim() } : null;
   const bodyChanged = Boolean(nextBody) && !sameJSON(nextBody, plainObject(info?.body) ? info.body : {});
@@ -134,21 +132,18 @@ function MemberEntryEditor({ actor, info, commands, disabled, onSaved, onCancel 
   const requiresChanged = !sameJSON(requires, Array.isArray(info?.requires) ? info.requires : []);
   const redacted = Boolean(patch && hasRedactedValue(patch));
   const changed = bodyChanged || requiresChanged || Boolean(patch && Object.keys(patch).length);
-  const submit = async (dryRun) => {
+  const submit = async () => {
     if (!parsed.value || redacted) return;
-    setBusy(dryRun ? 'dry-run' : 'save');
+    setBusy('save');
     setError('');
-    if (!dryRun) setPreview(null);
     try {
       const reply = await commands.setMember({
         actor,
         body: bodyChanged ? nextBody : null,
         params: patch,
         ...(requiresChanged ? { requires: requires.length ? requires : null } : {}),
-        dryRun,
       });
-      if (dryRun) setPreview(reply || {});
-      else onSaved(`成员条目已写进频道描述（第 ${reply?.description_revision ?? '?'} 版）；成员会按新描述重建，构建结果点「刷新」查看。`);
+      onSaved(`成员条目已写进频道描述（第 ${reply?.description_revision ?? '?'} 版）；成员会按新描述重建，构建结果点「刷新」查看。`);
     } catch (failure) {
       setError(errorText(failure));
     } finally {
@@ -156,28 +151,24 @@ function MemberEntryEditor({ actor, info, commands, disabled, onSaved, onCancel 
     }
   };
   const locked = disabled || Boolean(busy);
-  return <form className="governance-form member-config-editor" aria-label="编辑成员条目" onSubmit={(event) => { event.preventDefault(); void submit(false); }}>
+  return <form className="governance-form member-config-editor" aria-label="编辑成员条目" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
     <fieldset className="member-body-mode" disabled={locked}>
       <legend>从什么造</legend>
-      <label><input type="radio" name="member-body-mode" checked={mode === 'class'} onChange={() => { setMode('class'); setPreview(null); }} /> Class</label>
-      <label><input type="radio" name="member-body-mode" checked={mode === 'actor'} onChange={() => { setMode('actor'); setPreview(null); }} /> Actor 描述（名字@版本）</label>
+      <label><input type="radio" name="member-body-mode" checked={mode === 'class'} onChange={() => setMode('class')} /> Class</label>
+      <label><input type="radio" name="member-body-mode" checked={mode === 'actor'} onChange={() => setMode('actor')} /> Actor 描述（名字@版本）</label>
     </fieldset>
-    <label>{mode === 'actor' ? 'Actor 描述' : 'Class'}<input aria-label={mode === 'actor' ? '成员 Actor 描述' : '成员 Class'} value={ref} disabled={locked} placeholder={mode === 'actor' ? '例如 research-claude@2' : '例如 claude'} onChange={(event) => { setRef(event.target.value); setPreview(null); }} /></label>
-    <label>params JSON<textarea aria-label="成员 params JSON" rows="8" spellCheck={false} value={text} disabled={locked} aria-invalid={parsed.error ? true : undefined} onChange={(event) => { setText(event.target.value); setPreview(null); }} /></label>
+    <label>{mode === 'actor' ? 'Actor 描述' : 'Class'}<input aria-label={mode === 'actor' ? '成员 Actor 描述' : '成员 Class'} value={ref} disabled={locked} placeholder={mode === 'actor' ? '例如 research-claude@2' : '例如 claude'} onChange={(event) => setRef(event.target.value)} /></label>
+    <label>params JSON<textarea aria-label="成员 params JSON" rows="8" spellCheck={false} value={text} disabled={locked} aria-invalid={parsed.error ? true : undefined} onChange={(event) => setText(event.target.value)} /></label>
     {parsed.error && <p className="field-error" role="alert">{parsed.error}</p>}
-    <label>requires<input aria-label="成员 requires" value={requiresText} disabled={locked} placeholder="逗号分隔的词" onChange={(event) => { setRequiresText(event.target.value); setPreview(null); }} /></label>
+    <label>requires<input aria-label="成员 requires" value={requiresText} disabled={locked} placeholder="逗号分隔的词" onChange={(event) => setRequiresText(event.target.value)} /></label>
     <p className="field-hint">params 的值写 <code>"$required:说明"</code> 就是一个占位：由成员在这一台的配置里填。</p>
     {redacted && <p className="field-error" role="alert">params 里有“已隐藏”的值（本地缓存脱敏过），不能写回；请点「刷新」重新读取后再改。</p>}
     {changed && <details className="member-config-patch" open>
       <summary>将提交的变更</summary>
       <pre>{JSON.stringify({ ...(bodyChanged ? { body: nextBody } : {}), ...(patch && Object.keys(patch).length ? { params: patch } : {}), ...(requiresChanged ? { requires: requires.length ? requires : null } : {}) }, null, 2)}</pre>
     </details>}
-    {preview && <div className="member-config-preview" role="status" aria-label="检查结果">
-      <strong>检查通过：描述会是第 {preview.description_revision != null ? Number(preview.description_revision) + 1 : '?'} 版</strong>
-      {preview.entry && <pre>{JSON.stringify(preview.entry, null, 2)}</pre>}
-    </div>}
     {error && <p className="governance-error" role="alert">{error}</p>}
-    <EditorActions busy={busy} locked={locked} ready={Boolean(parsed.value) && changed && !redacted} onCancel={onCancel} onCheck={() => void submit(true)} saveLabel="保存条目" />
+    <EditorActions busy={busy} locked={locked} ready={Boolean(parsed.value) && changed && !redacted} onCancel={onCancel} saveLabel="保存条目" />
   </form>;
 }
 
@@ -190,7 +181,6 @@ function MemberOwnConfigEditor({ actor, info, commands, devices, globalKeys, dis
   const [text, setText] = useState(() => JSON.stringify(ownValues, null, 2));
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
-  const [preview, setPreview] = useState(null);
   const { keys, error: keysError } = useGlobalKeyNames(globalKeys);
   const textRef = useRef(null);
   const parsed = useMemo(() => parseJSONObject(text, 'values'), [text]);
@@ -200,15 +190,13 @@ function MemberOwnConfigEditor({ actor, info, commands, devices, globalKeys, dis
   const changed = hostChanged || Boolean(patch && Object.keys(patch).length);
   const missing = parsed.value && Array.isArray(keys) ? missingGlobalReferences(parsed.value, keys) : [];
   const hostOptions = [...new Set([String(own.desired_host || ''), ...(devices || []).map((row) => row.id)].filter((id) => id && id !== LOCAL_DEVICE_ID))];
-  const submit = async (dryRun) => {
+  const submit = async () => {
     if (!parsed.value || redacted) return;
-    setBusy(dryRun ? 'dry-run' : 'save');
+    setBusy('save');
     setError('');
-    if (!dryRun) setPreview(null);
     try {
-      const reply = await commands.setMemberConfig({ actor, ...(hostChanged ? { desiredHost: host } : {}), values: patch, dryRun });
-      if (dryRun) setPreview(reply || {});
-      else onSaved(`这一台的配置已保存（第 ${reply?.revision ?? '?'} 版）；成员会按新配置重建，构建结果点「刷新」查看。`);
+      const reply = await commands.setMemberConfig({ actor, ...(hostChanged ? { desiredHost: host } : {}), values: patch });
+      onSaved(`这一台的配置已保存（第 ${reply?.revision ?? '?'} 版）；成员会按新配置重建，构建结果点「刷新」查看。`);
     } catch (failure) {
       setError(errorText(failure));
     } finally {
@@ -216,8 +204,8 @@ function MemberOwnConfigEditor({ actor, info, commands, devices, globalKeys, dis
     }
   };
   const locked = disabled || Boolean(busy);
-  return <form className="governance-form member-config-editor" aria-label="编辑成员配置" onSubmit={(event) => { event.preventDefault(); void submit(false); }}>
-    <label>运行设备<select aria-label="成员运行设备" value={host} disabled={locked} onChange={(event) => { setHost(event.target.value); setPreview(null); }}>
+  return <form className="governance-form member-config-editor" aria-label="编辑成员配置" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
+    <label>运行设备<select aria-label="成员运行设备" value={host} disabled={locked} onChange={(event) => setHost(event.target.value)}>
       <option value="">local-device（默认）</option>
       {hostOptions.map((id) => <option key={id} value={id}>{(devices || []).find((row) => row.id === id)?.name || id}</option>)}
     </select></label>
@@ -229,23 +217,18 @@ function MemberOwnConfigEditor({ actor, info, commands, devices, globalKeys, dis
       value={text}
       disabled={locked}
       aria-invalid={parsed.error ? true : undefined}
-      onChange={(event) => { setText(event.target.value); setPreview(null); }}
+      onChange={(event) => setText(event.target.value)}
     /></label>
     {parsed.error && <p className="field-error" role="alert">{parsed.error}</p>}
-    <GlobalReferencePicker textRef={textRef} text={text} setText={(next) => { setText(next); setPreview(null); }} keys={keys} keysError={keysError} globalKeys={globalKeys} disabled={locked} />
+    <GlobalReferencePicker textRef={textRef} text={text} setText={setText} keys={keys} keysError={keysError} globalKeys={globalKeys} disabled={locked} />
     {missing.length > 0 && <p className="field-hint member-config-missing" role="status">引用的全局 key 不存在：{missing.join('、')}</p>}
     {redacted && <p className="field-error" role="alert">配置里有“已隐藏”的值（本地缓存脱敏过），不能写回成员；请点「刷新」重新读取后再改。</p>}
     {changed && <details className="member-config-patch" open>
       <summary>将提交的变更</summary>
       <pre>{JSON.stringify({ ...(hostChanged ? { desired_host: host } : {}), ...(patch && Object.keys(patch).length ? { values: patch } : {}) }, null, 2)}</pre>
     </details>}
-    {preview && <div className="member-config-preview" role="status" aria-label="检查结果">
-      <strong>检查通过</strong>
-      <small>运行设备 {preview.desired_host || 'local-device'}</small>
-      <pre>{JSON.stringify(preview.values ?? {}, null, 2)}</pre>
-    </div>}
     {error && <p className="governance-error" role="alert">{error}</p>}
-    <EditorActions busy={busy} locked={locked} ready={Boolean(parsed.value) && changed && !redacted} onCancel={onCancel} onCheck={() => void submit(true)} saveLabel="保存配置" />
+    <EditorActions busy={busy} locked={locked} ready={Boolean(parsed.value) && changed && !redacted} onCancel={onCancel} saveLabel="保存配置" />
   </form>;
 }
 

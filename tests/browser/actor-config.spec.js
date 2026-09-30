@@ -189,6 +189,8 @@ test('成员两块编辑: the entry and this member\'s own configuration are edi
   // 第一块：描述条目的 params（写进 c0 的频道描述，所有这个频道的实例共用）。
   await entry.getByRole('button', { name: '编辑条目', exact: true }).click();
   const entryEditor = detail.getByRole('form', { name: '编辑成员条目' });
+  // 没有预览：只有取消和保存。
+  await expect(entryEditor.getByRole('button', { name: '检查变更' })).toHaveCount(0);
   await expect(entryEditor.getByLabel('成员 Actor 描述')).toHaveValue('search@1');
   await entryEditor.getByLabel('成员 params JSON').fill('{"endpoint":"http://127.0.0.1:9100/mcp","timeout_ms":5000}');
   await entryEditor.getByRole('button', { name: '保存条目', exact: true }).click();
@@ -203,6 +205,7 @@ test('成员两块编辑: the entry and this member\'s own configuration are edi
   // 第二块：这一台的配置（本频道的库里，只属于这个成员）盖在条目上面。
   await own.getByRole('button', { name: '编辑配置', exact: true }).click();
   const ownEditor = detail.getByRole('form', { name: '编辑成员配置' });
+  await expect(ownEditor.getByRole('button', { name: '检查变更' })).toHaveCount(0);
   await expect(ownEditor.getByLabel('成员运行设备')).toHaveValue('');
   await ownEditor.getByLabel('成员配置 JSON').fill('{"timeout_ms":900}');
   await ownEditor.getByRole('button', { name: '保存配置', exact: true }).click();

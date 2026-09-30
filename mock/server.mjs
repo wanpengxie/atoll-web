@@ -79,16 +79,18 @@ const MOCK_CONTEXT_WINDOW = 200_000;
 
 const now = () => Date.now();
 
-function assertClosedPayload(payload, allowed) {
+// code is the refusal's error code: bad_payload at a channel's own door,
+// invalid_args where c0's registrar answers.
+function assertClosedPayload(payload, allowed, code = 'bad_payload') {
   if (!isObject(payload)) {
     const error = new TypeError('payload must be a JSON object');
-    error.code = 'bad_payload';
+    error.code = code;
     throw error;
   }
   const unknown = Object.keys(payload).filter((key) => !allowed.includes(key));
   if (unknown.length) {
     const error = new TypeError(`payload has unknown field: ${unknown.sort().join(', ')}`);
-    error.code = 'bad_payload';
+    error.code = code;
     throw error;
   }
 }
@@ -1094,15 +1096,16 @@ export function createMockServer({
             completeFlat(domain.memberInfo(channelId, body.member));
             return;
           }
+          // 改描述的词由 system actor 转交 c0 的 registrar 写，回复原样转回：{value}。
           case 'system.member.create': {
-            assertClosedPayload(body, ['name', 'body', 'params', 'requires', 'dry_run']);
-            completeFlat(domain.createMemberEntry(channelId, body));
+            assertClosedPayload(body, ['name', 'body', 'params', 'requires'], 'invalid_args');
+            complete(domain.createMemberEntry(channelId, body));
             return;
           }
           case 'system.member.set': {
-            assertClosedPayload(body, ['member', 'body', 'params', 'requires', 'dry_run']);
-            if (!body.member) throw new TypeError('system.member.set takes {member, body?, params? (a merge patch), requires? (null clears), dry_run?}');
-            completeFlat(domain.setMemberEntry(channelId, body));
+            assertClosedPayload(body, ['member', 'body', 'params', 'requires'], 'invalid_args');
+            if (!body.member) throw new TypeError('system.member.set takes {member, body?, params? (a merge patch), requires? (null clears)}');
+            complete(domain.setMemberEntry(channelId, body));
             return;
           }
           case 'system.member.config.get': {
@@ -1111,8 +1114,8 @@ export function createMockServer({
             return;
           }
           case 'system.member.config.set': {
-            assertClosedPayload(body, ['member', 'desired_host', 'values', 'dry_run']);
-            if (!body.member) throw new TypeError('system.member.config.set takes {member, desired_host?, values? (a merge patch), dry_run?}');
+            assertClosedPayload(body, ['member', 'desired_host', 'values']);
+            if (!body.member) throw new TypeError('system.member.config.set takes {member, desired_host?, values? (a merge patch)}');
             completeFlat(domain.setMemberConfig(channelId, body));
             return;
           }
@@ -1128,7 +1131,9 @@ export function createMockServer({
             const row = domain.memberRow(channelId, body.member);
             const value = domain.deleteMember(channelId, body.member);
             if (row) narrate('system.member.deleted', { member: row.declared.id, reason: 'removed' });
-            completeFlat(value);
+            // 人在本频道里请出去（本地回复）；其余是 registrar 改描述（{value}）。
+            if (row?.declared.kind === 'human') completeFlat(value);
+            else complete(value);
             return;
           }
           case 'system.member.restart': {

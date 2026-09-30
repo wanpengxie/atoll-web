@@ -61,11 +61,13 @@ describe('mock domain: descriptions, member config and builds', () => {
     expect(mock.memberInfo('c0.project', 'writer')).toMatchObject({ member: false, missing: [{ key: 'service.api_key' }], build: { result: 'failed', state: 'retrying' } });
   });
 
-  it('forbids member.set and member.create in c0, whose members are fixed, but still edits their own config', () => {
+  it('refuses member.set and member.create in c0, whose members are fixed, but still edits their own config', () => {
+    // c0 has no description: the registry answers reserved, as it does for
+    // every description write on a channel the platform builds.
     const mock = domain();
-    expect(() => mock.setMemberEntry('c0', { member: 'steward', params: { model: 'x' } })).toThrow(expect.objectContaining({ code: 'forbidden' }));
-    expect(() => mock.createMemberEntry('c0', { name: 'helper', body: { class: 'codex' } })).toThrow(expect.objectContaining({ code: 'forbidden' }));
-    expect(() => mock.setChannel('c0', { description: 'x' })).toThrow(expect.objectContaining({ code: 'forbidden' }));
+    expect(() => mock.setMemberEntry('c0', { member: 'steward', params: { model: 'x' } })).toThrow(expect.objectContaining({ code: 'reserved' }));
+    expect(() => mock.createMemberEntry('c0', { name: 'helper', body: { class: 'codex' } })).toThrow(expect.objectContaining({ code: 'reserved' }));
+    expect(() => mock.setChannel('c0', { description: 'x' })).toThrow(expect.objectContaining({ code: 'reserved' }));
     expect(() => mock.channelDescription('c0')).toThrow(expect.objectContaining({ code: 'reserved' }));
     expect(mock.setMemberConfig('c0', { member: 'steward', values: { effort: 'high' } })).toMatchObject({ revision: 1 });
     expect(mock.memberInfo('c0', 'steward')).toMatchObject({ body: { class: 'codex' }, sources: { effort: 'config', model: 'default' } });

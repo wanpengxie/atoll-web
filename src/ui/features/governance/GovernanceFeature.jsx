@@ -9,7 +9,6 @@ import { PanelCard } from '../../primitives/PanelCard.jsx';
 import { SelectMenu } from '../../primitives/SelectMenu.jsx';
 import { SidePanel } from '../../primitives/SidePanel.jsx';
 import { useModalFocus } from '../../primitives/useModalFocus.js';
-import { BuildLine } from './BuildLine.jsx';
 import { GlobalKeysPanel } from './GlobalKeysPanel.jsx';
 
 function errorMessage(error) {
@@ -123,11 +122,8 @@ function compareParticipantCandidates(left, right) {
     || String(left?.value || '').localeCompare(String(right?.value || ''), 'zh-CN');
 }
 
-// channel.get 的 health：空 = 正常；broken = 频道打不开（原因在 health_reason）。
-const HEALTH_LABELS = Object.freeze({ broken: '损坏' });
-
 // 频道设置：说明文字、是否对外服务（channel.set）；外挂设备（device.attach /
-// detach）；频道的健康、它自己和每个成员最近一次构建（channel.get）。频道
+// detach）；频道状态只有注册库里的事实——描述和它的版本（channel.get）。频道
 // 状态按需读——打开面板不发任何请求。
 function ChannelSettings({ channel, port }) {
   const currentChannel = channel || {};
@@ -169,7 +165,7 @@ function ChannelSettings({ channel, port }) {
   const usable = new Set((port.channelDevices || []).map((row) => row.id));
   const spaceDevices = (port.spaceDevices || []).filter((row) => row.id && row.id !== LOCAL_DEVICE_ID);
   const saveProfile = async () => {
-    await action.submit('update_profile', { channelId: channel?.id, description, serving }, { refresh: 'directory', submitted: '频道描述已写入；构建结果重新读取频道状态查看。' });
+    await action.submit('update_profile', { channelId: channel?.id, description, serving }, { refresh: 'directory', submitted: '频道描述已写入。' });
     if (readable) await read();
   };
   const toggleDevice = async (row, attach) => {
@@ -191,29 +187,15 @@ function ChannelSettings({ channel, port }) {
     </PanelCard>
     <PanelCard className="channel-runtime" title="频道状态" action={<button type="button" className="text-button" disabled={!readable || reading} onClick={read}>{reading ? '读取中…' : view ? '刷新' : '读取'}</button>}>
       {!readable && <p className="governance-empty">当前会话不能读取频道状态。</p>}
-      {readable && !view && !reading && !readError && <p className="governance-empty">频道的描述、健康和构建结果按需读取：点「读取」发一条 system.channel.get。</p>}
+      {readable && !view && !reading && !readError && <p className="governance-empty">频道的描述按需读取：点「读取」发一条 system.channel.get。</p>}
       {readError && <p className="governance-error" role="alert">{readError}</p>}
       {view && <>
         <dl className="channel-health">
-          <dt>健康</dt><dd className={`health-${view.health || 'ok'}`}>{view.health ? HEALTH_LABELS[view.health] || view.health : '正常'}{view.health_reason ? `：${view.health_reason}` : ''}</dd>
           {body && <><dt>描述版本</dt><dd>第 {view.description.revision} 版</dd></>}
           {body && <><dt>说明</dt><dd>{body.description || '—'}</dd></>}
           {body && <><dt>对外服务</dt><dd>{Number(body.serving || 0) === 1 ? '是' : '否'}</dd></>}
         </dl>
         {platformChannel && <p className="governance-empty">这个频道由平台搭建，没有频道描述；成员固定。</p>}
-        {view.build && <BuildLine record={view.build} label="频道自身" />}
-        <div className="member-builds" aria-label="成员构建摘要">
-          {(view.members || []).map((record, index) => {
-            const name = String(record?.object?.name || '');
-            // 构建失败的成员不在名册上；从这里打开它的详情去补占位、改配置。
-            const running = (port.roster || []).find((row) => row.kind !== 'human' && actorMemberName(row.id) === name);
-            return <div className="member-build-row" key={`${name || index}`}>
-              <BuildLine record={record} />
-              {name && typeof commands.selectActor === 'function' && <button type="button" className="text-button" aria-label={`查看成员 ${name}`} onClick={() => commands.selectActor(running || { id: name, name, kind: '', body: '' })}>查看</button>}
-            </div>;
-          })}
-          {!(view.members || []).length && <p className="governance-empty">还没有成员构建记录。</p>}
-        </div>
       </>}
     </PanelCard>
     {body && <PanelCard className="governance-form" title="说明与服务">

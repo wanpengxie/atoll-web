@@ -72,7 +72,7 @@ describe('phase E stateful mock', () => {
     const h = await harness();
     // c0 是平台搭的，没有描述可改。
     const platform = await submitTerminal(h, 'system.channel.set', { channel_id: 'c0', description: 'Configured', serving: 1 });
-    expect(platform.payload.body).toMatchObject({ status: 'failed', error_code: 'forbidden' });
+    expect(platform.payload.body).toMatchObject({ status: 'failed', error_code: 'reserved' });
 
     const set = await submitTerminal(h, 'system.channel.set', { channel_id: 'c0.project', description: 'Configured', serving: 1 });
     expect(set.payload.body.value).toEqual({ channel_id: 'c0.project', revision: 2 });
@@ -80,9 +80,9 @@ describe('phase E stateful mock', () => {
     expect(view.payload.body.value).toMatchObject({
       id: 'c0.project',
       description: { revision: 2, body: { description: 'Configured', serving: 1, members: [{ name: 'project-agent', body: { class: 'codex' } }] } },
-      members: [expect.objectContaining({ object: { kind: 'member', channel: 'c0.project', name: 'project-agent' }, result: 'ok' })],
     });
-    expect(view.payload.body.value).not.toHaveProperty('health');
+    // channel.get 只答注册库里的事实：没有健康，没有构建。
+    for (const gone of ['health', 'health_reason', 'build', 'members']) expect(view.payload.body.value).not.toHaveProperty(gone);
     // 平台频道的 channel.get 没有描述。
     expect((await submitTerminal(h, 'system.channel.get', { channel_id: 'c0' })).payload.body.value).not.toHaveProperty('description');
 

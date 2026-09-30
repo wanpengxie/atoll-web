@@ -1606,19 +1606,17 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       // 与两层状态：按需读，一次真人点击发一条 member.get。
       readMember: (actor) => requestSystemReply(selectedActorChannelId, TYPES.member.get, { member: String(actor?.id || '') }),
       // 描述条目：body 整个替换，params 是合并补丁，requires 整个替换（null 清空）。
-      setMember: ({ actor, body = null, params = null, requires, dryRun = false }) => requestSystemReply(selectedActorChannelId, TYPES.member.set, {
+      setMember: ({ actor, body = null, params = null, requires }) => requestSystemReply(selectedActorChannelId, TYPES.member.set, {
         member: String(actor?.id || ''),
         ...(body ? { body } : {}),
         ...(params && Object.keys(params).length ? { params } : {}),
         ...(requires !== undefined ? { requires } : {}),
-        ...(dryRun ? { dry_run: true } : {}),
       }),
       // 这一台的配置：desired_host 给了才改（'' 回到 local-device），values 是合并补丁。
-      setMemberConfig: ({ actor, desiredHost, values = null, dryRun = false }) => requestSystemReply(selectedActorChannelId, TYPES.member.configSet, {
+      setMemberConfig: ({ actor, desiredHost, values = null }) => requestSystemReply(selectedActorChannelId, TYPES.member.configSet, {
         member: String(actor?.id || ''),
         ...(desiredHost !== undefined ? { desired_host: String(desiredHost || '') } : {}),
         ...(values && Object.keys(values).length ? { values } : {}),
-        ...(dryRun ? { dry_run: true } : {}),
       }),
       refresh: () => roster.refresh(navigation.activeChannelId, true),
       select: (actor) => setPanel({ kind: 'actor', actor, channelId: navigation.activeChannelId }),
@@ -1780,7 +1778,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
           return refreshDirectoryFacts();
         },
         selectActor: (actor) => setPanel({ kind: 'actor', actor, channelId: navigation.activeChannelId }),
-        // 频道的描述、健康、自己和各成员最近一次构建：按需读。
+        // 频道在注册库里的事实（目录行、描述和版本）：按需读。
         readChannel: (channelId = navigation.activeChannelId) => requestSystemReply(channelId, TYPES.channel.get, { channel_id: String(channelId || '') }),
         // 一个频道的描述（抄成员条目时读本频道的）。
         readDescription: (channelId = navigation.activeChannelId) => requestSystemReply(navigation.activeChannelId, TYPES.channelDescription.get, { channel: String(channelId || '') }),

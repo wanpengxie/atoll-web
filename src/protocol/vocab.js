@@ -71,7 +71,8 @@ export const TYPES = Object.freeze({
     remove: 'system.member.delete',
     restart: 'system.member.restart',
     // 改一个成员在频道描述里的条目：body（class 或 名字@版本）、params（RFC 7396
-    // 合并补丁）、requires；dry_run 只算不写。
+    // 合并补丁）、requires。system actor 把它（和 create、delete、service.set）
+    // 转交 c0 的 registrar，由它写描述。
     set: 'system.member.set',
     // 这一台的配置（本频道库里）：desired_host 和 values（合并补丁）。
     configGet: 'system.member.config.get',

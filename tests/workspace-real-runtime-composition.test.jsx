@@ -426,21 +426,21 @@ describe('真实 Workspace owner composition', () => {
     const commands = props.roster.commands;
     const actor = { id: 'agent:writer:1', kind: 'agent' };
     const pending = [
-      commands.setMember({ actor, body: null, params: { temperature: null, effort: 'high' }, requires: null, dryRun: true }),
+      commands.setMember({ actor, body: null, params: { temperature: null, effort: 'high' }, requires: null }),
       commands.setMember({ actor, body: { class: 'codex' }, params: {} }),
       commands.setMemberConfig({ actor, desiredHost: '', values: {} }),
-      commands.setMemberConfig({ actor, values: { service: { api_key: '$global.k' } }, dryRun: true }),
+      commands.setMemberConfig({ actor, values: { service: { api_key: '$global.k' } } }),
     ];
     for (const promise of pending) promise.catch(() => {});
     await waitFor(() => expect(submitted(TYPES.member.configSet)).toHaveLength(2));
     expect(submitted(TYPES.member.set).map((frame) => frame.payload)).toEqual([
-      { member: 'agent:writer:1', params: { temperature: null, effort: 'high' }, requires: null, dry_run: true },
+      { member: 'agent:writer:1', params: { temperature: null, effort: 'high' }, requires: null },
       { member: 'agent:writer:1', body: { class: 'codex' } },
     ]);
     // desired_host 给了才发（'' = 回到 local-device）；空的 values 不发。
     expect(submitted(TYPES.member.configSet).map((frame) => frame.payload)).toEqual([
       { member: 'agent:writer:1', desired_host: '' },
-      { member: 'agent:writer:1', values: { service: { api_key: '$global.k' } }, dry_run: true },
+      { member: 'agent:writer:1', values: { service: { api_key: '$global.k' } } },
     ]);
     for (const frame of [...submitted(TYPES.member.set), ...submitted(TYPES.member.configSet)]) {
       expect(frame.audience).toEqual(['system']);

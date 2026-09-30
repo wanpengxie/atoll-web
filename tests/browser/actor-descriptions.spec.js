@@ -137,9 +137,13 @@ test('频道设置: status is read on demand, description and serving are saved,
   expect(submits.filter((payload) => payload.msg_type === 'system.channel.get')).toHaveLength(0);
   await panel.getByRole('button', { name: '读取', exact: true }).click();
   const health = panel.locator('.channel-health');
-  await expect(health).toContainText('正常');
   await expect(health).toContainText('第 1 版');
-  await expect(panel.locator('.member-builds [data-build-name="project-agent"]')).toContainText('成功 · 已就绪');
+  // 频道状态只有注册库里的事实：没有健康、没有频道自身和成员的构建。
+  const runtime = panel.locator('.channel-runtime');
+  await expect(runtime).not.toContainText('健康');
+  await expect(runtime).not.toContainText('频道自身');
+  await expect(runtime.locator('.build-line')).toHaveCount(0);
+  await expect(panel.getByLabel('成员构建摘要')).toHaveCount(0);
   expect(submits.filter((payload) => payload.msg_type === 'system.channel.get').map((payload) => payload.payload)).toEqual([{ channel_id: 'c0.project' }]);
 
   // 说明与服务：写进频道描述（channel.set），描述版本加一。
@@ -172,13 +176,13 @@ test('频道设置: status is read on demand, description and serving are saved,
   expect(state.descriptions['c0.project'].body.devices).toBeUndefined();
 });
 
-test('频道设置 on c0: the platform channel has no description, only status', async ({ page, request }) => {
+test('频道设置 on c0: the platform channel has no description and no builds in its status', async ({ page, request }) => {
   await reset(request, 'channel-governance', 4103);
   await login(page);
   const panel = await openChannelPanel(page, '设置');
   await panel.getByRole('button', { name: '读取', exact: true }).click();
   await expect(panel.getByText('这个频道由平台搭建，没有频道描述；成员固定。')).toBeVisible();
-  await expect(panel.locator('.member-builds [data-build-name="steward"]')).toContainText('成功');
+  await expect(panel.locator('.channel-runtime .build-line')).toHaveCount(0);
   // 没有描述，就没有说明与服务、设备两块。
   await expect(panel.getByRole('heading', { name: '说明与服务' })).toHaveCount(0);
   await expect(panel.locator('.channel-devices')).toHaveCount(0);

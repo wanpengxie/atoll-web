@@ -79,14 +79,15 @@ describe('mock system actor governance', () => {
 
     // c0 是平台搭的频道，没有频道描述：成员固定，加成员被拒绝。
     const fixed = await call('c0', 'system.member.create', { name: 'analyst', body: { actor: 'analyst@1' } });
-    expect(fixed.payload.body).toMatchObject({ status: 'failed', error_code: 'forbidden' });
+    expect(fixed.payload.body).toMatchObject({ status: 'failed', error_code: 'reserved' });
     // 旧的 decl_id 形状不再被接受。
     const legacy = await call('c0.project', 'system.member.create', { decl_id: 'mock:analyst' });
-    expect(legacy.payload.body).toMatchObject({ status: 'failed', error_code: 'bad_payload' });
+    expect(legacy.payload.body).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
 
     // 加成员 = 在频道描述里写一个条目；构建好后出现在名册上。
     const created = await call('c0.project', 'system.member.create', { name: 'analyst', body: { actor: 'analyst@1' } });
-    expect(created.payload.body).toMatchObject({ status: 'completed', written: true, entry: { name: 'analyst', body: { actor: 'analyst@1' } } });
+    // 描述由 c0 的 registrar 写，回复原样转回：{value}。
+    expect(created.payload.body).toMatchObject({ status: 'completed', value: { written: true, entry: { name: 'analyst', body: { actor: 'analyst@1' } } } });
     const roster = await fetchWithSession('/obs/channel/c0.project/actors').then((response) => response.json());
     const analyst = roster.items.find((entry) => /^agent:analyst:/.test(entry.declared.id));
     expect(analyst.declared).toMatchObject({ kind: 'agent', body: 'actor analyst@1' });
@@ -109,7 +110,7 @@ describe('mock system actor governance', () => {
     expect(guarded.payload.body).toMatchObject({ status: 'failed', error_code: 'protected_actor' });
 
     const removed = await call('c0.project', 'system.member.delete', { member: memberId });
-    expect(removed.payload.body).toMatchObject({ status: 'completed', written: true });
+    expect(removed.payload.body).toMatchObject({ status: 'completed', value: { written: true } });
     const after = await fetchWithSession('/obs/channel/c0.project/actors').then((response) => response.json());
     expect(after.items.map((entry) => entry.declared.id)).not.toContain(memberId);
 

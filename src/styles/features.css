@@ -512,7 +512,7 @@ button.channel-file-row { font: inherit; }
 .member-layer-reason { color: var(--text); font: 10px/1.45 var(--mono); overflow-wrap: anywhere; }
 .member-layer dd small { color: var(--text-dim); font-size: 9px; }
 .member-config .member-config-facts { margin: 4px 0 10px; }
-.member-config-json, .member-config-patch pre, .member-config-preview pre { max-height: 260px; overflow: auto; margin: 0 0 10px; padding: 9px; border-radius: var(--radius-control); background: var(--surface-code); font: 9px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word; }
+.member-config-json, .member-config-patch pre { max-height: 260px; overflow: auto; margin: 0 0 10px; padding: 9px; border-radius: var(--radius-control); background: var(--surface-code); font: 9px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word; }
 .member-config-editor { margin-top: 6px; }
 .member-config-editor .field-error { margin: -4px 0 0; }
 .member-config-global { display: flex; gap: 6px; }
@@ -521,9 +521,6 @@ button.channel-file-row { font: inherit; }
 .member-config-missing { color: var(--warning-text) !important; }
 .member-config-patch summary { color: var(--text-muted); cursor: pointer; font-size: 10px; }
 .member-config-patch pre { margin-top: 6px; }
-.member-config-preview { display: grid; gap: 4px; padding: 9px; border-radius: var(--radius-control); background: var(--success-bg); font-size: 10px; }
-.member-config-preview strong { color: var(--online); }
-.member-config-preview pre { margin: 0; background: white; }
 .member-config > .field-hint, .member-block > .field-hint, .member-missing .field-hint, .member-config-editor .field-hint { margin: 4px 0 0; color: var(--text-dim); font-size: 9px; line-height: 1.5; }
 .member-config .field-hint code, .member-config-editor .field-hint code { font: 9px var(--mono); }
 
@@ -541,7 +538,6 @@ button.channel-file-row { font: inherit; }
 .channel-health { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 0 0 8px; font-size: 10px; }
 .channel-health dt { color: var(--text-muted); }
 .channel-health dd { margin: 0; overflow-wrap: anywhere; }
-.channel-health .health-broken { color: var(--danger); }
 .checkbox-row { display: flex; align-items: center; gap: 6px; font-size: 10px; }
 .device-row.default small { color: var(--online); }
 
@@ -583,8 +579,6 @@ button.channel-file-row { font: inherit; }
 .actor-description-version pre { margin: 4px 0 0; font: 8px/1.5 var(--mono); white-space: pre-wrap; }
 .actor-description-version.status-retired { opacity: .6; }
 .actor-description-version button { padding: 4px 6px; border: 1px solid var(--line-control); border-radius: 5px; background: var(--surface-control); cursor: pointer; font-size: 9px; }
-.member-build-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 6px; }
-.member-build-row > .text-button { margin-top: 8px; }
 
 /* 小字说明：各面板里的 field-hint 一律是小号暗色。 */
 .field-hint { color: var(--text-dim); font-size: 9px; line-height: 1.5; }

@@ -45,7 +45,8 @@ describe('workspace governance feature ports', () => {
     }));
     expect(refresh).toHaveBeenCalledWith('directory');
     await waitFor(() => expect(screen.getByRole('status').textContent).toContain('频道描述已写入'));
-    expect(screen.getByRole('status').textContent).toContain('构建结果重新读取频道状态查看');
+    // 频道状态不再有构建结果，回执也不再指向它。
+    expect(screen.getByRole('status').textContent).not.toContain('构建结果');
   });
 
   it('reports a partial result when the directory refresh after a write fails', async () => {

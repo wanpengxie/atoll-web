@@ -229,7 +229,6 @@ describe('member layers in the roster and member config', () => {
   it('edits the member entry and sends body and a params merge patch through setMember', async () => {
     const readMember = vi.fn().mockResolvedValue(writerDetail());
     const setMember = vi.fn()
-      .mockResolvedValueOnce({ written: false, dry_run: true, description_revision: 3, entry: { name: 'writer', body: { actor: 'writer@2' } } })
       .mockRejectedValueOnce(Object.assign(new Error('bad'), { code: 'invalid_args', detail: 'member writer: actor "writer@9" does not exist' }))
       .mockResolvedValueOnce({ written: true, description_revision: 4 });
     render(<MemberConfigSection actor={WRITER} port={{ commands: { readMember, setMember, setMemberConfig: vi.fn() } }} />);
@@ -249,9 +248,9 @@ describe('member layers in the roster and member config', () => {
       params: { effort: 'high', temperature: null },
       requires: null,
     });
-    fireEvent.click(within(editor).getByRole('button', { name: '检查变更' }));
-    await within(editor).findByText('检查通过：描述会是第 4 版');
-    expect(setMember).toHaveBeenLastCalledWith({ actor: WRITER, body: { actor: 'writer@2' }, params: { effort: 'high', temperature: null }, requires: null, dryRun: true });
+    // 没有预览：只有取消和保存。
+    expect(within(editor).queryByRole('button', { name: '检查变更' })).toBeNull();
+    expect(within(editor).getAllByRole('button').map((button) => button.textContent)).toEqual(['取消', '保存条目']);
 
     fireEvent.change(within(editor).getByLabelText('成员 Actor 描述'), { target: { value: 'writer@9' } });
     fireEvent.click(within(editor).getByRole('button', { name: '保存条目' }));
@@ -260,7 +259,7 @@ describe('member layers in the roster and member config', () => {
     fireEvent.change(within(editor).getByLabelText('成员 Actor 描述'), { target: { value: 'writer@2' } });
     fireEvent.click(within(editor).getByRole('button', { name: '保存条目' }));
     await screen.findByText(/成员条目已写进频道描述（第 4 版）/);
-    expect(setMember).toHaveBeenLastCalledWith({ actor: WRITER, body: { actor: 'writer@2' }, params: { effort: 'high', temperature: null }, requires: null, dryRun: false });
+    expect(setMember).toHaveBeenLastCalledWith({ actor: WRITER, body: { actor: 'writer@2' }, params: { effort: 'high', temperature: null }, requires: null });
     // 保存后重新读一次。
     expect(readMember).toHaveBeenCalledTimes(2);
   });
@@ -278,13 +277,12 @@ describe('member layers in the roster and member config', () => {
     fireEvent.click(within(editor).getByRole('radio', { name: 'Class' }));
     fireEvent.change(within(editor).getByLabelText('成员 Class'), { target: { value: 'codex' } });
     fireEvent.click(within(editor).getByRole('button', { name: '保存条目' }));
-    await waitFor(() => expect(setMember).toHaveBeenCalledWith({ actor: WRITER, body: { class: 'codex' }, params: {}, dryRun: false }));
+    await waitFor(() => expect(setMember).toHaveBeenCalledWith({ actor: WRITER, body: { class: 'codex' }, params: {} }));
   });
 
   it('edits this member\'s own config and sends desired_host and a values merge patch through setMemberConfig', async () => {
     const readMember = vi.fn().mockResolvedValue(writerDetail({ own_config: { values: { model: 'claude-opus', service: { region: 'cn' } }, revision: 2 } }));
     const setMemberConfig = vi.fn()
-      .mockResolvedValueOnce({ member: 'writer', desired_host: 'laptop', values: { service: { region: 'us' } }, revision: 2, dry_run: true })
       .mockResolvedValueOnce({ member: 'writer', revision: 3 });
     const list = vi.fn(async () => ['deepseek_prod', 'openai_prod']);
     const devices = [{ id: 'local-device', name: 'local-device' }, { id: 'laptop', name: 'Laptop' }];
@@ -308,13 +306,12 @@ describe('member layers in the roster and member config', () => {
     fireEvent.click(within(editor).getByRole('button', { name: '插入引用' }));
     expect(textarea.value).toBe('{"service":{"region":"us"},"api_key":"$global.deepseek_prod"}');
 
-    fireEvent.click(within(editor).getByRole('button', { name: '检查变更' }));
-    await within(editor).findByText('运行设备 laptop');
+    expect(within(editor).queryByRole('button', { name: '检查变更' })).toBeNull();
     const patch = { service: { region: 'us' }, api_key: '$global.deepseek_prod', model: null };
-    expect(setMemberConfig).toHaveBeenLastCalledWith({ actor: WRITER, desiredHost: 'laptop', values: patch, dryRun: true });
     fireEvent.click(within(editor).getByRole('button', { name: '保存配置' }));
     await screen.findByText(/这一台的配置已保存（第 3 版）/);
-    expect(setMemberConfig).toHaveBeenLastCalledWith({ actor: WRITER, desiredHost: 'laptop', values: patch, dryRun: false });
+    expect(setMemberConfig).toHaveBeenCalledTimes(1);
+    expect(setMemberConfig).toHaveBeenLastCalledWith({ actor: WRITER, desiredHost: 'laptop', values: patch });
   });
 
   it('refuses to write back a redacted value from the local cache', async () => {

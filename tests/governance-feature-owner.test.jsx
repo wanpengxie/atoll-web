@@ -41,7 +41,9 @@ describe('Governance UI owner contracts', () => {
     expect(refresh).toHaveBeenCalledWith('directory');
   });
 
-  it('reads the channel on demand and shows health, description revision and member builds', async () => {
+  it('reads the channel on demand and shows only the registry\'s facts: the description and its revision', async () => {
+    // Even a reply that still carried the old runtime fields shows none of
+    // them: the card has no health, no channel build, no member builds.
     const view = {
       id: 'c0.project',
       health: 'broken',
@@ -50,38 +52,28 @@ describe('Governance UI owner contracts', () => {
       build: { object: { kind: 'channel', channel: 'c0.project' }, description: { channel_revision: 3 }, attempt: 1, result: 'ok', state: 'serving' },
       members: [
         { object: { kind: 'member', channel: 'c0.project', name: 'writer' }, description: { channel_revision: 3, actor: 'writer@1' }, attempt: 4, result: 'failed', state: 'stopped', reason: 'service.api_key is a placeholder still unfilled' },
-        { object: { kind: 'member', channel: 'c0.project', name: 'helper' }, description: { channel_revision: 3 }, attempt: 1, result: 'ok', state: 'ready' },
       ],
     };
     const readChannel = vi.fn().mockResolvedValue(view);
-    const selectActor = vi.fn();
-    const helper = { id: 'agent:helper:4', kind: 'agent', name: 'helper' };
     render(<ChannelAdministrationPanel
       channel={{ id: 'c0.project', qualified_name: 'c0.project', open: true }}
       initialTab="overview"
-      port={{ children: [], roster: [helper], commands: { readChannel, selectActor } }}
+      port={{ children: [], roster: [], commands: { readChannel, selectActor: vi.fn() } }}
       onClose={vi.fn()}
     />);
 
     fireEvent.click(screen.getByRole('button', { name: '读取' }));
     await screen.findByText('第 3 版');
     expect(readChannel).toHaveBeenCalledWith('c0.project');
-    expect(screen.getByText('损坏：the channel is not open on this node')).toBeTruthy();
     expect(screen.getByText('项目频道', { selector: 'dd' })).toBeTruthy();
     expect(screen.getByLabelText('频道说明').value).toBe('项目频道');
-    const builds = screen.getByLabelText('成员构建摘要');
-    const lines = [...builds.querySelectorAll('.build-line')];
-    expect(lines.map((line) => line.dataset.buildName)).toEqual(['writer', 'helper']);
-    expect(lines[0].className).toContain('build-stopped');
-    expect(lines[0].textContent).toContain('service.api_key is a placeholder still unfilled');
-    expect(lines[1].textContent).toContain('成功 · 已就绪');
-    expect(document.querySelector('[data-build-object="channel"]').textContent).toContain('频道自身');
-
-    // 名册上有的成员打开它的名册行；构建失败、不在名册上的成员按名字打开。
-    fireEvent.click(within(builds).getByRole('button', { name: '查看成员 helper' }));
-    expect(selectActor).toHaveBeenLastCalledWith(helper);
-    fireEvent.click(within(builds).getByRole('button', { name: '查看成员 writer' }));
-    expect(selectActor).toHaveBeenLastCalledWith({ id: 'writer', name: 'writer', kind: '', body: '' });
+    const card = document.querySelector('.channel-runtime');
+    expect(card.textContent).not.toContain('健康');
+    expect(card.textContent).not.toContain('损坏');
+    expect(card.textContent).not.toContain('频道自身');
+    expect(card.querySelector('.build-line')).toBeNull();
+    expect(screen.queryByLabelText('成员构建摘要')).toBeNull();
+    expect(card.textContent).not.toContain('service.api_key is a placeholder still unfilled');
   });
 
   it('writes description and serving through update_profile and re-reads the channel', async () => {
@@ -149,7 +141,7 @@ describe('Governance UI owner contracts', () => {
   });
 
   it('says a platform-built channel has no description and offers no description form', async () => {
-    const readChannel = vi.fn().mockResolvedValue({ id: 'c0', members: [] });
+    const readChannel = vi.fn().mockResolvedValue({ id: 'c0' });
     render(<ChannelAdministrationPanel
       channel={{ id: 'c0', qualified_name: 'c0' }}
       initialTab="overview"
@@ -158,8 +150,8 @@ describe('Governance UI owner contracts', () => {
     />);
     fireEvent.click(screen.getByRole('button', { name: '读取' }));
     await screen.findByText('这个频道由平台搭建，没有频道描述；成员固定。');
-    expect(screen.getByText('正常')).toBeTruthy();
-    expect(screen.getByText('还没有成员构建记录。')).toBeTruthy();
+    expect(screen.queryByText('正常')).toBeNull();
+    expect(screen.queryByText('还没有成员构建记录。')).toBeNull();
     expect(screen.queryByLabelText('频道说明')).toBeNull();
   });
 
