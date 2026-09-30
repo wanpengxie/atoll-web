@@ -130,8 +130,9 @@ test('NR10-01/04 public process detail and live timing', async ({ page, request 
   await expect(liveDrawer).toContainText('账本模型');
   await expect(liveDrawer).toContainText('output');
   await expect(liveDrawer).toContainText('3');
-  await expect(liveDrawer).not.toContainText('nr10-live-input');
-  await expect(liveDrawer).not.toContainText('nr10-live-output');
+  // 前端不脱敏（owner 10-01）：工具的输入输出原样可见。
+  await expect(liveDrawer).toContainText('nr10-live-input');
+  await expect(liveDrawer).toContainText('nr10-live-output');
   const nested = liveDrawer.locator('details').first();
   await expect(nested).not.toHaveAttribute('open');
   // The panel is a side panel, not a modal: no focus trap to walk.

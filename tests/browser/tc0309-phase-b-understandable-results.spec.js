@@ -49,7 +49,7 @@ async function send(page, text) {
   await page.getByRole('button', { name: /发送/ }).click();
 }
 
-test('TC-0309 B-BR-09 renders structured, empty-success, failed, and redacted results understandably', async ({ page, request }) => {
+test('TC-0309 B-BR-09 renders structured, empty-success and failed results understandably, values as they are', async ({ page, request }) => {
   await reset(request, 'message-structured-success', 3091);
   await login(page);
   await send(page, `tc0309-structured-${Date.now()}`);
@@ -59,7 +59,8 @@ test('TC-0309 B-BR-09 renders structured, empty-success, failed, and redacted re
   await expect(structured.getByText('instance_id', { exact: true })).toBeHidden();
   await structured.locator(':scope > summary').click();
   await expect(structured.getByText('instance_id', { exact: true })).toBeVisible();
-  await expect(structured.getByText('已隐藏', { exact: true })).toBeVisible();
+  // 前端不脱敏（owner 10-01），键和值照原样显示。
+  await expect(structured.getByText('must-not-render', { exact: true })).toBeVisible();
   const rows = structured.locator('.structured-array').first();
   await expect(rows.locator(':scope > p').getByText('25 项', { exact: true })).toBeVisible();
   await expect(rows.locator(':scope > .structured-array-item')).toHaveCount(20);
