@@ -46,7 +46,8 @@ test('TC0227 F7 revoked active channel sends no freshness request and a later gr
   await expect(page.getByText('频道内容不可访问', { exact: true })).toBeVisible({ timeout: 10_000 });
   await page.waitForTimeout(500);
   expect(metaFrames.filter((frame) => frame.phase === 'revoked' && frame.channelId === 'c0.project')).toEqual([]);
-  expect(sockets).toHaveLength(socketsBeforeRevoke + 1);
+  // 成员关系变了由网关推一份新清单，连接不断（BATCH3 §12）。
+  expect(sockets).toHaveLength(socketsBeforeRevoke);
 
   accessPhase = 'granted';
   const granted = await request.post('/mock/control/action', { data: { type: 'grant_membership', channel_id: 'c0.project' } });
@@ -73,7 +74,7 @@ test('TC0227 F7 revoked active channel sends no freshness request and a later gr
       contentType: 'application/json',
     });
   }
-  expect(sockets).toHaveLength(socketsBeforeRevoke + 2);
+  expect(sockets).toHaveLength(socketsBeforeRevoke);
 });
 
 for (const seed of [1722, 1723, 1724]) {

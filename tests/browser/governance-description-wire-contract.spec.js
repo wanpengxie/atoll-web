@@ -85,7 +85,11 @@ test('blank start sends one channel.create with humans and a description, no tem
   expect(submits().some((payload) => RETIRED_WORDS.test(JSON.stringify(payload)))).toBe(false);
 
   const state = await mockState(request);
-  expect(state.descriptions['c0.blank-room']).toMatchObject({ revision: 1, body: { members: [], description: '从空白开始' } });
+  // 带进来的人就是新描述里的人的条目（BATCH3 §5）。
+  expect(state.descriptions['c0.blank-room']).toMatchObject({ revision: 1, body: {
+    members: [{ name: 'root', body: { human: true }, principal: 'root' }, { name: 'alice', body: { human: true }, principal: 'alice' }],
+    description: '从空白开始',
+  } });
   expect(state.memberships.filter((row) => row.channel_id === 'c0.blank-room' && row.status === 'active').map((row) => row.principal_id).sort())
     .toEqual(['alice', 'root']);
 });
@@ -137,7 +141,7 @@ test('picking members reads this channel\'s description and copies the chosen en
     },
   });
   const state = await mockState(request);
-  expect(state.descriptions['c0.project.picked-room'].body.members.map((entry) => entry.name)).toEqual(['project-agent', 'search-tool']);
+  expect(state.descriptions['c0.project.picked-room'].body.members.map((entry) => entry.name)).toEqual(['project-agent', 'search-tool', 'root']);
 });
 
 test('复制频道: copy_from creates a channel whose member entries match the source', async ({ page, request }) => {
@@ -166,7 +170,7 @@ test('复制频道: copy_from creates a channel whose member entries match the s
   // 源频道和新频道的成员条目逐条一致；源频道成员自己的配置不跟过来。
   const state = await mockState(request);
   const source = state.descriptions['c0.project'].body.members;
-  expect(source.map((entry) => entry.name)).toEqual(['project-agent', 'deepseek', 'search-tool', 'writer']);
+  expect(source.map((entry) => entry.name)).toEqual(['project-agent', 'root', 'deepseek', 'search-tool', 'writer']);
   expect(state.descriptions['c0.copy-room'].body.members).toEqual(source);
   expect(state.member_configs.filter((row) => row.channel_id === 'c0.copy-room')).toEqual([]);
 
@@ -176,7 +180,8 @@ test('复制频道: copy_from creates a channel whose member entries match the s
   await page.getByRole('button', { name: '成员', exact: true }).first().click();
   const roster = page.getByRole('complementary', { name: '频道成员' });
   await expect(roster.getByRole('button', { name: /project-agent/ })).toBeVisible();
-  await expect(roster.getByRole('button', { name: /deepseek/i })).toContainText('卡住');
-  await expect(roster.getByRole('button', { name: /search-tool/ })).toContainText('重试中');
+  // 起不来的成员对外只是没建好（owner 09-30：外面只有一个状态）。
+  await expect(roster.getByRole('button', { name: /deepseek/i })).toContainText('未绑定');
+  await expect(roster.getByRole('button', { name: /search-tool/ })).toContainText('未绑定');
   await expect(roster.getByRole('button', { name: /writer/i })).toHaveCount(0);
 });

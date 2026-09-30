@@ -44,6 +44,9 @@ test('TC-0327 D-BR-06 admits an OBS human candidate and waits for roster converg
 
   await reset(request);
   await login(page);
+  // 人进频道是写频道描述；c0 由平台搭、没有描述，所以在 c0.project 里加人（BATCH3 §5）。
+  await page.locator('.channel-rail, aside').first().getByText('c0.project', { exact: true }).click();
+  await expect(page.locator('main h1')).toHaveText('c0.project');
   const panel = await openMembers(page);
   const principal = panel.getByRole('combobox', { name: '选择参与者', exact: true });
   await principal.click();
@@ -58,10 +61,10 @@ test('TC-0327 D-BR-06 admits an OBS human candidate and waits for roster converg
   await expect.poll(() => submits.find((payload) => payload?.msg_type === 'system.member.admit'))
     .toMatchObject({
       msg_type: 'system.member.admit',
-      channel_id: 'c0',
+      channel_id: 'c0.project',
       payload: { principal: 'alice' },
     });
-  await expect(panel.locator('.managed-actor').filter({ hasText: 'alice-home' })).toBeVisible();
+  await expect(panel.locator('.managed-actor').filter({ hasText: 'human:alice:' })).toBeVisible();
   await expect(panel.locator('.roster-ready')).toHaveText('成员已就绪');
-  await expect(panel.locator('.managed-actor').filter({ hasText: 'alice-home' })).toContainText('alice');
+  await expect(panel.locator('.managed-actor').filter({ hasText: 'human:alice:' })).toContainText('alice');
 });

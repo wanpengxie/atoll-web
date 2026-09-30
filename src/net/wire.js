@@ -294,7 +294,11 @@ export function createWire({
     if (parsed.kind === DOWN.memberships) {
       if (!attached) return;
       diagnostic('info', 'wire.memberships', { generation, memberships: payload.memberships?.length || 0 });
-      onMemberships({ memberships: Array.isArray(payload.memberships) ? payload.memberships : [], generation });
+      onMemberships({
+        memberships: Array.isArray(payload.memberships) ? payload.memberships : [],
+        ...(Array.isArray(payload.history_meta) ? { history_meta: payload.history_meta } : {}),
+        generation,
+      });
       return;
     }
     if (parsed.kind === DOWN.page_end) {

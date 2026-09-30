@@ -1183,10 +1183,20 @@ export function useWireConnection({
           setTopError(`${error.code}: ${displayError(error)}`);
         }
       },
+      // 成员关系变了（BATCH3 §12）：推来的清单和各频道的历史头，和 attach 回执给的
+      // 一样，按 attach 的同一套步骤用上——名册认这些频道、历史按新的授予读——
+      // 刚加入的频道才能像连上时就在的频道一样打开。
       onMemberships: (detail) => {
         if (!acceptsLifecycle(detail)) return;
+        rosterAuthority = roster?.attach?.(detail.generation, detail.memberships) || null;
         applyMemberships(detail.memberships, true);
         bumpAccess();
+        if (!Array.isArray(detail.history_meta)) return;
+        const focus = String(activeChannelRef.current || '');
+        void Promise.resolve(setHistoryGrants(detail.history_meta, { generation: detail.generation, focus })).then(() => {
+          if (focus && typeof refreshHistoryChannel === 'function') return refreshHistoryChannel(focus);
+          return undefined;
+        }).catch((error) => diagnostic('warn', 'wire.memberships_grants_failed', { error: String(error?.message || error) }));
       },
       onObserveEnded: (channelId, reason) => {
         diagnostic('warn', 'wire.observe_ended', { channelId, reason });

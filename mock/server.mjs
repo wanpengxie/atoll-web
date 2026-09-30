@@ -627,11 +627,29 @@ export function createMockServer({
   }
 
   // 网关在成员关系变了之后推给每条连接一份整的新清单（memberships 帧）。
+  // 和真网关一样：新清单和各频道的历史头一起推（形状同 attach 回执）。
+  function historyMetaFor(socket) {
+    const historyMeta = [];
+    const principal = socketPrincipals.get(socket) || '';
+    const observed = socketObserved.get(socket) || new Set();
+    for (const [channelId, rows] of histories) {
+      if (!domain.canRead(principal, channelId, observed)) continue;
+      const latest = rows.at(-1);
+      historyMeta.push({
+        channel_id: channelId,
+        head_seq: latest?.seq || 0,
+        has_rows: rows.some((row) => row.envelope.visibility !== 'system'),
+        last_activity: Number(latest?.envelope?.ts) || 0,
+      });
+    }
+    return historyMeta;
+  }
+
   function pushMemberships() {
     for (const socket of sockets) {
       if (!attached.has(socket)) continue;
       const principal = socketPrincipals.get(socket) || '';
-      sendFrame(socket, 'memberships', '', { memberships: domain.attachMemberships(principal) });
+      sendFrame(socket, 'memberships', '', { memberships: domain.attachMemberships(principal), history_meta: historyMetaFor(socket) });
     }
   }
 
@@ -2067,19 +2085,7 @@ export function createMockServer({
       }
       attached.add(socket);
 	  socketGenerations.set(socket, payload.generation);
-	  const historyMeta = [];
-      for (const [channelId, rows] of histories) {
-        const principal = socketPrincipals.get(socket) || '';
-        const observed = socketObserved.get(socket) || new Set();
-        if (!domain.canRead(principal, channelId, observed)) continue;
-		const latest = rows.at(-1);
-		historyMeta.push({
-		  channel_id: channelId,
-		  head_seq: latest?.seq || 0,
-		  has_rows: rows.some((row) => row.envelope.visibility !== 'system'),
-		  last_activity: Number(latest?.envelope?.ts) || 0,
-		});
-      }
+	  const historyMeta = historyMetaFor(socket);
       // 对齐真后端 AttachReceipt：成员清单随回执直接交付（资格账快照），
       // 前端连上即知道自己在哪些频道，恒不靠 feed 副作用反推。
       socketLabels.set(socket, typeof payload.label === 'string' ? payload.label : '');

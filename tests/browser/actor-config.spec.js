@@ -50,46 +50,43 @@ async function sourceTable(detail) {
   return Object.fromEntries(rows.map(([key, value, from]) => [key, [value, from]]));
 }
 
-const DEEPSEEK_FAILED = '成员 deepseek构建失败（第 1 次尝试，下次巡检会再试）：member deepseek: its business did not start: missing global resource global/deepseek_prod';
 
 const sha256 = (value) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
-test('actor layers: a stuck member names its layer and reason; a ready row stays thin', async ({ page, request }) => {
+test('one state: a member that did not start reads unbuilt, with no layer or reason; a built one reads bound', async ({ page, request }) => {
   const submits = captureSubmits(page);
   await reset(request, 2901);
   await login(page);
   await enterProject(page);
   await page.getByRole('button', { name: '成员', exact: true }).first().click();
   const roster = page.getByRole('complementary', { name: '频道成员' });
+  // 对外只有"建好了没有"（owner 09-30）：起不来的成员只是没建好，原因在它自己里面。
   const stuck = roster.getByRole('button', { name: /deepseek/ });
-  await expect(stuck).toContainText('卡住');
-  await expect(stuck).toContainText('业务层卡住：missing global resource global/deepseek_prod');
+  await expect(stuck).toContainText('未绑定');
   await expect(stuck).toContainText('actor deepseek@1');
-  await expect(roster.getByRole('button', { name: /search-tool/ })).toContainText('业务层重试中：dial tcp 127.0.0.1:9000: connection refused');
+  await expect(stuck).not.toContainText('卡住');
+  await expect(stuck).not.toContainText('业务层');
+  await expect(roster.getByRole('button', { name: /search-tool/ })).toContainText('未绑定');
   const ready = roster.getByRole('button', { name: /project-agent/ });
   await expect(ready).toContainText('已绑定');
-  await expect(ready.locator('.member-layer-issue')).toHaveCount(0);
   // writer 的占位没填、构建失败：它不在名册上。
   await expect(roster.getByRole('button', { name: /writer/ })).toHaveCount(0);
 
   await stuck.click();
   const detail = page.getByRole('complementary', { name: 'Actor 详情' });
-  const layers = detail.getByRole('region', { name: '运行状态' });
-  await expect(layers.locator('[data-layer="standard"]')).toContainText('就绪');
-  await expect(layers.locator('[data-layer="business"]')).toContainText('卡住');
-  await expect(layers.locator('[data-layer="business"]')).toContainText('missing global resource global/deepseek_prod');
+  await expect(detail.getByRole('region', { name: '运行状态' })).toHaveCount(0);
 
   // 各层按需读（手动挡）：打开详情不发 member.get。读到的是引用不是值。
   expect(submits.filter((payload) => payload.msg_type === 'system.member.get')).toHaveLength(0);
   await detail.getByRole('button', { name: '读取配置' }).click();
   await expect(detail.locator('.member-config-facts')).toContainText('Actor 描述 deepseek@1');
-  await expect(detail.locator('.member-build')).toContainText('失败');
-  await expect(detail.locator('.member-build')).toContainText('missing global resource global/deepseek_prod');
+  // 起不来的那次构建只有"开始"回执，没有失败回执（owner 09-30：不补回执）。
+  await expect(detail.locator('.member-build')).toContainText('构建中');
   expect((await sourceTable(detail)).api_key).toEqual(['$global.deepseek_prod', 'Actor 描述']);
   await expect(detail.getByText(/\$global\. 开头的是对 global\/<名称> 的引用/)).toBeVisible();
 
-  // 这一台的配置：插入全局 key 引用把缺的 key 换掉。值写进去时不检查，构建会说
-  // 它行不行：温度 9 被 class 拒绝。
+  // 这一台的配置：插入全局 key 引用把缺的 key 换掉。值写进去时不检查：温度 9
+  // 被 class 拒绝，成员还是起不来，对外仍只是没建好。
   await detail.getByRole('button', { name: '编辑配置' }).click();
   const editor = detail.getByRole('form', { name: '编辑成员配置' });
   await expect(editor.getByRole('option', { name: 'openai_prod' })).toBeAttached();
@@ -100,16 +97,17 @@ test('actor layers: a stuck member names its layer and reason; a ready row stays
   await expect(editor.getByLabel('成员配置 JSON')).toHaveValue('{"temperature":9,"api_key":"$global.openai_prod"}');
   await editor.getByRole('button', { name: '保存配置' }).click();
   await expect(detail.getByText(/这一台的配置已保存（第 1 版）/)).toBeVisible();
-  await expect(detail.locator('.member-build')).toContainText('config refused by deepseek-agent: temperature must be a number between 0 and 2');
-  await expect(layers.locator('[data-layer="business"]')).toContainText('卡住');
 
-  // 温度改回合法值：只发变了的键（合并补丁），构建成功，业务层就绪。
+  // 温度改回合法值：只发变了的键（合并补丁），构建成功，成员建好。
   await detail.getByRole('button', { name: '编辑配置' }).click();
   await editor.getByLabel('成员配置 JSON').fill('{"temperature":0.5,"api_key":"$global.openai_prod"}');
   await editor.getByRole('button', { name: '保存配置' }).click();
   await expect(detail.getByText(/这一台的配置已保存（第 2 版）/)).toBeVisible();
-  await expect(detail.locator('.member-build')).toContainText('成功');
-  await expect(layers.locator('[data-layer="business"]')).toContainText('就绪');
+  // 构建在回复之后完成：按需再读，直到读到这次构建的结果。
+  await expect(async () => {
+    await detail.getByRole('button', { name: '刷新', exact: true }).click();
+    await expect(detail.locator('.member-build')).toContainText('成功', { timeout: 500 });
+  }).toPass({ timeout: 5_000 });
   expect((await sourceTable(detail)).api_key).toEqual(['$global.openai_prod', '这一台的配置']);
   const sets = submits.filter((payload) => payload.msg_type === 'system.member.config.set');
   expect(sets.map((payload) => payload.payload.values)).toEqual([{ temperature: 9, api_key: '$global.openai_prod' }, { temperature: 0.5 }]);
@@ -183,9 +181,9 @@ test('成员两块编辑: the entry and this member\'s own configuration are edi
   expect(state.member_configs.find((row) => row.channel_id === 'c0.project' && row.member === 'search-tool')).toMatchObject({ values: { timeout_ms: 900 }, revision: 1 });
 });
 
-// 时间线把 system 事件画在一个 narration 块里；后到的 system.build.finished 要让
-// 这个块重画（它的 contentRevision 跟着最后一条事件走）。
-test('构建记录: the timeline shows a finished build line live, with its reason', async ({ page, request }) => {
+// 时间线把 system 事件画在一个 narration 块里。起不来的成员只有"开始"回执（owner
+// 09-30：不补失败回执），时间线上也就只有开始那一行。
+test('构建记录: a member that does not start shows only its started line', async ({ page, request }) => {
   await reset(request, 2906);
   await login(page);
   await enterProject(page);
@@ -197,10 +195,11 @@ test('构建记录: the timeline shows a finished build line live, with its reas
   await panel.getByRole('button', { name: '确认操作' }).click();
   const timeline = page.locator('.timeline');
   await expect(timeline.getByText('开始构建成员 deepseek（第 1 次尝试）', { exact: true })).toBeVisible();
-  await expect(timeline.getByText(DEEPSEEK_FAILED, { exact: true })).toBeVisible({ timeout: 5_000 });
+  await page.waitForTimeout(500);
+  await expect(timeline.getByText(/成员 deepseek构建(失败|成功)/)).toHaveCount(0);
 });
 
-test('global keys: add, list and delete by name; the value is never displayed', async ({ page, request }) => {
+test('global keys: add, list and delete by name; the page shows each value (owner: needed for debugging)', async ({ page, request }) => {
   await reset(request, 2902);
   await login(page);
   await page.getByRole('button', { name: '空间管理', exact: true }).click();
@@ -208,7 +207,7 @@ test('global keys: add, list and delete by name; the value is never displayed', 
   await space.getByRole('tab', { name: '全局 key' }).click();
   await expect(space.locator('[data-global-key="openai_prod"]')).toContainText('$global.openai_prod');
 
-  const secret = 'sk-browser-never-shown-4321';
+  const secret = 'sk-browser-shown-4321';
   const add = space.getByRole('form', { name: '添加全局 key' });
   await expect(add.getByLabel('值')).toHaveAttribute('type', 'password');
   await add.getByLabel('名称').fill('deepseek_prod');
@@ -217,8 +216,8 @@ test('global keys: add, list and delete by name; the value is never displayed', 
   await expect(space.getByText('已添加 global/deepseek_prod。')).toBeVisible();
   await expect(space.locator('[data-global-key]')).toHaveCount(2);
   await expect(space.locator('[data-global-key="deepseek_prod"]')).toBeVisible();
-  // 值不在页面文字里，也不留在任何输入框里。
-  expect(await page.locator('body').innerText()).not.toContain(secret);
+  // 页面显示每把 key 的原值（owner 09-30"现在先显示全部，我需要调试"）；输入框提交后清空。
+  await expect(space.locator('[data-global-key="deepseek_prod"]')).toContainText(secret);
   expect(await page.locator('input').evaluateAll((inputs, value) => inputs.some((input) => input.value.includes(value)), secret)).toBe(false);
   const written = (await mockState(request)).globals.find((row) => row.id === 'global/deepseek_prod');
   expect(written?.value_sha256).toBe(sha256(secret));

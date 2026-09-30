@@ -37,12 +37,15 @@ test('AD-352/TC-0646 public multi-recipient send splits one body into one frame 
   const text = '多目标拆发';
   await reset(request);
   await login(page);
+  // 人进频道是写频道描述；c0 由平台搭、没有描述，所以在 c0.project 里加人（BATCH3 §5）。
+  await page.locator('.channel-rail, aside').first().getByText('c0.project', { exact: true }).click();
+  await expect(page.locator('main h1')).toHaveText('c0.project');
 
   const input = page.getByLabel('消息');
   await input.fill('/admit alice');
   await input.press('Enter');
   await expect.poll(() => submits.find((frame) => frame?.msg_type === 'system.member.admit'), { timeout: 10_000 }).toMatchObject({
-    channel_id: 'c0',
+    channel_id: 'c0.project',
     msg_type: 'system.member.admit',
     audience: ['system'],
     payload: { principal: 'alice' },
@@ -54,8 +57,8 @@ test('AD-352/TC-0646 public multi-recipient send splits one body into one frame 
   await page.getByRole('listbox').getByRole('option').filter({ hasText: 'alice' }).first().click();
   await expect(input).toHaveText('');
 
-  await input.pressSequentially('@Cl');
-  await page.getByRole('listbox').getByRole('option').filter({ hasText: 'Claude' }).first().click();
+  await input.pressSequentially('@pro');
+  await page.getByRole('listbox').getByRole('option').filter({ hasText: 'project-agent' }).first().click();
   await expect(input).toHaveText('');
   await expect(page.locator('.composer-target-pill.is-picked')).toHaveCount(2);
 
@@ -66,10 +69,12 @@ test('AD-352/TC-0646 public multi-recipient send splits one body into one frame 
   await expect.poll(sent, { timeout: 10_000 }).toHaveLength(2);
   const matching = sent();
   expect(matching.every((frame) => frame.kind === 'request')).toBe(true);
-  expect(matching.every((frame) => frame.channel_id === 'c0')).toBe(true);
+  expect(matching.every((frame) => frame.channel_id === 'c0.project')).toBe(true);
   expect(matching.every((frame) => frame.visibility === 'public')).toBe(true);
   expect(matching.map((frame) => frame.msg_type).sort()).toEqual(['agent.ask', 'human.message'].sort());
-  expect(matching.map((frame) => frame.audience).sort()).toEqual([['alice-home'], ['claude']].sort());
+  const audiences = matching.map((frame) => frame.audience.join(','));
+  expect(audiences.some((id) => /^human:alice:/.test(id))).toBe(true);
+  expect(audiences).toContain('project-agent');
   expect(new Set(matching.map((frame) => frame.id)).size).toBe(2);
 
   await expect(input).toHaveText('');
