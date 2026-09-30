@@ -120,7 +120,10 @@ test('actor layers: a stuck member names its layer and reason; a ready row stays
   });
 });
 
-test('占位显示与填写: writer\'s unfilled placeholder is shown, filling it builds writer into the roster', async ({ page, request }) => {
+// channel.get 不再带成员构建摘要（owner 09-30："先瘦身，不需要这两个功能，后续都由obs补"），
+// 治理页上从构建摘要打开"没建成的成员"这个入口随之没了；界面上另开入口要 owner 定，
+// 在那之前这条用例挂起，不改成别的路径去凑。
+test.fixme('占位显示与填写: writer\'s unfilled placeholder is shown, filling it builds writer into the roster', async ({ page, request }) => {
   const submits = captureSubmits(page);
   await reset(request, 2904);
   await login(page);

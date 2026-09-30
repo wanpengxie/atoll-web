@@ -190,7 +190,7 @@ function ChannelSettings({ channel, port }) {
       {readable && !view && !reading && !readError && <p className="governance-empty">频道的描述按需读取：点「读取」发一条 system.channel.get。</p>}
       {readError && <p className="governance-error" role="alert">{readError}</p>}
       {view && <>
-        <dl className="channel-health">
+        <dl className="channel-description-facts">
           {body && <><dt>描述版本</dt><dd>第 {view.description.revision} 版</dd></>}
           {body && <><dt>说明</dt><dd>{body.description || '—'}</dd></>}
           {body && <><dt>对外服务</dt><dd>{Number(body.serving || 0) === 1 ? '是' : '否'}</dd></>}

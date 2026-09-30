@@ -136,8 +136,8 @@ test('频道设置: status is read on demand, description and serving are saved,
   await expect(panel.getByText(/按需读取：点「读取」发一条 system.channel.get/)).toBeVisible();
   expect(submits.filter((payload) => payload.msg_type === 'system.channel.get')).toHaveLength(0);
   await panel.getByRole('button', { name: '读取', exact: true }).click();
-  const health = panel.locator('.channel-health');
-  await expect(health).toContainText('第 1 版');
+  const facts = panel.locator('.channel-description-facts');
+  await expect(facts).toContainText('第 1 版');
   // 频道状态只有注册库里的事实：没有健康、没有频道自身和成员的构建。
   const runtime = panel.locator('.channel-runtime');
   await expect(runtime).not.toContainText('健康');
@@ -150,8 +150,8 @@ test('频道设置: status is read on demand, description and serving are saved,
   await panel.getByLabel('频道说明').fill('项目协作');
   await panel.getByLabel('对外服务').check();
   await panel.getByRole('button', { name: '保存', exact: true }).click();
-  await expect(health).toContainText('第 2 版');
-  await expect(health).toContainText('项目协作');
+  await expect(facts).toContainText('第 2 版');
+  await expect(facts).toContainText('项目协作');
   expect(submits.find((payload) => payload.msg_type === 'system.channel.set')?.payload).toEqual({ channel_id: 'c0.project', description: '项目协作', serving: 1 });
 
   // 设备：local-device 恒在、不用挂；别的设备挂到本频道写进描述的 devices。
@@ -163,7 +163,7 @@ test('频道设置: status is read on demand, description and serving are saved,
   // 写进描述后，要等本频道的设备投影（OBS）再读到它才算"已挂载"；前端不自己去探。
   await expect(gpu).toContainText(/已写入描述|已挂载/);
   await expect(gpu.getByRole('button', { name: '卸载', exact: true })).toBeVisible();
-  await expect(health).toContainText('第 3 版');
+  await expect(facts).toContainText('第 3 版');
   const attach = submits.find((payload) => payload.msg_type === 'system.device.attach');
   expect(attach?.payload).toEqual({ channel_id: 'c0.project', device_id: expect.stringMatching(/^device-/) });
   let state = await mockState(request);

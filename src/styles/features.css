@@ -535,9 +535,9 @@ button.channel-file-row { font: inherit; }
 .build-line.build-retrying .build-reason { background: var(--warning-bg); color: var(--warning-text); }
 .timeline-narration p.build-event.build-stopped, .timeline-narration p.build-event.build-retrying { color: var(--danger); }
 .timeline-narration p.build-event.build-ok { color: var(--online); }
-.channel-health { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 0 0 8px; font-size: 10px; }
-.channel-health dt { color: var(--text-muted); }
-.channel-health dd { margin: 0; overflow-wrap: anywhere; }
+.channel-description-facts { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 0 0 8px; font-size: 10px; }
+.channel-description-facts dt { color: var(--text-muted); }
+.channel-description-facts dd { margin: 0; overflow-wrap: anywhere; }
 .checkbox-row { display: flex; align-items: center; gap: 6px; font-size: 10px; }
 .device-row.default small { color: var(--online); }
 
