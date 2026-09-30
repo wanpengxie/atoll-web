@@ -1066,7 +1066,7 @@ export function createMockServer({
       // 和真节点一样，写成的回复（25ms）先到，构建之后才进行：这时才建成员、
       // 按频道追加构建记录（system.build.*）。
       later(Number(domain.delays.build ?? 120), () => {
-        domain.finishBuilds();
+        const peopleChanged = domain.finishBuilds();
         for (const event of domain.takeEvents()) {
           append(event.channelId, envelope({
             id: domain.nextId(`${event.channelId}-build-event`),
@@ -1079,6 +1079,7 @@ export function createMockServer({
             ts: domain.now(),
           }));
         }
+        if (peopleChanged) pushMemberships();
       });
       try {
         switch (payload.msg_type) {
@@ -1129,20 +1130,17 @@ export function createMockServer({
           }
           case 'system.member.admit': {
             assertClosedPayload(body, ['principal']);
-            const value = domain.admitPerson(channelId, body.principal);
-            narrate('system.member.created', { member: domain.activeMembership(body.principal, channelId)?.actor_id || body.principal, principal: body.principal, body: 'human' });
-            complete(value);
-            pushMemberships();
+            // 写进描述；人在构建时才进来（成员进出的那行和新的成员关系随构建到）。
+            complete(domain.admitPerson(channelId, body.principal));
             return;
           }
           case 'system.member.delete': {
             assertClosedPayload(body, ['member']);
             const row = domain.memberRow(channelId, body.member);
             const value = domain.deleteMember(channelId, body.member);
-            if (row) narrate('system.member.deleted', { member: row.declared.id, reason: 'removed' });
-            // 人和别的成员一样是描述里的条目：registrar 改描述（{value}）。
+            if (row && row.declared.kind !== 'human') narrate('system.member.deleted', { member: row.declared.id, reason: 'removed' });
+            // 人和别的成员一样是描述里的条目：registrar 改描述（{value}），人随构建出去。
             complete(value);
-            if (row?.declared.kind === 'human') pushMemberships();
             return;
           }
           case 'system.member.restart': {
@@ -1161,9 +1159,8 @@ export function createMockServer({
           // ---- 空间面（system actor 转交 registrar）----
           case 'system.channel.create': {
             assertClosedPayload(body, ['name', 'parent', 'type', 'temporary', 'humans', 'description', 'copy_from']);
+            // 描述里的人随构建进来，那时网关推一份新的成员关系（不再断线重连）。
             complete(domain.createChannel(channelId, body, principal));
-            // 成员关系变了：网关推一份新清单（不再断线重连）。
-            later(75, pushMemberships);
             return;
           }
           case 'system.channel.list': {

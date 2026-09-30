@@ -235,6 +235,12 @@ export class MockDomain {
       const entries = (this.rosters.get(channel.id) || [])
         .filter((row) => ['agent', 'tool'].includes(row.declared.kind) && String(row.declared.body || '').startsWith('class '))
         .map((row) => ({ name: memberNameOf(row.declared.id), body: { class: row.declared.body.slice('class '.length) } }));
+      // 场景里已在册的人也写进描述（和迁移脚本对真数据做的一样）。
+      for (const membership of this.memberships) {
+        if (channel.id === 'c0' || membership.channel_id !== channel.id || membership.status !== 'active') continue;
+        if (!this.humanPrincipals.has(membership.principal_id) || !MEMBER_NAME.test(membership.principal_id)) continue;
+        if (!entries.some((entry) => entry.name === membership.principal_id)) entries.push({ name: membership.principal_id, body: { human: true }, principal: membership.principal_id });
+      }
       if (channel.id === 'c0') this.c0Entries = entries;
       else if (!channel.internal) this.descriptions.set(channel.id, { body: this.normalizedDescription({ members: entries, description: channel.description || '' }), revision: 1 });
     }
@@ -483,18 +489,50 @@ export class MockDomain {
     this.pendingBuilds.set(channelId, names);
   }
 
+  // 返回有没有人进出（服务据此给连接推一份新的成员关系）。
   finishBuilds() {
     const pending = this.pendingBuilds;
     this.pendingBuilds = new Map();
+    let peopleChanged = false;
     for (const [channelId, names] of pending) {
       if (!this.descriptions.has(channelId)) continue;
-      if (names.has(REALIZE_ALL)) this.realize(channelId);
+      if (names.has(REALIZE_ALL)) peopleChanged = this.realize(channelId) || peopleChanged;
       else for (const name of names) this.buildMember(channelId, name);
     }
+    return peopleChanged;
+  }
+
+  // 描述里的人放进来、不在描述里的人请出去（owner 恒在）；和真节点的
+  // realizePeople 一样，各写一行成员进出。返回有没有人进出。
+  realizePeople(channelId) {
+    const channel = this.channel(channelId);
+    const listed = new Set(this.entriesOf(channelId).filter((entry) => entry.body?.human === true).map((entry) => entry.principal || entry.name));
+    const rows = this.rosters.get(channelId) || [];
+    let changed = false;
+    for (const principal of listed) {
+      if (this.activeMembership(principal, channelId)) continue;
+      this.counter += 1;
+      const id = `human:${principal}:${this.clock + this.counter}`;
+      this.memberships.push({ principal_id: principal, channel_id: channelId, actor_id: id, role: principal === channel?.owner_principal ? 'owner' : 'member', status: 'active' });
+      rows.push(rosterItem({ id, kind: 'human', name: principal, principal, online: true, description: 'Human channel member' }, this.clock));
+      this.events.push({ channelId, type: 'system.member.created', payload: { member: id, principal, body: 'human', by: 'runtime' } });
+      changed = true;
+    }
+    for (const membership of this.memberships) {
+      if (membership.channel_id !== channelId || membership.status !== 'active') continue;
+      if (listed.has(membership.principal_id) || membership.principal_id === channel?.owner_principal) continue;
+      membership.status = 'revoked';
+      const index = rows.findIndex((row) => row.declared.id === membership.actor_id);
+      if (index >= 0) rows.splice(index, 1);
+      this.events.push({ channelId, type: 'system.member.deleted', payload: { member: membership.actor_id, reason: "they are no longer in the channel's description" } });
+      changed = true;
+    }
+    return changed;
   }
 
   // 让一个频道的成员对上它的描述：多的删、少的建、变了的重建。
   realize(channelId, { cause = '', only = null } = {}) {
+    const peopleChanged = this.realizePeople(channelId);
     // 人由成员关系（memberships）表示，按人的条目放进放出；这里只建 agent/tool。
     const names = new Set(this.entriesOf(channelId).filter((entry) => entry.body?.human !== true).map((entry) => entry.name));
     const rows = this.rosters.get(channelId) || [];
@@ -505,6 +543,7 @@ export class MockDomain {
     }
     for (const key of [...this.builds.keys()]) if (key.startsWith(`${channelId}\u0000`) && !names.has(key.slice(channelId.length + 1))) this.builds.delete(key);
     for (const name of names) if (!only || only === name) this.buildMember(channelId, name, { cause });
+    return peopleChanged;
   }
 
   takeEvents() {
@@ -606,7 +645,6 @@ export class MockDomain {
       if (description.members.length === before) throw operationError('invalid_args', `the channel description has no member named ${JSON.stringify(name)}; members the runtime keeps itself (the service door, peers, handles) leave when what they follow from changes`);
     });
     this.memberConfigs.delete(this.memberKey(channelId, name));
-    if (person) this.removeActor(channelId, row.declared.id);
     return { written: true, description_revision: revision };
   }
 
@@ -751,7 +789,6 @@ export class MockDomain {
       if (existing && existing.body?.human !== true) throw operationError('invalid_args', `the channel description already has a member named ${JSON.stringify(principal)} that is not this person`);
       if (!existing) description.members.push(entry);
     });
-    this.admitMember(channelId, principal);
     return { written: true, description_revision: revision, entry };
   }
 
@@ -833,10 +870,7 @@ export class MockDomain {
     if (this.channels.has(id)) throw operationError('conflict_exists', `channel ${id} already exists (${id})`);
     const channel = { id, name: clean, qualified_name: id, parent_id: parentRow.id, owner_principal: principalId, internal: false, open: true, status: 'present' };
     this.channels.set(id, channel);
-    for (const human of new Set(humans)) {
-      this.counter += 1;
-      this.memberships.push({ principal_id: human, channel_id: id, actor_id: `human:${human}:${this.clock + this.counter}`, role: human === principalId ? 'owner' : 'member', status: 'active' });
-    }
+    // 描述里的人和别的成员一样，在构建时才被放进来（和真节点一样，回复之后）。
     this.rosters.set(id, createRoster(channel, this.memberships, this.clock, { seedBusiness: false }));
     this.histories.set(id, []);
     this.resources.set(id, new Map());

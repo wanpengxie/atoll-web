@@ -73,7 +73,7 @@ describe('phase E stateful mock', () => {
     const view = await submitTerminal(h, 'system.channel.get', { channel_id: 'c0.project' });
     expect(view.payload.body.value).toMatchObject({
       id: 'c0.project',
-      description: { revision: 2, body: { description: 'Configured', serving: 1, members: [{ name: 'project-agent', body: { class: 'codex' } }] } },
+      description: { revision: 2, body: { description: 'Configured', serving: 1, members: [{ name: 'project-agent', body: { class: 'codex' } }, { name: 'root', body: { human: true }, principal: 'root' }] } },
     });
     // channel.get 只答注册库里的事实：没有健康，没有构建。
     for (const gone of ['health', 'health_reason', 'build', 'members']) expect(view.payload.body.value).not.toHaveProperty(gone);
@@ -86,8 +86,14 @@ describe('phase E stateful mock', () => {
     expect(copied.payload.body.value).toEqual({ channel_id: 'c0.copy', revision: 1 });
     const description = await submitTerminal(h, 'system.channel.description.get', { channel: 'c0.copy' });
     const sourceBody = view.payload.body.value.description.body;
-    expect(description.payload.body.value).toEqual({ body: { ...sourceBody, members: [...sourceBody.members, { name: 'root', body: { human: true }, principal: 'root' }] }, revision: 1 });
-    const state = await h.fetchSession('/mock/control/state').then((response) => response.json());
+    // root 已是源频道描述里的人，不再重复加。
+    expect(description.payload.body.value).toEqual({ body: sourceBody, revision: 1 });
+    // 构建在回复之后完成。
+    let state = null;
+    for (let tries = 0; tries < 100 && !state?.builds.some((row) => row.object.channel === 'c0.copy'); tries += 1) {
+      state = await h.fetchSession('/mock/control/state').then((response) => response.json());
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
     expect(state.member_configs.filter((row) => row.member === 'project-agent').map((row) => row.channel_id)).toEqual(['c0.project']);
     expect(state.builds).toEqual(expect.arrayContaining([expect.objectContaining({ object: { kind: 'member', channel: 'c0.copy', name: 'project-agent' }, result: 'ok' })]));
 

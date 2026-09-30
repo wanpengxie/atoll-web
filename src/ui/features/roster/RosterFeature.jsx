@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { actorDisplayName } from '../../../model/actor-display.js';
 import { isVisibleActor } from '../../../model/actor-visibility.js';
+import { rosterBodyLabel } from '../../../model/member-config.js';
 import { SidePanel } from '../../primitives/SidePanel.jsx';
 import { MemberConfigSection } from './MemberConfig.jsx';
 
@@ -27,7 +28,7 @@ export function RosterFeature({ port = {}, onClose }) {
         const [status, label] = presence(row);
         return <button type="button" className={port.selectedActor?.id === row.id ? 'roster-row selected' : 'roster-row'} key={row.id} onClick={() => port.commands?.select?.(row)}>
           <span className={`actor-icon kind-${row.kind || 'unknown'}`}>{String(row.kind || '?').slice(0, 1).toUpperCase()}</span>
-          <div><strong title={row.id}>{actorDisplayName(row)}{row.id === port.selfId && <em>我</em>}</strong><span>{row.kind || 'actor'} · {row.body || 'channel member'}</span></div>
+          <div><strong title={row.id}>{actorDisplayName(row)}{row.id === port.selfId && <em>我</em>}</strong><span>{row.kind || 'actor'} · {rosterBodyLabel(row.body) || 'channel member'}</span></div>
           <span className={`presence ${status}`}>{label}</span>
         </button>;
       })}
@@ -71,7 +72,7 @@ export function ActorDetailPanel({ port = {}, onClose }) {
     }
   };
   return <SidePanel className="actor-details" ariaLabel="Actor 详情" eyebrow={actor.kind || 'ACTOR'} title={actorDisplayName(actor)} onClose={onClose} headerActions={<button type="button" className="text-button" disabled={port.detailBusy} onClick={describe}>{port.detailBusy ? '读取中…' : '刷新能力'}</button>}>
-    <dl className="work-item-metadata"><dt>Actor ID</dt><dd>{actor.id}</dd><dt>类型</dt><dd>{actor.kind || '未知'}</dd><dt>来源</dt><dd>{actor.body || '—'}</dd><dt>绑定</dt><dd>{actor.bound === true ? '已绑定' : actor.bound === false ? '未绑定' : '未知'}</dd><dt>说明</dt><dd>{actor.description || '—'}</dd></dl>
+    <dl className="work-item-metadata"><dt>Actor ID</dt><dd>{actor.id}</dd><dt>类型</dt><dd>{actor.kind || '未知'}</dd><dt>来源</dt><dd>{rosterBodyLabel(actor.body) || '—'}</dd><dt>绑定</dt><dd>{actor.bound === true ? '已绑定' : actor.bound === false ? '未绑定' : '未知'}</dd><dt>说明</dt><dd>{actor.description || '—'}</dd></dl>
     {actor.kind !== 'human' && <MemberConfigSection actor={actor} port={port} />}
     {port.detailError && <p className="governance-error" role="alert">{port.detailError}</p>}
     {error && <p className="governance-error" role="alert">{error}</p>}

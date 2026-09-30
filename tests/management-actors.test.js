@@ -6,6 +6,7 @@ import {
   isVisibleActor,
   latestActorDescriptions,
 } from '../src/model/actor-visibility.js';
+import { rosterBodyLabel } from '../src/model/member-config.js';
 import { buildComposerModel, createComposerCommandRequest, parseComposerCommand } from '../src/ui/composer/composer-model.js';
 import { GENERATED_BODY, SYSTEM_ACTOR_ID, TYPES } from '../src/protocol/vocab.js';
 
@@ -38,6 +39,9 @@ describe('current management actor ownership', () => {
     expect(isVisibleActor(AGENT)).toBe(true);
     expect(actorMemberName('agent:c0-a:b:9')).toBe('c0-a:b');
     expect(actorMemberName('steward')).toBe('steward');
+    // 名册行里人的 body 显示成"人"，其余照原话。
+    expect(rosterBodyLabel('human')).toBe('人');
+    expect(rosterBodyLabel('class codex')).toBe('class codex');
   });
 
   it('offers only the latest present version of each actor description when adding members', () => {

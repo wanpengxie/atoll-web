@@ -3,6 +3,7 @@ import { actorDisplayName } from '../../../model/actor-display.js';
 import { actorDescriptionRef, actorMemberName, isVisibleActor } from '../../../model/actor-visibility.js';
 import { isPlatformChannel, LOCAL_DEVICE_ID, ROOT_CHANNEL_ID } from '../../../protocol/vocab.js';
 import { TERMINAL_RESULT_UNAVAILABLE } from '../../../model/terminal-result.js';
+import { rosterBodyLabel } from '../../../model/member-config.js';
 import { InlineConfirmation } from '../../primitives/InlineConfirmation.jsx';
 import { PanelCard } from '../../primitives/PanelCard.jsx';
 import { SelectMenu } from '../../primitives/SelectMenu.jsx';
@@ -331,7 +332,7 @@ function ChannelMembers({ channel, port }) {
         const canBind = typeof bindCommand === 'function' && row.bound === false;
         const canUnbind = typeof unbindCommand === 'function' && row.bound === true;
         return <div className="managed-actor" key={row.id}>
-          <div><strong>{actorDisplayName(row)}{row.id === port.selfId && <em>我</em>}</strong><small>{row.kind || 'actor'}{row.principal ? ` · principal ${row.principal}` : ''}{row.body ? ` · ${row.body}` : ''} · {row.id}</small></div>
+          <div><strong>{actorDisplayName(row)}{row.id === port.selfId && <em>我</em>}</strong><small>{row.kind || 'actor'}{row.principal ? ` · principal ${row.principal}` : ''}{row.body ? ` · ${rosterBodyLabel(row.body)}` : ''} · {row.id}</small></div>
           <span className={`actor-runtime ${runtimeState}`}>{runtimeLabel}</span>
           <button type="button" disabled={typeof commandPort.selectActor !== 'function'} onClick={() => commandPort.selectActor?.(row)} aria-label={`查看 ${actorDisplayName(row)}`}>查看</button>
           {canBind || canUnbind ? <button type="button" disabled={port.disabled || directOperation?.state === 'pending'} onClick={() => runDirectCommand(row.bound ? '解绑' : '绑定', row.bound ? unbindCommand : bindCommand, row)}>{row.bound ? '解绑' : '绑定'}</button> : <button type="button" disabled title="当前治理端口未提供绑定命令">绑定</button>}

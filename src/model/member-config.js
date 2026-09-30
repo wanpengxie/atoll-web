@@ -138,6 +138,12 @@ export function insertGlobalReference(text, selectionStart, selectionEnd, name) 
 
 // 成员条目的 body 说成员是从什么造出来的：一个 Actor 描述（名字@版本）、一个 Class，
 // 或一个人。
+// 名册行的 body 是一句话（"class codex"、"actor writer@2"、"human"、
+// "generated"）；人那句显示成"人"，和描述条目的叫法一致。
+export function rosterBodyLabel(phrase) {
+  return phrase === 'human' ? '人' : String(phrase || '');
+}
+
 export function memberBodyLabel(body) {
   if (!plainObject(body)) return '';
   if (body.human === true) return '人';
