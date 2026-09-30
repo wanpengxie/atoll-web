@@ -81,6 +81,8 @@ function operationError(code, message) {
 
 const MEMBER_NAME = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const GENERATED_BODY = 'generated';
+const REALIZE_ALL = Symbol('realize all');
+const C0_CHANNEL_ID = 'c0';
 
 // 成员可用的 class：它造出什么 kind 的成员、默认配置、以及它拒绝什么配置。
 // member.set 换 class 不许换 kind；配置被 class 拒绝时业务层卡住。
@@ -209,6 +211,8 @@ export class MockDomain {
     this.behavior = structuredClone(config.behavior || {});
     this.obsComplete = config.obs_complete !== false;
     this.faults = [];
+    // 等着建的：频道 → 成员名（REALIZE_ALL = 整个频道对一遍描述）。
+    this.pendingBuilds = new Map();
     const stamp = STAMP;
     // Actor 描述：不可变的 名字@版本（c0 的 actor_descriptions 表）。
     this.actorDescriptions = new Map();
@@ -377,7 +381,7 @@ export class MockDomain {
     this.validateDescription(body);
     current.body = body;
     current.revision += 1;
-    this.realize(channelId);
+    this.queueBuild(channelId);
     return { revision: current.revision, result };
   }
 
@@ -469,6 +473,24 @@ export class MockDomain {
     this.builds.set(key, record);
     this.events.push({ channelId, type: 'system.build.finished', payload: structuredClone(record) });
     return record;
+  }
+
+  // 和真节点一样，构建在写成的回复之后才进行：写口只排队，finishBuilds() 才建
+  // （mock 服务在回复之后稍等再调它）。name 省略时整个频道对一遍描述。
+  queueBuild(channelId, name = REALIZE_ALL) {
+    const names = this.pendingBuilds.get(channelId) || new Set();
+    names.add(name);
+    this.pendingBuilds.set(channelId, names);
+  }
+
+  finishBuilds() {
+    const pending = this.pendingBuilds;
+    this.pendingBuilds = new Map();
+    for (const [channelId, names] of pending) {
+      if (!this.descriptions.has(channelId)) continue;
+      if (names.has(REALIZE_ALL)) this.realize(channelId);
+      else for (const name of names) this.buildMember(channelId, name);
+    }
   }
 
   // 让一个频道的成员对上它的描述：多的删、少的建、变了的重建。
@@ -609,7 +631,7 @@ export class MockDomain {
     };
     next.revision += 1;
     this.memberConfigs.set(key, next);
-    this.buildMember(channelId, name);
+    this.queueBuild(channelId, name);
     return { member: name, desired_host: next.desired_host, values: structuredClone(next.values), revision: next.revision };
   }
 
@@ -775,7 +797,7 @@ export class MockDomain {
       throw error;
     }
     // 重启 = 按当前描述和配置重建：缺的全局 key 补上了，卡住的成员就起来了。
-    this.buildMember(channelId, memberNameOf(actorId));
+    this.queueBuild(channelId, memberNameOf(actorId));
     return { member: actorId };
   }
 
@@ -819,7 +841,7 @@ export class MockDomain {
     this.histories.set(id, []);
     this.resources.set(id, new Map());
     this.descriptions.set(id, { body, revision: 1 });
-    this.realize(id);
+    this.queueBuild(id);
     return { channel_id: id, revision: 1 };
   }
 
@@ -851,7 +873,10 @@ export class MockDomain {
   }
 
   // system.channel.set：描述里的说明和 serving 两个字段。
-  setChannel(channelId, { description, serving } = {}) {
+  // 和真后端一样（lagoon setChannel）：只能从这个频道自己或 c0 改。
+  setChannel(channelId, { description, serving } = {}, { from = channelId } = {}) {
+    if (!this.descriptions.has(channelId)) throw operationError('reserved', `channel ${JSON.stringify(channelId)} is built by the platform; its account of itself is fixed`);
+    if (from !== C0_CHANNEL_ID && from !== channelId) throw operationError('permission_denied', `a channel's description may only be changed from that channel or from the registry channel: this names channel_id ${JSON.stringify(channelId)} but arrived from ${JSON.stringify(from)}`);
     const { revision } = this.editDescription(channelId, (body) => {
       if (description !== undefined) body.description = String(description || '');
       if (serving !== undefined) body.serving = Number(serving) === 1 ? 1 : 0;
@@ -884,14 +909,16 @@ export class MockDomain {
     if (id === 'local-device') throw operationError('reserved', 'local-device is the node\'s own device and cannot be retired');
     const row = this.devices.get(id); if (!row || row.status !== 'present') throw new TypeError('device does not exist');
     row.status = 'retired';
-    for (const channelId of this.descriptions.keys()) if ((this.descriptions.get(channelId).body.devices || []).includes(id)) this.realize(channelId);
+    for (const channelId of this.descriptions.keys()) if ((this.descriptions.get(channelId).body.devices || []).includes(id)) this.queueBuild(channelId);
     return { device_id: id, retired: true };
   }
 
   // system.device.attach / detach：编辑频道描述里的 devices。
-  bindDevice(channelId, deviceId, attach) {
+  // 和真后端一样（lagoon authorizeDeviceEdit）：设备只挂到、卸自请求来的那个频道。
+  bindDevice(channelId, deviceId, attach, { from = channelId } = {}) {
     if (!this.channel(channelId)) throw operationError('not_found', `channel ${channelId} does not exist`);
     if (deviceId === 'local-device') throw operationError('reserved', 'every channel already has local-device; it is not attached or detached');
+    if (from !== channelId) throw operationError('permission_denied', `a device is attached to or detached from the channel the request comes from: this names channel_id ${JSON.stringify(channelId)} but arrived from ${JSON.stringify(from)}`);
     if (!this.devices.get(deviceId) || this.devices.get(deviceId).status !== 'present') throw operationError('not_found', `device ${deviceId} does not exist; see system.device.list`);
     const { revision } = this.editDescription(channelId, (body) => {
       const devices = new Set(body.devices || []);

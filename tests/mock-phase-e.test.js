@@ -123,12 +123,15 @@ describe('phase E stateful mock', () => {
     // local-device 是每个频道的默认设备，不挂不卸。
     const local = await submitTerminal(h, 'system.device.attach', { channel_id: 'c0.project', device_id: 'local-device' });
     expect(local.payload.body).toMatchObject({ status: 'failed', error_code: 'reserved' });
-    const attached = await submitTerminal(h, 'system.device.attach', { channel_id: 'c0.project', device_id: deviceId });
+    // 设备只挂到请求来的那个频道：从 c0 挂到 c0.project 被拒。
+    const elsewhere = await submitTerminal(h, 'system.device.attach', { channel_id: 'c0.project', device_id: deviceId });
+    expect(elsewhere.payload.body).toMatchObject({ status: 'failed', error_code: 'permission_denied' });
+    const attached = await submitTerminal(h, 'system.device.attach', { channel_id: 'c0.project', device_id: deviceId }, ['system'], 'c0.project');
     expect(attached.payload.body.value).toMatchObject({ channel_id: 'c0.project', revision: 2 });
     const channelDevices = await h.fetchSession('/obs/channel/c0.project/devices').then((response) => response.json());
     expect(channelDevices.items.map((row) => [row.declared.device_id, row.declared.default])).toEqual([['local-device', true], [deviceId, false]]);
     expect((await submitTerminal(h, 'system.channel.description.get', { channel: 'c0.project' })).payload.body.value.body.devices).toEqual([deviceId]);
-    await submitTerminal(h, 'system.device.detach', { channel_id: 'c0.project', device_id: deviceId });
+    await submitTerminal(h, 'system.device.detach', { channel_id: 'c0.project', device_id: deviceId }, ['system'], 'c0.project');
     const detached = await h.fetchSession('/obs/channel/c0.project/devices').then((response) => response.json());
     expect(detached.items.map((row) => row.declared.device_id)).toEqual(['local-device']);
     h.wire.close(); await close(h.server);

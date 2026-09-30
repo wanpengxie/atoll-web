@@ -21,6 +21,7 @@ describe('mock domain: descriptions, member config and builds', () => {
     const source = mock.channelDescription('c0.project');
     const created = mock.createChannel('c0', { name: 'copy', parent: 'c0', humans: ['root'], copy_from: 'c0.project' });
     expect(created).toEqual({ channel_id: 'c0.copy', revision: 1 });
+    mock.finishBuilds();
     // humans 里的人成了新描述里的人的条目。
     expect(mock.channelDescription('c0.copy')).toEqual({ body: { ...source.body, members: [...source.body.members, { name: 'root', body: { human: true }, principal: 'root' }] }, revision: 1 });
     // 配置没跟过来：writer 的占位在新频道里又缺了，构建失败，不在名册上。
@@ -48,6 +49,11 @@ describe('mock domain: descriptions, member config and builds', () => {
     mock.takeEvents();
     const reply = mock.setMemberConfig('c0.project', { member: 'writer', values: { service: { api_key: '$global.openai_prod' } } });
     expect(reply).toEqual({ member: 'writer', desired_host: '', values: { service: { api_key: '$global.openai_prod' } }, revision: 1 });
+    // 和真节点一样，回复先到，构建之后才进行：此刻名册和构建记录都还是旧的。
+    expect(rosterNames(mock, 'c0.project')).not.toContain('writer');
+    expect(mock.memberInfo('c0.project', 'writer')).toMatchObject({ build: { result: 'failed' } });
+    expect(mock.takeEvents()).toEqual([]);
+    mock.finishBuilds();
     const info = mock.memberInfo('c0.project', 'writer');
     expect(info).toMatchObject({ member: true, present: true, build: { result: 'ok', state: 'ready', attempt: 1, config: { revision: 1 } } });
     expect(info).not.toHaveProperty('missing');
@@ -59,6 +65,7 @@ describe('mock domain: descriptions, member config and builds', () => {
     ]);
     // values 是合并补丁：null 把键删掉，占位又露出来。
     mock.setMemberConfig('c0.project', { member: 'writer', values: { service: { api_key: null } } });
+    mock.finishBuilds();
     expect(mock.memberInfo('c0.project', 'writer')).toMatchObject({ member: false, missing: [{ key: 'service.api_key' }], build: { result: 'failed', state: 'stopped' } });
   });
 
@@ -74,6 +81,18 @@ describe('mock domain: descriptions, member config and builds', () => {
     expect(mock.memberInfo('c0', 'steward')).toMatchObject({ body: { class: 'codex' }, sources: { effort: 'config', model: 'default' } });
   });
 
+  it('changes a channel description only from that channel, or from c0 through its peer, like the registrar', () => {
+    const mock = domain();
+    expect(() => mock.setChannel('c0.project', { description: 'x' }, { from: 'c0.other' })).toThrow(expect.objectContaining({ code: 'permission_denied' }));
+    expect(mock.setChannel('c0.project', { description: 'from itself' }, { from: 'c0.project' })).toMatchObject({ channel_id: 'c0.project' });
+    expect(mock.setChannel('c0.project', { description: 'from c0' }, { from: 'c0' })).toMatchObject({ channel_id: 'c0.project' });
+    expect(mock.channelDescription('c0.project').body.description).toBe('from c0');
+    // 设备只挂到请求来的那个频道，c0 也不例外。
+    const { device_id: device } = mock.mintDevice('laptop');
+    expect(() => mock.bindDevice('c0.project', device, true, { from: 'c0' })).toThrow(expect.objectContaining({ code: 'permission_denied' }));
+    expect(mock.bindDevice('c0.project', device, true, { from: 'c0.project' })).toMatchObject({ channel_id: 'c0.project' });
+  });
+
   it('versions actor descriptions and points a member at a newer one', () => {
     const mock = domain();
     const next = mock.putActorDescription({ name: 'writer', class: 'claude', params: { model: 'claude-opus', service: { api_key: 'k', region: 'us' } } });
@@ -81,6 +100,7 @@ describe('mock domain: descriptions, member config and builds', () => {
     expect(mock.memberInfo('c0.project', 'writer').note).toContain('writer@2');
     const set = mock.setMemberEntry('c0.project', { member: 'writer', body: { actor: 'writer@2' } });
     expect(set).toMatchObject({ written: true, entry: { name: 'writer', body: { actor: 'writer@2' }, params: { temperature: 0.3 } } });
+    mock.finishBuilds();
     expect(mock.memberInfo('c0.project', 'writer')).toMatchObject({ member: true, build: { result: 'ok' }, effective: { service: { region: 'us' } } });
     mock.retireActorDescription('writer', 1);
     expect(mock.actorDescription('writer')).toMatchObject({ ref: 'writer@2' });

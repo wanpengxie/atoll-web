@@ -38,6 +38,14 @@ const project = (h, msgType, payload) => system(h, msgType, payload, PROJECT);
 // 成员 id 是 <kind>:<名字>:<届次>；名字是中间那段。
 const memberName = (id) => String(id).split(':').slice(1, -1).join(':') || String(id);
 
+// 和真节点一样，写成的回复先到、构建之后才完成：等这个成员下一条构建结束记录。
+async function builtAfter(h, name, run) {
+  const before = h.envelopes.length;
+  const reply = await run();
+  await waitFor(() => h.envelopes.slice(before).find((row) => row.channel_id === PROJECT && row.type === 'system.build.finished' && row.payload?.body?.object?.name === name));
+  return reply;
+}
+
 async function projectRoster(h) {
   const roster = await h.fetchSession(`/obs/channel/${PROJECT}/actors`).then((response) => response.json());
   return roster.items;
@@ -158,7 +166,7 @@ describe('actor-config mock', () => {
     expect(await project(h, 'system.member.get', { member: 'writer' })).toMatchObject({ member: false, build: { state: 'stopped' } });
 
     // 前端填占位时发的就是 patchAtPath 算出来的那一小块补丁。
-    const filled = await project(h, 'system.member.config.set', { member: 'writer', values: { service: { api_key: 'sk-write' } } });
+    const filled = await builtAfter(h, 'writer', () => project(h, 'system.member.config.set', { member: 'writer', values: { service: { api_key: 'sk-write' } } }));
     expect(filled).toMatchObject({ status: 'completed', member: 'writer', desired_host: '', values: { service: { api_key: 'sk-write' } }, revision: 1 });
     const writer = await project(h, 'system.member.get', { member: 'writer' });
     expect(writer).toMatchObject({
@@ -176,7 +184,7 @@ describe('actor-config mock', () => {
     expect(h.envelopes.some((row) => row.channel_id === PROJECT && row.type === 'system.build.started' && row.payload?.body?.object?.name === 'writer')).toBe(true);
 
     // 运行设备指到一台没挂到本频道的设备：构建失败并说清为什么。
-    await project(h, 'system.member.config.set', { member: 'writer', desired_host: 'device-x' });
+    await builtAfter(h, 'writer', () => project(h, 'system.member.config.set', { member: 'writer', desired_host: 'device-x' }));
     const moved = await project(h, 'system.member.get', { member: 'writer' });
     expect(moved.build).toMatchObject({ result: 'failed', state: 'stopped' });
     expect(moved.build.reason).toContain('desired_host device-x');
@@ -206,7 +214,7 @@ describe('actor-config mock', () => {
 
     // 补上 key 再重启，卡住的成员起来。
     const deepseekId = (await projectRoster(h)).find((entry) => memberName(entry.declared.id) === 'deepseek').declared.id;
-    await project(h, 'system.member.restart', { member: deepseekId });
+    await builtAfter(h, 'deepseek', () => project(h, 'system.member.restart', { member: deepseekId }));
     expect(await project(h, 'system.member.get', { member: 'deepseek' })).toMatchObject({ present: true });
     await resource('c0', { op: 'delete', resource_id: 'global/deepseek_prod' });
     expect(await resource('c0', { op: 'stat', resource_id: 'global/deepseek_prod' })).toMatchObject({ exists: false });

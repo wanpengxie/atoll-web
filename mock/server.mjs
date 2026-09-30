@@ -1063,8 +1063,10 @@ export function createMockServer({
         visibility: 'system',
         ts: domain.now(),
       }));
-      // 构建记录（system.build.*）：领域层在写入时记下，这里按频道追加进各自账本。
-      later(40, () => {
+      // 和真节点一样，写成的回复（25ms）先到，构建之后才进行：这时才建成员、
+      // 按频道追加构建记录（system.build.*）。
+      later(Number(domain.delays.build ?? 120), () => {
+        domain.finishBuilds();
         for (const event of domain.takeEvents()) {
           append(event.channelId, envelope({
             id: domain.nextId(`${event.channelId}-build-event`),
@@ -1183,7 +1185,7 @@ export function createMockServer({
           }
           case 'system.channel.set': {
             assertClosedPayload(body, ['channel_id', 'description', 'serving']);
-            complete(domain.setChannel(body.channel_id || channelId, body));
+            complete(domain.setChannel(body.channel_id || channelId, body, { from: channelId }));
             return;
           }
           case 'system.channel.device.list':
@@ -1229,7 +1231,7 @@ export function createMockServer({
           case 'system.device.attach':
           case 'system.device.detach':
             assertClosedPayload(body, ['channel_id', 'device_id']);
-            complete(domain.bindDevice(body.channel_id || channelId, body.device_id, payload.msg_type.endsWith('.attach')));
+            complete(domain.bindDevice(body.channel_id || channelId, body.device_id, payload.msg_type.endsWith('.attach'), { from: channelId }));
             return;
           case 'system.device.list':
             assertClosedPayload(body, []);
