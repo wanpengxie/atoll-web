@@ -56,6 +56,7 @@ import { ConversationSurface } from '../ui/conversation/ConversationSurface.jsx'
 import { Composer, useComposerCommands } from '../ui/composer/index.js';
 import { TaskCreationDialog } from '../ui/features/tasks/TasksFeature.jsx';
 import { UiFormModal } from '../ui/UiFormModal.jsx';
+import { systemReplyValue } from '../protocol/reply-shape.js';
 import {
   WorkspaceFeatures,
   WorkspaceFeatureOverlays,
@@ -232,18 +233,6 @@ function governanceTerminalError(payload, fallback = '治理命令未完成') {
   const error = new Error(message);
   error.code = typedCode || 'governance_failed';
   return error;
-}
-
-// system actor 自己答的词（member.get / member.set …）用 sys.Reply 把回复平铺在
-// status 旁边；失败是 {status:'failed', error_code, detail}。这两个函数只把这一种
-// 形状读成值或错误，不做 registrar {value} 那一套。
-// 频道面的词（system actor 自己答）把回复平铺在 status 旁边；空间面的词（转交
-// c0 的 registrar）回的是 {status, value}。两种形状读成同一个值。
-function systemReplyValue(payload) {
-  const { status: _status, ...value } = payload || {};
-  const keys = Object.keys(value);
-  if (keys.length === 1 && keys[0] === 'value') return value.value;
-  return value;
 }
 
 function systemReplyError(payload) {
@@ -768,7 +757,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       }
       if (record.kind === 'reply') {
         governanceRequestsRef.current.delete(requestId);
-        record.resolve?.(systemReplyValue(payload));
+        record.resolve?.(systemReplyValue(payload, record.msgType));
         continue;
       }
       const value = payload.value;
