@@ -6,8 +6,6 @@ import {
   parseUiFormRequest,
   uiFormCancelled,
   uiRequestAddressing,
-  uiResolveError,
-  uiSessionRequired,
 } from '../../model/ui-form.js';
 
 const CLOSED_CODES = new Set(['already_closed', 'request_not_found']);
@@ -47,7 +45,6 @@ export function useUiWords({ stateEntries, version, selfFor, wireRef, wireState,
     if (!session?.id) return;
     const closed = new Set();
     const accepted = [];
-    const refusals = [];
     for (const [channelId, state] of stateEntries()) {
       const selfId = selfFor(channelId);
       const revision = state?._timelineRevision;
@@ -66,25 +63,19 @@ export function useUiWords({ stateEntries, version, selfFor, wireRef, wireState,
         handledRef.current.add(request.id);
         const addressing = uiRequestAddressing(request, session);
         if (addressing === 'other') continue;
+        // 没人操作时，这块屏恒不自己往账本写东西（手动挡）：没点名屏的、形状不对
+        // 的请求不弹、也不替人回拒绝，留在账本里由它自己的过期收尾。
         if (addressing === 'unaddressed') {
-          refusals.push(uiSessionRequired(request, session));
+          diagnostic('info', 'ui_word.unaddressed', { reqId: request.id, session: session.id });
           continue;
         }
         const parsed = parseUiFormRequest(request);
         if (!parsed.ok) {
-          refusals.push(uiResolveError(request, parsed.code, parsed.message));
+          diagnostic('info', 'ui_word.malformed', { reqId: request.id, code: parsed.code, detail: parsed.message });
           continue;
         }
         accepted.push(parsed.form);
       }
-    }
-    for (const frame of refusals) {
-      diagnostic('info', 'ui_word.refused', { reqId: frame.req_id, code: frame.error?.code });
-      void send(frame).catch((error) => {
-        // 回帧没发出去（多半是连接断了）：从已办里拿掉，重连后账本上那条请求
-        // 仍然开着，会被重新受理——比留一条永远不会有人答的请求好。
-        if (!CLOSED_CODES.has(error?.code)) handledRef.current.delete(frame.req_id);
-      });
     }
     if (!accepted.length && !closed.size) return;
     // 只有看见终态才收表单：频道还在同步时看不见它，不等于它关了。

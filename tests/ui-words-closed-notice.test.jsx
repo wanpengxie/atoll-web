@@ -28,3 +28,23 @@ describe('useUiWords closed notice', () => {
     expect(onNotice).toHaveBeenCalledWith('这张表单已经关闭（在别处答复了或已过期）。');
   });
 });
+
+// 手动挡：没人操作时这块屏恒不自己写账本——没点名屏的、形状不对的 ui.form 不弹、
+// 不替人回拒绝，留给它自己的过期收尾。
+describe('useUiWords writes nothing on its own', () => {
+  function uiFormTurn(id, body) {
+    return { kind: 'turn', turn: { request: { id, channel_id: 'c0', kind: 'request', type: 'ui.form', audience: ['me'], payload: { body } } } };
+  }
+  it('neither pops nor refuses an unaddressed or malformed form', async () => {
+    const state = { _timelineRevision: 1, timeline: [
+      uiFormTurn('unaddressed', { schema: { type: 'object', properties: { a: { type: 'string' } } } }),
+      uiFormTurn('malformed', { session: 's-1', schema: 'nope' }),
+    ] };
+    const resolve = vi.fn(async () => ({}));
+    const wireRef = { current: { resolve, session: () => ({ id: 's-1' }) } };
+    const { result } = renderHook(() => useUiWords({ stateEntries: () => [['c0', state]], version: 1, selfFor: () => 'me', wireRef, wireState: 'open', onNotice: vi.fn() }));
+    await act(async () => { await new Promise((done) => setTimeout(done, 20)); });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(result.current.forms).toEqual([]);
+  });
+});
