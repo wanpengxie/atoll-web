@@ -731,10 +731,9 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
         name: String(payload?.name || '').trim(),
       });
     }
-    await refreshDirectoryFacts();
-    if (epoch !== governanceEpochRef.current) throw governanceWorldResetError();
+    // 回执只说收到了；目录在终态那一行到了之后刷新，这里不抢先读一份旧的。
     return result;
-  }, [refreshDirectoryFacts, sendSystemCommand, trackGovernanceRequest]);
+  }, [sendSystemCommand, trackGovernanceRequest]);
   const refreshGovernanceDirectory = useCallback(async () => {
     try {
       await refreshDirectoryFacts();
@@ -1680,7 +1679,8 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     if (scope !== 'channel') return Promise.reject(unavailableError(`governance.${scope}`));
     const channelId = String(payload.channelId || navigation.activeChannelId || '');
     // 说明文字、是否对外服务：频道描述里的两个字段。
-    if (action === 'update_profile') return sendGovernanceCommand(channelId, TYPES.channel.set, {
+    // 保存以写成的回复为准，不以收到回执为完成；目录随终态那一行刷新一次。
+    if (action === 'update_profile') return requestSystemReply(channelId, TYPES.channel.set, {
       channel_id: channelId,
       ...(payload.description !== undefined ? { description: String(payload.description || '') } : {}),
       ...(payload.serving !== undefined ? { serving: payload.serving ? 1 : 0 } : {}),
@@ -1715,7 +1715,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       return sendGovernanceCommand(channelId, TYPES.member.create, { name, body });
     }
     if (action === 'attach_device' || action === 'detach_device') {
-      return sendGovernanceCommand(channelId, action === 'attach_device' ? TYPES.device.attach : TYPES.device.detach, {
+      return requestSystemReply(channelId, action === 'attach_device' ? TYPES.device.attach : TYPES.device.detach, {
         channel_id: channelId,
         device_id: String(payload.deviceId || ''),
       });
@@ -1741,9 +1741,8 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     };
     const word = spaceWords[action];
     if (!word) throw unavailableError(`governance.space.${action}`);
-    const reply = await requestSystemReply(channelId, word[0], word[1]());
-    await refreshDirectoryFacts();
-    return reply;
+    // 目录随终态那一行刷新（channel-feed-runtime 的目录失效），这里不再另读。
+    return requestSystemReply(channelId, word[0], word[1]());
   };
   const governancePort = {
     channel: {

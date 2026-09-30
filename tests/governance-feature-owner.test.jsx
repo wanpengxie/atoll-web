@@ -102,7 +102,8 @@ describe('Governance UI owner contracts', () => {
       payload: { channelId: 'c0.project', description: '新说明', serving: true },
     }));
     await screen.findByText('第 3 版');
-    expect(refresh).toHaveBeenCalledWith('directory');
+    // 保存不另读目录：目录随终态那一行刷新一次。
+    expect(refresh).not.toHaveBeenCalled();
     expect(readChannel).toHaveBeenCalledTimes(2);
   });
 

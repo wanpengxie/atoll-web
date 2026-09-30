@@ -82,8 +82,9 @@ const ACCESS_UNAVAILABLE_CODES = new Set(['unavailable', 'channel_unavailable'])
 const READ_POSITION_STORAGE_PREFIX = 'atoll.read-position.v1.';
 const RETIRED_CURSOR_STORAGE_PREFIX = 'atoll.feed-cursors.v1.';
 
+// 目录只在事情做成之后才变：看终态和旁白，不看请求本身（一次保存恒只读一次目录）。
 function invalidatesChannelDirectory(envelope) {
-  return DIRECTORY_INVALIDATION_TYPES.has(envelope?.type || '');
+  return envelope?.kind !== 'request' && DIRECTORY_INVALIDATION_TYPES.has(envelope?.type || '');
 }
 
 function historyNumeric(value) {

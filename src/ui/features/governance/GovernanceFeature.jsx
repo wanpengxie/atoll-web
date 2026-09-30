@@ -164,11 +164,11 @@ function ChannelSettings({ channel, port }) {
   const usable = new Set((port.channelDevices || []).map((row) => row.id));
   const spaceDevices = (port.spaceDevices || []).filter((row) => row.id && row.id !== LOCAL_DEVICE_ID);
   const saveProfile = async () => {
-    await action.submit('update_profile', { channelId: channel?.id, description, serving }, { refresh: 'directory', submitted: '频道描述已写入。' });
+    await action.submit('update_profile', { channelId: channel?.id, description, serving }, { submitted: '频道描述已写入。' });
     if (readable) await read();
   };
   const toggleDevice = async (row, attach) => {
-    await action.submit(attach ? 'attach_device' : 'detach_device', { channelId: channel?.id, deviceId: row.id }, { refresh: 'directory', submitted: attach ? '设备已写进频道描述。' : '设备已从频道描述移除。' });
+    await action.submit(attach ? 'attach_device' : 'detach_device', { channelId: channel?.id, deviceId: row.id }, { submitted: attach ? '设备已写进频道描述。' : '设备已从频道描述移除。' });
     if (readable) await read();
   };
   return <>

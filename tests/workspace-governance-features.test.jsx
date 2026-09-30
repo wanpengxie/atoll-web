@@ -23,7 +23,7 @@ describe('workspace governance feature ports', () => {
     expect(screen.queryByRole('heading', { name: '创建子频道' })).toBeNull();
   });
 
-  it('reports a queued profile command and requests a directory refresh', async () => {
+  it('reports a written profile without reading the directory itself', async () => {
     const submit = vi.fn().mockResolvedValue('message-1');
     const refresh = vi.fn().mockResolvedValue(undefined);
     const readChannel = vi.fn().mockResolvedValue({ description: { revision: 1, body: { members: [], description: 'old', serving: 0 } } });
@@ -43,27 +43,11 @@ describe('workspace governance feature ports', () => {
       action: 'update_profile',
       payload: { channelId: 'c1', description: 'new', serving: false },
     }));
-    expect(refresh).toHaveBeenCalledWith('directory');
+    // 保存不另读目录：目录随终态那一行刷新一次。
+    expect(refresh).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.getByRole('status').textContent).toContain('频道描述已写入'));
     // 频道状态不再有构建结果，回执也不再指向它。
     expect(screen.getByRole('status').textContent).not.toContain('构建结果');
-  });
-
-  it('reports a partial result when the directory refresh after a write fails', async () => {
-    const submit = vi.fn().mockResolvedValue('message-1');
-    const refresh = vi.fn().mockRejectedValue(new Error('obs offline'));
-    const readChannel = vi.fn().mockResolvedValue({ description: { revision: 1, body: { members: [], serving: 0 } } });
-    render(<ChannelAdministrationPanel
-      channel={{ id: 'c1' }}
-      initialTab="overview"
-      port={{ commands: { submit, refresh, readChannel }, children: [] }}
-      onClose={() => {}}
-    />);
-    fireEvent.click(screen.getByRole('button', { name: '读取' }));
-    await screen.findByLabelText('频道说明');
-    fireEvent.click(screen.getByRole('button', { name: '保存' }));
-    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('目录刷新失败：obs offline'));
-    expect(screen.getByRole('status').className).toContain('state-partial');
   });
 
   it('uses after/list/cancel ports without claiming a server timer inventory', async () => {

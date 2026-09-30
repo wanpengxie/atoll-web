@@ -373,19 +373,30 @@ describe('真实 Workspace owner composition', () => {
     await run('introduce_actor', { candidateType: 'principal', candidateId: 'alice' });
     expect(submitted(TYPES.member.admit).at(-1).payload).toEqual({ principal: 'alice' });
 
-    await run('update_profile', { description: '新说明', serving: true });
-    await run('update_profile', { serving: false });
+    // 频道设置和设备：以写成的回复为准——等终态回来才算完成。
+    let seq = 10;
+    const settle = async (action, payload, msgType) => {
+      const pending = governance.commands.submit({ scope: 'channel', action, payload: { channelId: mocks.channelId, ...payload } });
+      const before = submitted(msgType).length;
+      await waitFor(() => expect(submitted(msgType).length).toBeGreaterThanOrEqual(before));
+      const request = submitted(msgType).at(-1);
+      await answer(request, { status: 'completed', value: { written: true } }, seq);
+      seq += 2;
+      await expect(pending).resolves.toBeTruthy();
+    };
+    await settle('update_profile', { description: '新说明', serving: true }, TYPES.channel.set);
+    await settle('update_profile', { serving: false }, TYPES.channel.set);
     expect(submitted(TYPES.channel.set).map((frame) => frame.payload)).toEqual([
       { channel_id: mocks.channelId, description: '新说明', serving: 1 },
       { channel_id: mocks.channelId, serving: 0 },
     ]);
 
-    await run('attach_device', { deviceId: 'laptop' });
-    await run('detach_device', { deviceId: 'laptop' });
+    await settle('attach_device', { deviceId: 'laptop' }, TYPES.device.attach);
+    await settle('detach_device', { deviceId: 'laptop' }, TYPES.device.detach);
     expect(submitted(TYPES.device.attach).at(-1).payload).toEqual({ channel_id: mocks.channelId, device_id: 'laptop' });
     expect(submitted(TYPES.device.detach).at(-1).payload).toEqual({ channel_id: mocks.channelId, device_id: 'laptop' });
-    // 每条治理命令提交后都刷新目录事实。
-    expect(refresh.mock.calls.length).toBeGreaterThanOrEqual(7);
+    // 命令自己不读目录：目录只随终态那一行刷新一次（见 channel-feed-runtime）。
+    expect(refresh).not.toHaveBeenCalled();
     await expect(governance.commands.submit({ scope: 'channel', action: 'no_such_action', payload: {} })).rejects.toMatchObject({ code: 'owner_unavailable' });
   });
 
@@ -403,7 +414,8 @@ describe('真实 Workspace owner composition', () => {
     refresh.mockClear();
     await answer(request, { status: 'completed', value: { ref: 'reviewer@1', version: 1 } });
     await expect(pending).resolves.toEqual({ ref: 'reviewer@1', version: 1 });
-    expect(refresh).toHaveBeenCalledTimes(1);
+    // 命令自己不读目录，目录随终态那一行刷新。
+    expect(refresh).not.toHaveBeenCalled();
 
     const others = [
       space.commands.submit({ scope: 'space', action: 'actor_description_create', payload: { name: 'r2', class: 'claude', description: '审稿', params: { a: 1 } } }),
