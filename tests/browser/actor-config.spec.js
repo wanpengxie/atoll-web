@@ -120,60 +120,6 @@ test('actor layers: a stuck member names its layer and reason; a ready row stays
   });
 });
 
-// channel.get 不再带成员构建摘要（owner 09-30："先瘦身，不需要这两个功能，后续都由obs补"），
-// 治理页上从构建摘要打开"没建成的成员"这个入口随之没了；界面上另开入口要 owner 定，
-// 在那之前这条用例挂起，不改成别的路径去凑。
-test.fixme('占位显示与填写: writer\'s unfilled placeholder is shown, filling it builds writer into the roster', async ({ page, request }) => {
-  const submits = captureSubmits(page);
-  await reset(request, 2904);
-  await login(page);
-  await enterProject(page);
-  await page.getByRole('button', { name: '频道操作', exact: true }).click();
-  await page.getByRole('menuitem', { name: '频道详情', exact: true }).click();
-  const panel = page.getByRole('complementary', { name: '频道治理' });
-  await panel.getByRole('tab', { name: '设置', exact: true }).click();
-  // 频道状态按需读：一次点击一条 system.channel.get。
-  await panel.getByRole('button', { name: '读取', exact: true }).click();
-  const builds = panel.locator('.member-builds');
-  const writerBuild = builds.locator('[data-build-name="writer"]');
-  await expect(writerBuild).toContainText('失败');
-  await expect(writerBuild).toContainText('已停止：改描述或配置后才会再构建');
-  await expect(writerBuild).toContainText('第 4 次尝试');
-  await expect(writerBuild).toContainText('service.api_key is a placeholder still unfilled (写作服务的 API key)');
-  expect(submits.find((payload) => payload.msg_type === 'system.channel.get')?.payload).toEqual({ channel_id: 'c0.project' });
-
-  // writer 不在名册上，从构建摘要打开它的详情。
-  await builds.getByRole('button', { name: '查看成员 writer', exact: true }).click();
-  const detail = page.getByRole('complementary', { name: 'Actor 详情' });
-  await expect(detail).toBeVisible();
-  await detail.getByRole('button', { name: '读取配置' }).click();
-  expect(submits.filter((payload) => payload.msg_type === 'system.member.get').at(-1)?.payload).toEqual({ member: 'writer' });
-  const missing = detail.getByRole('group', { name: '还没填的占位' });
-  await expect(missing).toContainText('还缺 1 个值');
-  const row = missing.locator('[data-key="service.api_key"]');
-  await expect(row).toContainText('写作服务的 API key');
-  expect((await sourceTable(detail))['service.api_key']).toEqual(['$required:写作服务的 API key', 'Actor 描述']);
-
-  await row.getByLabel('填写 service.api_key').fill('$global.openai_prod');
-  await row.getByRole('button', { name: '填入', exact: true }).click();
-  await expect(detail.getByText(/已填 service\.api_key（配置第 1 版）/)).toBeVisible();
-  const set = submits.filter((payload) => payload.msg_type === 'system.member.config.set').at(-1);
-  expect(set?.payload).toEqual({ member: 'writer', values: { service: { api_key: '$global.openai_prod' } } });
-  await expect(detail.getByRole('group', { name: '还没填的占位' })).toHaveCount(0);
-  await expect(detail.locator('.member-build')).toContainText('成功');
-  // 填的值盖在描述的占位上，同一个对象里的兄弟键照旧来自 Actor 描述。
-  const table = await sourceTable(detail);
-  expect(table['service.api_key']).toEqual(['$global.openai_prod', '这一台的配置']);
-  expect(table['service.region']).toEqual(['cn', 'Actor 描述']);
-
-  // 构建成功，writer 出现在名册上。
-  await detail.getByRole('button', { name: '关闭writer', exact: true }).click();
-  await page.getByRole('button', { name: '成员', exact: true }).first().click();
-  const roster = page.getByRole('complementary', { name: '频道成员' });
-  await expect(roster.getByRole('button', { name: /writer/ })).toContainText('actor writer@1');
-  expect((await mockState(request)).builds.find((row) => row.object.channel === 'c0.project' && row.object.name === 'writer')).toMatchObject({ result: 'ok', state: 'ready' });
-});
-
 test('成员两块编辑: the entry and this member\'s own configuration are edited and sent separately', async ({ page, request }) => {
   const submits = captureSubmits(page);
   await reset(request, 2905);
