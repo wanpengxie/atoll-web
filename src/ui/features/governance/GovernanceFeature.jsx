@@ -505,7 +505,8 @@ export function ChannelCreateModal({ channel, port = {}, onClose, returnFocusRef
     try {
       const value = await commands.readDescription(channel?.id);
       const members = Array.isArray(value?.body?.members) ? value.body.members : [];
-      setEntries(members.filter((entry) => entry?.name));
+      // 人的条目不在这里抄：带谁进新频道在下面"带进来的人"里选。
+      setEntries(members.filter((entry) => entry?.name && entry.body?.human !== true));
     } catch (failure) {
       setEntriesError(errorMessage(failure));
     } finally {

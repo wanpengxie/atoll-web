@@ -11,7 +11,6 @@ import {
 } from '../src/model/global-keys.js';
 import { initialFormValues, schemaFields, validateFormValues } from '../src/model/json-schema-form.js';
 import {
-  hasRedactedValue,
   insertGlobalReference,
   MEMBER_SOURCE_LABELS,
   memberBodyLabel,
@@ -166,17 +165,12 @@ describe('member layers and config patch', () => {
   it('labels a member body and lists unfilled placeholders', () => {
     expect(memberBodyLabel({ actor: 'writer@1' })).toBe('Actor 描述 writer@1');
     expect(memberBodyLabel({ class: 'codex' })).toBe('Class codex');
+    expect(memberBodyLabel({ human: true })).toBe('人');
     expect(memberBodyLabel({})).toBe('');
     expect(memberBodyLabel('class codex')).toBe('');
     expect(missingPlaceholders({ missing: [{ key: 'service.api_key', hint: '写作服务的 API key' }, { key: 'model' }, { hint: 'no key' }, null] }))
       .toEqual([{ key: 'service.api_key', hint: '写作服务的 API key' }, { key: 'model', hint: '' }]);
     expect(missingPlaceholders({})).toEqual([]);
-  });
-
-  it('never writes back a redacted placeholder', () => {
-    expect(hasRedactedValue({ nested: { token: '已隐藏' } })).toBe(true);
-    expect(hasRedactedValue(['a', ['已隐藏']])).toBe(true);
-    expect(hasRedactedValue({ model: 'x', list: ['a'] })).toBe(false);
   });
 
   it('parses config text and inserts a $global reference at the cursor', () => {

@@ -33,8 +33,7 @@ export function sameJSON(left, right) {
 // - 编辑后删掉的键 → null；
 // - 没动的键 → 不发。
 //
-// 只发变了的键不是省流量：读到的值可能在本地缓存里被脱敏过（redactSensitive），
-// 整份回写会把"已隐藏"写回成员。没动的键不发，就不会碰它。
+// 只发变了的键：没动的键不发，就不会碰它。
 export function mergePatch(before, after) {
   const previous = plainObject(before) ? before : {};
   const next = plainObject(after) ? after : {};
@@ -90,17 +89,6 @@ export function memberSourceRows(detail) {
   }));
 }
 
-// 本地缓存会把名叫 key、token、secret 之类的字段替换成"已隐藏"。这样的值绝不能
-// 被当成配置写回成员。
-export const REDACTED_PLACEHOLDER = '已隐藏';
-
-export function hasRedactedValue(value) {
-  if (value === REDACTED_PLACEHOLDER) return true;
-  if (Array.isArray(value)) return value.some(hasRedactedValue);
-  if (plainObject(value)) return Object.values(value).some(hasRedactedValue);
-  return false;
-}
-
 export function parseMemberConfigText(text) {
   let value;
   try {
@@ -148,9 +136,11 @@ export function insertGlobalReference(text, selectionStart, selectionEnd, name) 
   });
 }
 
-// 成员条目的 body 说成员是从什么造出来的：一个 Actor 描述（名字@版本）或一个 Class。
+// 成员条目的 body 说成员是从什么造出来的：一个 Actor 描述（名字@版本）、一个 Class，
+// 或一个人。
 export function memberBodyLabel(body) {
   if (!plainObject(body)) return '';
+  if (body.human === true) return '人';
   if (body.actor) return `Actor 描述 ${body.actor}`;
   if (body.class) return `Class ${body.class}`;
   return '';

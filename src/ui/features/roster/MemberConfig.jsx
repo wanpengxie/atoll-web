@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { GLOBAL_PREFIX } from '../../../model/global-keys.js';
 import {
-  hasRedactedValue,
   insertGlobalReference,
   isEditableMemberKind,
   memberBodyLabel,
@@ -100,10 +99,9 @@ function MemberEntryEditor({ actor, info, commands, disabled, onSaved, onCancel 
   const patch = parsed.value ? mergePatch(info?.params, parsed.value) : null;
   const requires = requiresText.split(/[\s,，]+/).map((word) => word.trim()).filter(Boolean);
   const requiresChanged = !sameJSON(requires, Array.isArray(info?.requires) ? info.requires : []);
-  const redacted = Boolean(patch && hasRedactedValue(patch));
   const changed = bodyChanged || requiresChanged || Boolean(patch && Object.keys(patch).length);
   const submit = async () => {
-    if (!parsed.value || redacted) return;
+    if (!parsed.value) return;
     setBusy('save');
     setError('');
     try {
@@ -132,13 +130,12 @@ function MemberEntryEditor({ actor, info, commands, disabled, onSaved, onCancel 
     {parsed.error && <p className="field-error" role="alert">{parsed.error}</p>}
     <label>requires<input aria-label="成员 requires" value={requiresText} disabled={locked} placeholder="逗号分隔的词" onChange={(event) => setRequiresText(event.target.value)} /></label>
     <p className="field-hint">params 的值写 <code>"$required:说明"</code> 就是一个占位：由成员在这一台的配置里填。</p>
-    {redacted && <p className="field-error" role="alert">params 里有“已隐藏”的值（本地缓存脱敏过），不能写回；请点「刷新」重新读取后再改。</p>}
     {changed && <details className="member-config-patch" open>
       <summary>将提交的变更</summary>
       <pre>{JSON.stringify({ ...(bodyChanged ? { body: nextBody } : {}), ...(patch && Object.keys(patch).length ? { params: patch } : {}), ...(requiresChanged ? { requires: requires.length ? requires : null } : {}) }, null, 2)}</pre>
     </details>}
     {error && <p className="governance-error" role="alert">{error}</p>}
-    <EditorActions busy={busy} locked={locked} ready={Boolean(parsed.value) && changed && !redacted} onCancel={onCancel} saveLabel="保存条目" />
+    <EditorActions busy={busy} locked={locked} ready={Boolean(parsed.value) && changed } onCancel={onCancel} saveLabel="保存条目" />
   </form>;
 }
 
@@ -156,12 +153,11 @@ function MemberOwnConfigEditor({ actor, info, commands, devices, globalKeys, dis
   const parsed = useMemo(() => parseJSONObject(text, 'values'), [text]);
   const patch = parsed.value ? mergePatch(ownValues, parsed.value) : null;
   const hostChanged = host !== String(own.desired_host || '');
-  const redacted = Boolean(patch && hasRedactedValue(patch));
   const changed = hostChanged || Boolean(patch && Object.keys(patch).length);
   const missing = parsed.value && Array.isArray(keys) ? missingGlobalReferences(parsed.value, keys) : [];
   const hostOptions = [...new Set([String(own.desired_host || ''), ...(devices || []).map((row) => row.id)].filter((id) => id && id !== LOCAL_DEVICE_ID))];
   const submit = async () => {
-    if (!parsed.value || redacted) return;
+    if (!parsed.value) return;
     setBusy('save');
     setError('');
     try {
@@ -192,13 +188,12 @@ function MemberOwnConfigEditor({ actor, info, commands, devices, globalKeys, dis
     {parsed.error && <p className="field-error" role="alert">{parsed.error}</p>}
     <GlobalReferencePicker textRef={textRef} text={text} setText={setText} keys={keys} keysError={keysError} globalKeys={globalKeys} disabled={locked} />
     {missing.length > 0 && <p className="field-hint member-config-missing" role="status">引用的全局 key 不存在：{missing.join('、')}</p>}
-    {redacted && <p className="field-error" role="alert">配置里有“已隐藏”的值（本地缓存脱敏过），不能写回成员；请点「刷新」重新读取后再改。</p>}
     {changed && <details className="member-config-patch" open>
       <summary>将提交的变更</summary>
       <pre>{JSON.stringify({ ...(hostChanged ? { desired_host: host } : {}), ...(patch && Object.keys(patch).length ? { values: patch } : {}) }, null, 2)}</pre>
     </details>}
     {error && <p className="governance-error" role="alert">{error}</p>}
-    <EditorActions busy={busy} locked={locked} ready={Boolean(parsed.value) && changed && !redacted} onCancel={onCancel} saveLabel="保存配置" />
+    <EditorActions busy={busy} locked={locked} ready={Boolean(parsed.value) && changed } onCancel={onCancel} saveLabel="保存配置" />
   </form>;
 }
 

@@ -311,24 +311,6 @@ describe('the roster and member config', () => {
     expect(setMemberConfig).toHaveBeenLastCalledWith({ actor: WRITER, desiredHost: 'laptop', values: patch });
   });
 
-  it('refuses to write back a redacted value from the local cache', async () => {
-    const readMember = vi.fn().mockResolvedValue(writerDetail({ own_config: { values: { token: '已隐藏' }, revision: 1 } }));
-    const setMemberConfig = vi.fn();
-    render(<MemberConfigSection actor={WRITER} port={{ commands: { readMember, setMember: vi.fn(), setMemberConfig } }} />);
-    fireEvent.click(screen.getByRole('button', { name: '读取配置' }));
-    await screen.findByText('Actor 描述 writer@1');
-    fireEvent.click(screen.getByRole('button', { name: '编辑配置' }));
-    const editor = screen.getByRole('form', { name: '编辑成员配置' });
-    // 没动的"已隐藏"不在补丁里，可以改别的键。
-    fireEvent.change(within(editor).getByLabelText('成员配置 JSON'), { target: { value: '{"token":"已隐藏","model":"x"}' } });
-    expect(within(editor).getByRole('button', { name: '保存配置' }).disabled).toBe(false);
-    // 把"已隐藏"当成新值写进去：拦下。
-    fireEvent.change(within(editor).getByLabelText('成员配置 JSON'), { target: { value: '{"secret":"已隐藏"}' } });
-    expect(within(editor).getByText(/不能写回成员/)).toBeTruthy();
-    expect(within(editor).getByRole('button', { name: '保存配置' }).disabled).toBe(true);
-    expect(setMemberConfig).not.toHaveBeenCalled();
-  });
-
   it('fills a missing placeholder with a values patch built from its dotted key', async () => {
     const readMember = vi.fn()
       .mockResolvedValueOnce(writerDetail({ member: false, present: false, actor_id: '', missing: [{ key: 'service.api_key', hint: '写作服务的 API key' }] }))

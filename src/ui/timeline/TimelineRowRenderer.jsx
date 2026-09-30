@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { actorNameFromMap } from '../../model/actor-display.js';
 import { isStandardActorIdentity } from '../../model/actor-visibility.js';
 import { buildRecord, buildSummaryText, buildTone } from '../../model/build-record.js';
-import { redactSensitive, terminalContentEnvelope, terminalResultState, turnProcessObservations } from '../../model/terminal-result.js';
+import { terminalContentEnvelope, terminalResultState, turnProcessObservations } from '../../model/terminal-result.js';
 import { isMobileProfile } from '../../model/device-profile.js';
 import { hasReadableTerminalContent } from '../../model/conversation-visibility.js';
 import { argsOf, hasCanonicalBody } from '../../protocol/envelope.js';
@@ -333,7 +333,7 @@ export function textOf(envelope, names) {
   const result = body.result ?? body.output;
   if (result == null) return '';
   if (typeof result === 'string') return result;
-  try { return `\`\`\`json\n${JSON.stringify(redactSensitive(result), null, 2)}\n\`\`\``; } catch { return '结构化结果'; }
+  try { return `\`\`\`json\n${JSON.stringify(result, null, 2)}\n\`\`\``; } catch { return '结构化结果'; }
 }
 
 function nameOf(id, names) { return actorNameFromMap(id, names); }
@@ -544,7 +544,7 @@ function parseJSON(text) {
 }
 
 function StructuredData({ title, value }) {
-  const safe = redactSensitive(value);
+  const safe = value;
   const summary = Array.isArray(safe) ? `${safe.length} 项` : safe && typeof safe === 'object' ? `${Object.keys(safe).length} 个字段` : '';
   return <div className="structured-result"><details className="structured-result-details"><summary><span>{title}</span><small>{summary}</small><span className="structured-result-action">展开</span></summary><div className="structured-result-scroll"><StructuredTree value={safe} /></div></details></div>;
 }
@@ -590,7 +590,7 @@ function canInterrupt(turn, { access }) {
 }
 
 function StructuredResult({ requestType = '', payload = {}, contentKey }) {
-  const safe = redactSensitive(payload);
+  const safe = payload;
   const business = Object.fromEntries(Object.entries(safe).filter(([key]) => !RESULT_META.has(key)));
   if (payload.status === 'failed') {
     const code = payload.cancelled === true ? 'cancelled' : payload.error_code || payload.reason || '';
@@ -736,11 +736,7 @@ const TOOL_DATA_LIMITS = Object.freeze({
 
 const TOOL_DATA_OMITTED = '…（内容已省略）';
 const TOOL_DATA_COLLAPSED = '…（内容已折叠）';
-const TOOL_DATA_HIDDEN = '已隐藏';
 const TOOL_DATA_ERROR = Symbol('tool-data-error');
-// Keep this complete-field set aligned with terminal-result.js; unlike the
-// generic helper, this local check never receives or walks the raw process.
-const TOOL_SENSITIVE_FIELD = /^(password|secret|secret_hash|token|access_token|refresh_token|private_key|key|credential)$/i;
 
 function toolDataBudget() {
   return {
@@ -754,7 +750,6 @@ function toolDataBudget() {
 
 function boundedToolValue(value, budget, depth = 0, key = '', seen = new WeakSet()) {
   try {
-    if (key && TOOL_SENSITIVE_FIELD.test(String(key))) return TOOL_DATA_HIDDEN;
     if (budget.nodes <= 0) return TOOL_DATA_OMITTED;
     budget.nodes -= 1;
     if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;

@@ -1,19 +1,5 @@
 import { argsOf } from '../protocol/envelope.js';
 
-const SENSITIVE_FIELD = /^(password|secret|secret_hash|token|access_token|refresh_token|private_key|key|credential)$/i;
-
-// Keep the same pure policy at both security boundaries: cache persistence and
-// structured result rendering. Match complete field names only so ordinary
-// business fields such as `token_count` or `keynote` remain readable.
-export function redactSensitive(value, key = '') {
-  if (key && SENSITIVE_FIELD.test(String(key))) return '已隐藏';
-  if (Array.isArray(value)) return value.map((item) => redactSensitive(item));
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value).map(([name, item]) => [name, redactSensitive(item, name)]));
-  }
-  return value;
-}
-
 // A turn's process rows are one projection shared by the timeline and its
 // detail surface. Keep the envelope/sequence anchor, but never hand a UI
 // component the raw process payload as a display object.
@@ -46,11 +32,11 @@ function scalarIdentifier(value) {
 }
 
 // Detail is intentionally a facts projection, not a generic structured-data
-// viewer. Recursively redact before selecting identifiers so a future nested
-// process shape cannot bypass the existing persistence/rendering policy.
+// viewer. Nothing is redacted in the frontend (owner 10-01: values are shown
+// as they are; what must stay secret is stored hashed on the server).
 export function turnProcessAuditFacts(turn) {
   return turnProcessObservations(turn).map(({ seq, envelope, process }) => {
-    const safe = redactSensitive(process);
+    const safe = process;
     const identifiers = [];
     const seenLabels = new Set();
     for (const [field, label] of PROCESS_AUDIT_IDENTIFIER_FIELDS) {

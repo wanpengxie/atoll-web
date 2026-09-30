@@ -57,7 +57,7 @@ describe('结构化终态呈现（新结构：TimelineRowRenderer 内的 Structu
     expect(screen.getByText('codex 的能力')).toBeTruthy();
   });
 
-  it('keeps failure facts and redacts sensitive fields recursively', async () => {
+  it('keeps failure facts and shows every field as it is (no frontend redaction)', async () => {
     const user = userEvent.setup();
     render(<Harness row={turnRow({
       status: 'failed', reason: 'receiver_internal_error', error_code: 'type_unsupported', detail: 'nope',
@@ -67,12 +67,12 @@ describe('结构化终态呈现（新结构：TimelineRowRenderer 内的 Structu
     expect(screen.getByText('nope')).toBeTruthy();
     await user.click(screen.getByText('错误数据'));
     expect(screen.getByText('attempt')).toBeTruthy();
-    expect(screen.queryByText('failure-token')).toBeNull();
-    expect(screen.queryByText('failure-password')).toBeNull();
-    expect(screen.getAllByText('已隐藏').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText('failure-token')).toBeTruthy();
+    expect(screen.getByText('failure-password')).toBeTruthy();
+    expect(screen.queryByText('已隐藏')).toBeNull();
   });
 
-  it('redacts registrar value secrets before rendering', async () => {
+  it('shows registrar values as they are, keys included', async () => {
     const user = userEvent.setup();
     render(<Harness row={turnRow({
       status: 'completed',
@@ -81,10 +81,10 @@ describe('结构化终态呈现（新结构：TimelineRowRenderer 内的 Structu
     const details = document.querySelector('.structured-result-details');
     await user.click(details.querySelector('summary'));
     expect(screen.getByText('device_id')).toBeTruthy();
-    expect(screen.queryByText('secret-value')).toBeNull();
-    expect(screen.queryByText('nested-secret')).toBeNull();
-    expect(screen.queryByText('array-secret')).toBeNull();
-    expect(screen.getAllByText('已隐藏').length).toBeGreaterThanOrEqual(3);
+    expect(screen.getByText('secret-value')).toBeTruthy();
+    expect(screen.getByText('nested-secret')).toBeTruthy();
+    expect(screen.getByText('array-secret')).toBeTruthy();
+    expect(screen.queryByText('已隐藏')).toBeNull();
   });
 });
 

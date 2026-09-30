@@ -85,16 +85,16 @@ describe('current timeline message presentation', () => {
     expect(document.querySelector('.message-body')?.textContent).not.toContain('nested');
   });
 
-  it('renders a canonical terminal text result and recursively redacts sensitive fields', () => {
+  it('renders a canonical terminal text result and shows every field as it is (no frontend redaction)', () => {
     render(React.createElement(Harness, { row: turnRow('turn-1', { status: 'completed', text: 'PONG' }) }));
     expect(screen.getByText('PONG')).toBeTruthy();
     cleanup();
 
     render(React.createElement(Harness, { row: turnRow('turn-2', { status: 'completed', value: { token: 'secret', nested: { password: 'hidden' }, visible: 'ok' } }) }));
     expect(screen.getByText('结构化结果')).toBeTruthy();
-    expect(screen.queryByText('secret')).toBeNull();
-    expect(screen.queryByText('hidden')).toBeNull();
-    expect(screen.getAllByText('已隐藏').length).toBeGreaterThan(0);
+    expect(screen.queryByText('已隐藏')).toBeNull();
+    expect(document.body.textContent).toContain('secret');
+    expect(document.body.textContent).toContain('hidden');
   });
 
   it('renders the protocol label and member name for system.member.create', () => {

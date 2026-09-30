@@ -1,6 +1,5 @@
 import { argsOf, FINAL, hasCanonicalBody } from '../protocol/envelope.js';
 import { isNarrationEnvelope } from '../protocol/vocab.js';
-import { redactSensitive } from './terminal-result.js';
 
 const CACHE_DATABASE = 'atoll-channel-replica-v1';
 const CACHE_VERSION = 1;
@@ -32,15 +31,9 @@ function rowBytes(row) {
   catch { return 0; }
 }
 
-// Cache persistence is the last boundary before a row leaves the process. Keep
-// the historical feed-cache contract here, rather than relying on a renderer
-// to hide values after they have already reached IndexedDB.
+// Rows are cached as they are: nothing is redacted in the frontend.
 function sanitizedCacheRow(row) {
-  const sanitized = redactSensitive(row);
-  let changed = row !== sanitized;
-  try { changed = JSON.stringify(row) !== JSON.stringify(sanitized); }
-  catch { /* non-JSON rows are not expected, but the sanitized value is safe */ }
-  return { row: sanitized, changed };
+  return { row, changed: false };
 }
 
 function bodylessSystemNarration(envelope) {
@@ -1161,7 +1154,7 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
           memory.rows.delete(`${channelId}\u0000${numeric(entry.seq)}`);
         }
         for (const entry of replacement.target) {
-          memory.rows.set(`${channelId}\u0000${numeric(entry.seq)}`, structuredClone(redactSensitive(entry.row)));
+          memory.rows.set(`${channelId}\u0000${numeric(entry.seq)}`, structuredClone(entry.row));
         }
         meta.set(channelId, copyMeta(replacement.value));
       }
@@ -1181,7 +1174,7 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
           owner: operationOwner,
           channelId,
           seq: numeric(entry.seq),
-          row: structuredClone(redactSensitive(entry.row)),
+          row: structuredClone(entry.row),
         });
         metaStore.put({
           owner: operationOwner,
@@ -1235,7 +1228,7 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
       for (const entry of physical) memory.rows.delete(`${entry.channelId}\u0000${numeric(entry.seq)}`);
       for (const [channelId, replacement] of targets) {
         for (const entry of replacement.target) {
-          memory.rows.set(`${channelId}\u0000${numeric(entry.seq)}`, structuredClone(redactSensitive(entry.row)));
+          memory.rows.set(`${channelId}\u0000${numeric(entry.seq)}`, structuredClone(entry.row));
         }
       }
       meta = nextMeta;
@@ -1330,7 +1323,7 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
 
   async function saveRowsNow(rows, { coverage } = {}, operationOwner, epoch) {
     const accepted = (rows || []).filter((row) => row?.channel_id && numeric(row?.seq));
-    const persistedRows = accepted.map((row) => redactSensitive(row));
+    const persistedRows = accepted.map((row) => row);
     const db = await dbPromise;
     assertOwner(operationOwner, epoch);
     const touchedChannels = new Set(accepted.map((row) => row.channel_id));
