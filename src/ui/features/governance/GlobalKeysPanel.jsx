@@ -10,7 +10,7 @@ const ADD_SCHEMA = Object.freeze({
   required: ['name', 'value'],
   properties: {
     name: { type: 'string', title: '名称', description: `存为 ${GLOBAL_PREFIX}<名称>；${GLOBAL_NAME_HINT}。`, pattern: '^[a-z0-9_-]{1,64}$', examples: ['deepseek_prod'] },
-    value: { type: 'string', title: '值', description: '保存后不再显示，只能整值覆盖。' },
+    value: { type: 'string', title: '值', description: '之后可以整值覆盖。' },
   },
 });
 
@@ -18,7 +18,7 @@ const WRITE_SCHEMA = Object.freeze({
   type: 'object',
   required: ['value'],
   properties: {
-    value: { type: 'string', title: '新值', description: '覆盖原值；原值不会显示。' },
+    value: { type: 'string', title: '新值', description: '覆盖原值。' },
   },
 });
 
@@ -48,12 +48,14 @@ function ChangeValueForm({ name, disabled, onSubmit, onCancel }) {
   </form>;
 }
 
-// 空间管理 → 全局 key。只列名字，恒不读出、恒不显示值：添加时输入一次，之后只能
-// 整值覆盖或删除。读写都经当前频道的资源面（global/ 前缀在每个频道都指向同一份）。
+// 空间管理 → 全局 key。列名字和原值（开发期前端不打码，owner 10-01"现在先显示
+// 全部，我需要调试"），可以添加、整值覆盖、删除。读写都经当前频道的资源面
+// （global/ 前缀在每个频道都指向同一份）。
 export function GlobalKeysPanel({ port = {} }) {
   const commands = port.commands || {};
   const available = port.available === true;
   const [names, setNames] = useState(null);
+  const [values, setValues] = useState({});
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -71,19 +73,37 @@ export function GlobalKeysPanel({ port = {} }) {
     setError('');
     try {
       const next = await commands.list();
-      if (request === listRequestRef.current) setNames(Array.isArray(next) ? next : []);
+      if (request !== listRequestRef.current) return;
+      const listed = Array.isArray(next) ? next : [];
+      setNames(listed);
+      if (typeof commands.read === 'function') {
+        const read = await Promise.all(listed.map(async (name) => {
+          try {
+            const value = await commands.read(name);
+            return [name, value?.exists ? value.value : ''];
+          } catch (failure) {
+            return [name, `（读不到：${errorText(failure)}）`];
+          }
+        }));
+        if (request === listRequestRef.current) setValues(Object.fromEntries(read));
+      }
     } catch (failure) {
       if (request === listRequestRef.current) setError(errorText(failure));
     } finally {
       if (request === listRequestRef.current) setBusy((current) => current === 'list' ? '' : current);
     }
-  }, [available, commands.list]);
+  }, [available, commands.list, commands.read]);
 
-  // 打开这个标签页就是读名单的动作；换了频道（读写经过的资源面）再读一次。重连
-  // 不会让它自己再读（前端恒不自动探测）：要读就点刷新。
+  // 打开这个标签页就是读名单的动作，只读这一次。全局 key 全空间一份，换频道
+  // 不重读；重连也不自己再读（前端恒不自动探测）：要读就点刷新。
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
-  useEffect(() => { void refreshRef.current(); }, [port.channelId]);
+  const readOnceRef = useRef(false);
+  useEffect(() => {
+    if (!available || readOnceRef.current) return;
+    readOnceRef.current = true;
+    void refreshRef.current();
+  }, [available]);
 
   const run = async (label, operation, success) => {
     setBusy(label);
@@ -123,10 +143,10 @@ export function GlobalKeysPanel({ port = {} }) {
       titleMeta={names ? String(names.length) : ''}
       action={<button type="button" className="text-button" disabled={!available || Boolean(busy)} onClick={() => void refresh()}>{busy === 'list' ? '读取中…' : '刷新'}</button>}
     >
-      <p className="governance-empty">整个空间共用一份。成员配置里写 <code>"{GLOBAL_REFERENCE_PREFIX}&lt;名称&gt;"</code> 引用它；这里只显示名字，不显示值。</p>
+      <p className="governance-empty">整个空间共用一份。成员配置里写 <code>"{GLOBAL_REFERENCE_PREFIX}&lt;名称&gt;"</code> 引用它。</p>
       {names?.map((name) => <div className="global-key-row" key={name} data-global-key={name}>
         <div className="global-key-summary">
-          <div><strong>{name}</strong><small><code>{GLOBAL_REFERENCE_PREFIX}{name}</code></small></div>
+          <div><strong>{name}</strong><small><code>{GLOBAL_REFERENCE_PREFIX}{name}</code></small>{Object.hasOwn(values, name) && <code className="global-key-value" data-global-key-value={name}>{values[name]}</code>}</div>
           <div className="global-key-actions">
             <button type="button" disabled={disabled} aria-label={`修改 ${name} 的值`} onClick={() => { setConfirm(''); setEditing(editing === name ? '' : name); }}>修改值</button>
             <button type="button" className="danger-text" disabled={disabled} aria-label={`删除 ${name}`} onClick={() => { setEditing(''); setConfirm(name); }}>删除</button>

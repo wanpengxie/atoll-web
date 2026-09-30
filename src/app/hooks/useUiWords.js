@@ -96,10 +96,13 @@ export function useUiWords({ stateEntries, version, selfFor, wireRef, wireState,
     });
   }, [selfFor, send, stateEntries, version, wireRef, wireState]);
 
-  const settleClosed = useCallback((form, error) => {
+  const settleClosed = useCallback((form, error, written = []) => {
     if (!CLOSED_CODES.has(error?.code)) return false;
     dismiss(form.id);
-    noticeRef.current?.('这张表单已经关闭（在别处答复了或已过期）。');
+    // 回复在写完 key 之后才发：表单已经关了，但 key 已经写进去了，要照实说。
+    noticeRef.current?.(written.length
+      ? `key 已写入 ${written.join('、')}，但这张表单已经关闭（在别处答复了或已过期），agent 没收到回复。`
+      : '这张表单已经关闭（在别处答复了或已过期）。');
     return true;
   }, [dismiss]);
 
@@ -109,7 +112,9 @@ export function useUiWords({ stateEntries, version, selfFor, wireRef, wireState,
       dismiss(form.id);
       return result;
     } catch (error) {
-      if (settleClosed(form, error)) return null;
+      // 走到回复这一步才会是"已关闭"，所以填了的 secret 都已写入。
+      const written = Object.entries(form.secret || {}).filter(([name]) => Object.hasOwn(values || {}, name)).map(([, resourceId]) => resourceId);
+      if (settleClosed(form, error, written)) return null;
       throw error;
     }
   }, [dismiss, send, settleClosed]);

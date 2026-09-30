@@ -46,6 +46,7 @@ import {
   GLOBAL_PREFIX,
   listGlobalKeys,
   overwriteGlobalKey,
+  readGlobalValue,
   writeGlobalValue,
 } from '../model/global-keys.js';
 import { SYSTEM_ACTOR_ID, TYPES } from '../protocol/vocab.js';
@@ -1423,6 +1424,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
         : wire.state !== 'open' ? '连接恢复后才能读写全局 key。' : '',
       commands: Object.freeze({
         list: () => listGlobalKeys(send),
+        read: (name) => readGlobalValue(send, name),
         create: (name, value) => createGlobalKey(send, name, value),
         write: (name, value) => overwriteGlobalKey(send, name, value),
         remove: (name) => deleteGlobalKey(send, name),
@@ -2071,6 +2073,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       channelName={navigation.channels.find((row) => row.id === currentUiForm.channelId)?.qualified_name || currentUiForm.channelId}
       onSubmit={submitUiForm}
       onCancel={uiWords.cancel}
+      readSecret={(resourceId) => readGlobalValue((payload) => globalResource(currentUiForm.channelId, payload), globalNameOf(resourceId))}
     />}
   </>;
 

@@ -82,6 +82,20 @@ describe('UiFormModal', () => {
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(2));
   });
 
+  // 打开时读一次要写的 key：已有值就给人看原值，并说提交会覆盖它。
+  it('shows the value a secret field would overwrite, read once when it opens', async () => {
+    const readSecret = vi.fn(async () => ({ exists: true, value: 'sk-old-9999' }));
+    render(<UiFormModal form={uiForm()} onSubmit={vi.fn()} onCancel={vi.fn()} readSecret={readSecret} />);
+    const dialog = screen.getByRole('dialog', { name: '填写 DeepSeek key' });
+    await waitFor(() => expect(within(dialog).getByText(/已有值/).textContent).toContain('sk-old-9999'));
+    expect(within(dialog).getByText(/提交会覆盖它/)).toBeTruthy();
+    expect(readSecret).toHaveBeenCalledTimes(1);
+    expect(readSecret).toHaveBeenCalledWith('global/deepseek_prod');
+    cleanup();
+    render(<UiFormModal form={uiForm()} onSubmit={vi.fn()} onCancel={vi.fn()} readSecret={async () => ({ exists: false, value: '' })} />);
+    await waitFor(() => expect(screen.getByText(/现在还没有值/)).toBeTruthy());
+  });
+
   it('opens with focus on the dialog itself, not on a button a stray key would press', () => {
     render(<UiFormModal form={uiForm()} onSubmit={vi.fn()} onCancel={vi.fn()} />);
     expect(document.activeElement?.getAttribute('role')).toBe('dialog');
@@ -110,6 +124,7 @@ describe('GlobalKeysPanel', () => {
         channelId: 'c0',
         commands: {
           list: vi.fn(async () => [...state.names]),
+          read: vi.fn(async (name) => ({ exists: true, value: `value-of-${name}` })),
           create: vi.fn(async (name) => { state.names.push(name); state.names.sort(); }),
           write: vi.fn(async () => {}),
           remove: vi.fn(async (name) => { state.names = state.names.filter((row) => row !== name); }),
@@ -118,11 +133,16 @@ describe('GlobalKeysPanel', () => {
     };
   }
 
-  it('lists names only, adds with a password value and never shows the value again', async () => {
+  it('lists names with their values, adds with a password field, and reads once on open', async () => {
     const { value } = port();
-    const { container } = render(<GlobalKeysPanel port={value} />);
+    const { container, rerender } = render(<GlobalKeysPanel port={value} />);
     await screen.findByText('openai_prod');
     expect(screen.getByText('$global.openai_prod')).toBeTruthy();
+    // 开发期不打码：原值直接显示。
+    await screen.findByText('value-of-openai_prod');
+    // 全局 key 全空间一份：换频道不重读。
+    rerender(<GlobalKeysPanel port={{ ...value, channelId: 'c0.project' }} />);
+    expect(value.commands.list).toHaveBeenCalledTimes(1);
     const add = screen.getByRole('form', { name: '添加全局 key' });
     const secret = within(add).getByLabelText('值');
     expect(secret.getAttribute('type')).toBe('password');
@@ -137,9 +157,9 @@ describe('GlobalKeysPanel', () => {
     await screen.findByText('deepseek_prod');
     expect(value.commands.create).toHaveBeenCalledWith('deepseek_prod', 'sk-deep-secret-5678');
     expect(screen.getByText('已添加 global/deepseek_prod。')).toBeTruthy();
-    // 值不在任何可见文本里，输入框也清空了。
-    expect(container.textContent).not.toContain('sk-deep-secret');
+    // 输入框清空了；列出来的是读回来的值。
     expect([...container.querySelectorAll('input')].some((input) => input.value.includes('sk-deep-secret'))).toBe(false);
+    await screen.findByText('value-of-deepseek_prod');
   });
 
   it('overwrites a value and deletes a key only after confirmation', async () => {

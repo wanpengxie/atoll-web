@@ -99,6 +99,20 @@ export async function listGlobalKeys(resource) {
   return globalKeyNames(items);
 }
 
+// 读一把全局 key 的原值（开发期前端不打码，owner 10-01）：{exists, value}。不存在
+// 不是错误，是 exists:false。
+export async function readGlobalValue(resource, name) {
+  const resourceId = globalResourceId(name);
+  try {
+    const receipt = await call(resource, { op: 'read', resource_id: resourceId });
+    const value = receipt?.value;
+    return Object.freeze({ exists: true, value: typeof value === 'string' ? value : JSON.stringify(value ?? null) });
+  } catch (error) {
+    if (error?.code === 'resource_not_found') return Object.freeze({ exists: false, value: '' });
+    throw error;
+  }
+}
+
 // 不存在就 create，存在就 write；值恒是 JSON 字符串。create 撞上并发的同名创建
 // 时退回 write——两种结局对调用方都是"这个名字现在存着这个值"。
 export async function writeGlobalValue(resource, name, value) {
