@@ -1312,6 +1312,7 @@ export function useAttachmentTransactions({
     navigateFiles,
     previewArtifact,
     recentFiles: recentFiles.filter((row) => row.channelId === activeChannelId),
+    refreshDevices,
     refreshDirectory,
     refreshDirectoryReceipt,
     rememberFilesScroll,

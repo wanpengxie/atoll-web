@@ -115,6 +115,7 @@ const mocks = vi.hoisted(() => {
     filesNext: null, filesScrollTop: 0, canGoBack: false, composerAttachments: [],
     attach: noOp, clear: noOp, downloadFile: vi.fn(() => Promise.resolve()), mutate: noOp,
     directoryReceipt: { epoch: 0, channelId: '', deviceId: '', directory: '', phase: 'idle', error: '' },
+    refreshDevices: vi.fn(() => Promise.resolve([])),
     refreshDirectory: vi.fn(() => Promise.resolve()),
     refreshDirectoryReceipt: vi.fn(() => Promise.resolve({ epoch: 0, rows: [] })),
     previewArtifact: vi.fn(() => Promise.resolve()),
@@ -391,8 +392,13 @@ describe('真实 Workspace owner composition', () => {
       { channel_id: mocks.channelId, serving: 0 },
     ]);
 
+    mocks.attachments.refreshDevices.mockClear();
     await settle('attach_device', { deviceId: 'laptop' }, TYPES.device.attach);
+    // 挂载的终态回来后重读本频道分到的设备，治理页列表跟上。
+    await waitFor(() => expect(mocks.attachments.refreshDevices).toHaveBeenCalledWith(mocks.channelId));
+    mocks.attachments.refreshDevices.mockClear();
     await settle('detach_device', { deviceId: 'laptop' }, TYPES.device.detach);
+    await waitFor(() => expect(mocks.attachments.refreshDevices).toHaveBeenCalledWith(mocks.channelId));
     expect(submitted(TYPES.device.attach).at(-1).payload).toEqual({ channel_id: mocks.channelId, device_id: 'laptop' });
     expect(submitted(TYPES.device.detach).at(-1).payload).toEqual({ channel_id: mocks.channelId, device_id: 'laptop' });
     // 命令自己不读目录：目录只随终态那一行刷新一次（见 channel-feed-runtime）。

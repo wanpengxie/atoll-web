@@ -1704,9 +1704,13 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       return sendGovernanceCommand(channelId, TYPES.member.create, { name, body });
     }
     if (action === 'attach_device' || action === 'detach_device') {
+      // 挂载/卸载的终态回来后重读本频道分到的设备，治理页的列表才跟上。
       return requestSystemReply(channelId, action === 'attach_device' ? TYPES.device.attach : TYPES.device.detach, {
         channel_id: channelId,
         device_id: String(payload.deviceId || ''),
+      }).then((reply) => {
+        void attachments.refreshDevices(channelId);
+        return reply;
       });
     }
     if (action === 'remove_actor') return sendGovernanceCommand(channelId, TYPES.member.remove, { member: payload.actorId });
