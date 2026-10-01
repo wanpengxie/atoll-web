@@ -1,5 +1,7 @@
-import React, { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Clock3, FileText } from 'lucide-react';
+import React, { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { Clock3, FileText, Star } from 'lucide-react';
+import { isMobileProfile } from '../../model/device-profile.js';
+import { requestMessageJump, starsFor, subscribeStars, toggleStar } from '../../model/starred-messages.js';
 import { turnProcessAuditFacts } from '../../model/terminal-result.js';
 import { argsOf } from '../../protocol/envelope.js';
 import { ArtifactPreviewPanel } from './files/ArtifactPreviewPanel.jsx';
@@ -29,6 +31,7 @@ export const WORKSPACE_FEATURE_PANEL = Object.freeze({
   spaceAdministration: 'space-administration',
   activity: 'activity',
   readingHistory: 'reading-history',
+  starred: 'starred',
   resources: 'resources',
 });
 
@@ -237,6 +240,46 @@ function ReadingHistoryFeature({ files = {}, onClose }) {
         <FileText size={16} aria-hidden="true" />
         <span><strong>{file.name}</strong><small>{openedLabel(file.lastOpenedAt)}{file.line ? ` · 第 ${file.line} 行` : ''}</small></span>
       </button>)}</div>}
+  </SidePanel>;
+}
+
+function starSender(actorID) {
+  const parts = String(actorID || '').split(':');
+  return parts.length >= 2 ? parts[1] : String(actorID || '');
+}
+
+// The reader's starred messages in this channel, newest star first. A click
+// asks the conversation list to bring the message back; it can only find what
+// the page has loaded.
+function StarredFeature({ channel = null, onClose }) {
+  const channelId = String(channel?.id || '');
+  const stars = useSyncExternalStore(subscribeStars, () => starsFor(channelId));
+  const [missing, setMissing] = useState('');
+  const open = (item) => {
+    if (!requestMessageJump(channelId, item.id)) {
+      setMissing(item.id);
+      return;
+    }
+    setMissing('');
+    if (isMobileProfile()) onClose?.();
+  };
+  return <SidePanel
+    className="recent-files-context starred-context"
+    ariaLabel="星标列表"
+    title="星标"
+    closeLabel="关闭星标列表"
+    onClose={onClose}
+  >
+    {stars.length === 0
+      ? <div className="recent-files-empty"><Star size={24} /><strong>还没有星标消息</strong><p>在消息下方点“☆ 星标”，它会出现在这里，点一下就能回到那条消息。</p></div>
+      : <div className="starred-list">{stars.map((item) => <div className="starred-item" key={item.id}>
+        <button type="button" className="starred-open" onClick={() => open(item)}>
+          <span className="starred-meta"><strong>{starSender(item.sender)}</strong><small>{openedLabel(item.ts)}</small></span>
+          <span className="starred-text">{item.text || '（无文字内容）'}</span>
+          {missing === item.id && <span className="starred-missing" role="status">这条消息还没加载到页面上，往上翻到它附近后再点。</span>}
+        </button>
+        <button type="button" className="starred-remove" aria-label="取消星标" title="取消星标" onClick={() => toggleStar(channelId, item)}>×</button>
+      </div>)}</div>}
   </SidePanel>;
 }
 
@@ -465,6 +508,7 @@ export function WorkspaceRightPanel({ panel, channel, files = {}, tasks = {}, ro
   else if (kind === WORKSPACE_FEATURE_PANEL.spaceAdministration) content = <SpaceAdministrationPanel channel={channel} port={governance.space || governance} onClose={onClose} />;
   else if (kind === WORKSPACE_FEATURE_PANEL.activity) content = <ActivityFeature port={activity} onClose={onClose} />;
   else if (kind === WORKSPACE_FEATURE_PANEL.readingHistory) content = <ReadingHistoryFeature files={files} onClose={onClose} />;
+  else if (kind === WORKSPACE_FEATURE_PANEL.starred) content = <StarredFeature channel={channel} onClose={onClose} />;
   else if (kind === WORKSPACE_FEATURE_PANEL.resources) content = <ChannelResourcesFeature channel={channel} files={files} onClose={onClose} />;
   if (!content) return null;
   // A new-channel request is an app-level modal, not a context side panel.

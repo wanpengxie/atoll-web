@@ -190,7 +190,7 @@ export function useTimelineReading({
     const at = index + firstRef.current;
     if (seeking.index === index && range.known && at >= range.start && at <= range.end) return;
     seeking.index = index;
-    port.seek?.({ index, align: 'start', offset: seeking.offset });
+    port.seek?.({ index, align: seeking.align || 'start', offset: seeking.offset });
   };
   const anchorFrameRef = useRef(0);
   const lastTopRef = useRef(0);
@@ -526,6 +526,16 @@ export function useTimelineReading({
     for (const type of READER_INPUT) scroller?.addEventListener(type, stop, { capture: true, passive: true });
     globalThis.setTimeout(stop, HOLD_WINDOW_MS);
   }, [setMode]);
+  // Bring one row to the middle of the list (a starred message). It is a
+  // reader's action: the list is browsing from here until they move.
+  const jumpToRow = useCallback((rowID) => {
+    inputAtRef.current = Date.now();
+    movedUpRef.current = true;
+    setMode(READING_MODE.browsing);
+    seekingRef.current = { id: String(rowID), offset: 0, index: -1, align: 'center' };
+    reseekRef.current();
+  }, [setMode]);
+
   const jumpToLatest = useCallback(() => {
     toLatest();
     void historyRef.current?.refreshLatest?.();
@@ -727,6 +737,7 @@ export function useTimelineReading({
     list,
     toLatest,
     jumpToLatest,
+    jumpToRow,
     holdPointed,
     availability,
     availabilityError: String(historyStatus.error || ''),
@@ -739,6 +750,6 @@ export function useTimelineReading({
     historyBoundary,
   }), [
     activationID, atBottom, availability, demand, farFromBottom, historyBoundary, historyStatus.error,
-    holdPointed, jumpToLatest, list, mode, opening, retryHistoryDemand, toLatest, unseen,
+    holdPointed, jumpToLatest, jumpToRow, list, mode, opening, retryHistoryDemand, toLatest, unseen,
   ]);
 }

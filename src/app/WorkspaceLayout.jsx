@@ -385,6 +385,7 @@ export function WorkspaceLayout({
   const filesOpen = navigation.activeView === 'files';
   const readingHistoryAvailable = typeof navigation.openReadingHistory === 'function'
     && canReadChannel(channel);
+  const starredAvailable = typeof navigation.openStarred === 'function' && canReadChannel(channel);
   const mobileChannelToggleRef = useRef(null);
   const mobileRailRef = useRef(null);
   const inactiveMobileDialogRef = useRef(null);
@@ -736,6 +737,7 @@ export function WorkspaceLayout({
               {(navigation.openChannelCreate || navigation.openChannelAdministration) && <button type="button" role="menuitem" onClick={() => runChannelMenuAction(navigation.openChannelCreate || (() => navigation.openChannelAdministration('overview')))}>新建子频道</button>}
               <button type="button" role="menuitem" className="mobile-channel-menu-action" onClick={() => runChannelMenuAction(toggleFiles)}>{filesOpen ? '关闭文件' : '打开文件'}</button>
               {readingHistoryAvailable && <button type="button" role="menuitem" className="mobile-channel-menu-action" onClick={() => runChannelMenuAction(navigation.openReadingHistory)}>最近阅读</button>}
+              {starredAvailable && <button type="button" role="menuitem" className="mobile-channel-menu-action" onClick={() => runChannelMenuAction(navigation.openStarred)}>星标消息</button>}
               {navigation.openTerminal && <button type="button" role="menuitem" className="mobile-channel-menu-action" disabled={!channel || terminalTransitionPending} onClick={() => runChannelMenuAction(toggleTerminal)}>{navigation.terminalVisible ? '关闭终端' : '打开终端'}</button>}
               {navigation.channelRestart && <button
                 type="button"
@@ -776,6 +778,13 @@ export function WorkspaceLayout({
             title="最近阅读"
             onClick={navigation.openReadingHistory}
           >最近</button>}
+          {starredAvailable && <button
+            type="button"
+            className="starred-edge-tab"
+            aria-label="打开星标列表"
+            title="星标"
+            onClick={navigation.openStarred}
+          >★ 星标</button>}
         </div>
         {features}
         {preview && <div className="preview-view">{preview}</div>}

@@ -19,6 +19,7 @@ import { useAgentProbes } from './hooks/useAgentProbes.js';
 import { useAttachmentTransactions } from './hooks/useAttachmentTransactions.js';
 import { useUiWords } from './hooks/useUiWords.js';
 import { perfText, registerPerfContextProvider } from '../model/perf-trace.js';
+import { setStarPrincipal } from '../model/starred-messages.js';
 import { createChannelFeedRuntime } from '../model/channel-feed-runtime.js';
 import { createViewSessionStore } from '../model/view-session.js';
 import { HISTORY_INTENT } from '../model/history-demand.js';
@@ -368,6 +369,8 @@ function IdentityBoundary() {
 // lifetime without inventing another lifecycle manager.
 function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const principalId = identity.principal.id;
+  // Stars are this principal's, on this device.
+  setStarPrincipal(principalId);
   const [topError, setTopError] = useState(initialError);
   const [channelNotice, setChannelNotice] = useState('');
   const [serverWorld, setServerWorld] = useState(readServerWorld);
@@ -2130,6 +2133,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       openActivity: () => setPanel('activity'),
       update: wire.update,
       openReadingHistory: contentVisible ? () => setPanel('reading-history') : undefined,
+      openStarred: contentVisible ? () => setPanel('starred') : undefined,
       openResources,
       channelRestart: {
         available: false,

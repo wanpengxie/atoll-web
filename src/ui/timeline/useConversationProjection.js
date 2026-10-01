@@ -1,6 +1,8 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { subscribeMessageJumps } from '../../model/starred-messages.js';
 import {
   createConversationPresentation,
+  entryEnvelopes,
   presentationEntryId,
   projectTimeline,
 } from '../../model/conversation-presentation.js';
@@ -60,7 +62,21 @@ function useOpeningWindow(channelID, messageListKey) {
     return true;
   }, []);
   const hasHidden = useCallback(() => Boolean(windowRef.current.fromID), []);
-  return { admission, revealOlder, hasHidden };
+  // The list row holding a message, if this page holds it. A row the opening
+  // window left out is handed to the list first, with a page of context above.
+  const locate = useCallback((messageID) => {
+    const current = windowRef.current;
+    const at = current.items.findIndex((item) => entryEnvelopes(item).some((envelope) => envelope?.id === messageID));
+    if (at < 0) return '';
+    const from = current.fromID ? current.items.findIndex((item) => presentationEntryId(item) === current.fromID) : 0;
+    if (at < from) {
+      const start = Math.max(0, at - REVEAL_PAGE_ROWS);
+      current.fromID = start > 0 ? presentationEntryId(current.items[start]) : '';
+      setRevision((value) => value + 1);
+    }
+    return presentationEntryId(current.items[at]);
+  }, []);
+  return { admission, revealOlder, hasHidden, locate };
 }
 
 // The row that was newest when the reader started browsing keeps its
@@ -82,6 +98,25 @@ function useBrowsingExpandedSlots(mode, rows, latestRowID) {
       ? new Set([slot])
       : new Set();
   }, [latestRowID, mode, rows]);
+}
+
+// The row can take a few frames to be measured and placed; look for it for a
+// while, then flash it once.
+function flashMessage(messageID) {
+  let frames = 0;
+  const find = () => {
+    const node = globalThis.document?.querySelector?.(`.timeline-message-list [data-envelope-id="${globalThis.CSS?.escape ? CSS.escape(messageID) : messageID}"]:not([data-formal-preparing] *)`);
+    if (node) {
+      node.classList.remove('jump-highlight');
+      void node.offsetWidth;
+      node.classList.add('jump-highlight');
+      globalThis.setTimeout(() => node.classList.remove('jump-highlight'), 2_000);
+      return;
+    }
+    frames += 1;
+    if (frames < 180) globalThis.requestAnimationFrame(find);
+  };
+  globalThis.requestAnimationFrame(find);
 }
 
 export function useConversationProjection({
@@ -131,6 +166,18 @@ export function useConversationProjection({
     hiddenOlder: openingWindow.hasHidden(),
     revealOlder: openingWindow.revealOlder,
   });
+
+  // A starred message asked for: bring it to the middle and flash it.
+  const jumpRef = useRef({ locate: openingWindow.locate, viewport });
+  jumpRef.current = { locate: openingWindow.locate, viewport };
+  useEffect(() => subscribeMessageJumps((channelID, messageID) => {
+    if (channelID !== state.channelId) return false;
+    const rowID = jumpRef.current.locate(messageID);
+    if (!rowID) return false;
+    jumpRef.current.viewport.jumpToRow(rowID);
+    flashMessage(messageID);
+    return true;
+  }), [state.channelId]);
 
   const candidate = projection.presentation.currentEntryCandidate;
   const latestRowID = candidate && candidate.local !== true ? String(candidate.id || '') : '';
