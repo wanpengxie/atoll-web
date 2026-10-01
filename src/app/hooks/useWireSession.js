@@ -1046,15 +1046,34 @@ export function useWireConnection({
     let wire = null;
     let attachedGeneration = 0;
     let rosterAuthority = null;
+    // 历史授予按到达的先后一份接一份地装，最新的一份恒最后落地：换世界的
+    // attach 要先等旧世界清完才装它那份，这期间推来的新清单排在它后面，
+    // 不会被它那份旧的盖掉。装完再刷当前频道。
+    let grantTail = null;
+    const installHistoryGrants = (historyMeta, options, before = null) => {
+      let focus = '';
+      const install = () => {
+        focus = String(activeChannelRef.current || '');
+        return setHistoryGrants(historyMeta, { ...options, focus });
+      };
+      const waits = [grantTail, before].filter(Boolean);
+      const installed = waits.length ? Promise.all(waits).then(install) : Promise.resolve(install());
+      const tail = installed.then(() => undefined, () => undefined);
+      grantTail = tail;
+      void tail.then(() => { if (grantTail === tail) grantTail = null; });
+      return installed.then((result) => {
+        if (!focus || typeof refreshHistoryChannel !== 'function') return result;
+        return Promise.resolve(refreshHistoryChannel(focus)).then(() => result);
+      });
+    };
+    const isMember = (channelId) => access.state(channelId)?.relationship === 'member';
     // 成员关系（attach 回执里的一份，或网关之后推来的一份）落到本地：access、
     // 启动缓存、名册里的"我"。
     const applyMemberships = (memberships, complete) => {
       const rows = memberships
         .filter((entry) => entry?.channel_id)
         .map((entry) => ({ channel_id: entry.channel_id, status: 'active', actor_id: entry.actor_id || '' }));
-      const memberedBefore = access.rows()
-        .filter((row) => row.accessState?.relationship === 'member')
-        .map((row) => row.id);
+      const memberedBefore = access.rows().map((row) => row.id).filter(isMember);
       access.membershipsObserved(rows, { complete, supported: true });
       writeWorkspaceBootstrap(principalId, access.snapshot());
       for (const entry of rows) {
@@ -1148,31 +1167,14 @@ export function useWireConnection({
           setChannels(new Map());
           bumpAccess();
           const worldReset = onWorldChanged();
-          const applyHistoryGrants = () => {
-            const focus = String(activeChannelRef.current || '');
-            return Promise.resolve(setHistoryGrants(detail?.history_meta || [], {
-              ...detail,
-              focus,
-              forceReset: true,
-            })).then((result) => {
-              if (!focus || typeof refreshHistoryChannel !== 'function') return result;
-              return Promise.resolve(refreshHistoryChannel(focus)).then(() => result);
-            });
-          };
-          return worldReset && typeof worldReset.then === 'function'
-            ? Promise.resolve(worldReset).then(applyHistoryGrants)
-            : applyHistoryGrants();
+          return installHistoryGrants(
+            detail?.history_meta || [],
+            { ...detail, forceReset: true },
+            worldReset && typeof worldReset.then === 'function' ? worldReset : null,
+          );
         }
         rosterAuthority = roster?.attach?.(nextGeneration, detail?.memberships) || null;
-        const focus = String(activeChannelRef.current || '');
-        return Promise.resolve(setHistoryGrants(detail?.history_meta || [], {
-          ...detail,
-          focus,
-          forceReset: !sameServerWorld,
-        })).then((result) => {
-          if (!focus || typeof refreshHistoryChannel !== 'function') return result;
-          return Promise.resolve(refreshHistoryChannel(focus)).then(() => result);
-        });
+        return installHistoryGrants(detail?.history_meta || [], { ...detail, forceReset: false });
       },
       onFeed: enqueueFeed,
       onCheckpoint: finishLiveCheckpoint,
@@ -1184,19 +1186,24 @@ export function useWireConnection({
         }
       },
       // 成员关系变了（BATCH3 §12）：推来的清单和各频道的历史头，和 attach 回执给的
-      // 一样，按 attach 的同一套步骤用上——名册认这些频道、历史按新的授予读——
-      // 刚加入的频道才能像连上时就在的频道一样打开。
+      // 一样用上——名册认这些频道、历史按新的授予读——刚加入的频道才能像连上时
+      // 就在的频道一样打开。名册每次都换成新清单；历史授予只在多了新频道时才重装
+      // （重装会把所有频道的历史读重新校准，正在补尾部的读会被打断），只是退出
+      // 某个频道时由成员关系收掉，不碰历史。
       onMemberships: (detail) => {
         if (!acceptsLifecycle(detail)) return;
+        const pushed = detail.memberships.map((entry) => String(entry?.channel_id || '')).filter(Boolean);
+        const joined = pushed.some((channelId) => !isMember(channelId));
         rosterAuthority = roster?.attach?.(detail.generation, detail.memberships) || null;
         applyMemberships(detail.memberships, true);
         bumpAccess();
-        if (!Array.isArray(detail.history_meta)) return;
-        const focus = String(activeChannelRef.current || '');
-        void Promise.resolve(setHistoryGrants(detail.history_meta, { generation: detail.generation, focus })).then(() => {
-          if (focus && typeof refreshHistoryChannel === 'function') return refreshHistoryChannel(focus);
-          return undefined;
-        }).catch((error) => diagnostic('warn', 'wire.memberships_grants_failed', { error: String(error?.message || error) }));
+        // 别人建的频道把我拉进来时，目录里还没有它：重读一次目录，侧栏才有名字。
+        if (pushed.some((channelId) => !isHiddenChannel({ id: channelId }) && !access.state(channelId)?.profile)) {
+          scheduleAccessRefresh();
+        }
+        if (!joined || !Array.isArray(detail.history_meta)) return;
+        void installHistoryGrants(detail.history_meta, { generation: detail.generation })
+          .catch((error) => diagnostic('warn', 'wire.memberships_grants_failed', { error: String(error?.message || error) }));
       },
       onObserveEnded: (channelId, reason) => {
         diagnostic('warn', 'wire.observe_ended', { channelId, reason });

@@ -2,7 +2,9 @@ import { argsOf, FINAL, hasCanonicalBody } from '../protocol/envelope.js';
 import { isNarrationEnvelope } from '../protocol/vocab.js';
 
 const CACHE_DATABASE = 'atoll-channel-replica-v1';
-const CACHE_VERSION = 1;
+// 行的存法变了就加一：开库时旧版本的行和 Meta 整个丢掉，由网络重新补齐。
+// 2：旧代码存下的行里有被遮成"已隐藏"的值。
+const CACHE_VERSION = 2;
 // A quota retry keeps a small usable suffix even when the cache has no
 // caller-provided per-channel bound. This is only activated for a channel
 // that has actually hit quota; ordinary writes keep their current retention.
@@ -29,11 +31,6 @@ function numeric(value) {
 function rowBytes(row) {
   try { return new TextEncoder().encode(JSON.stringify(row)).byteLength; }
   catch { return 0; }
-}
-
-// Rows are cached as they are: nothing is redacted in the frontend.
-function sanitizedCacheRow(row) {
-  return { row, changed: false };
 }
 
 function bodylessSystemNarration(envelope) {
@@ -908,8 +905,9 @@ function openCache(indexedDB) {
     const request = indexedDB.open(CACHE_DATABASE, CACHE_VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
-      if (!db.objectStoreNames.contains('rows')) db.createObjectStore('rows', { keyPath: ['owner', 'channelId', 'seq'] });
-      if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta', { keyPath: ['owner', 'channelId'] });
+      for (const name of [...db.objectStoreNames]) db.deleteObjectStore(name);
+      db.createObjectStore('rows', { keyPath: ['owner', 'channelId', 'seq'] });
+      db.createObjectStore('meta', { keyPath: ['owner', 'channelId'] });
     };
     // Another page holding an older version open must not hang every read
     // and write behind this open: the cache degrades to memory instead.
@@ -1039,7 +1037,6 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
         channelId,
         seq,
         row: entry.row,
-        ...(entry.redacted ? { redacted: true } : {}),
       });
     }
     for (const row of incoming) {
@@ -1142,7 +1139,7 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
   // trimmed in one transaction, appended in another, and copied the old
   // broad coverage into Meta; a later failure could therefore leave physical
   // rows and Meta describing different windows. The replacement below deletes
-  // only this owner/channel's known rows, installs the retained redacted
+  // only this owner/channel's known rows, installs the retained
   // window, and commits its physical coverage together with the rows.
   async function replaceChannelRows(db, operationOwner, epoch, replacements) {
     assertOwner(operationOwner, epoch);
@@ -1196,16 +1193,15 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
 
   // Startup treats the physical rows as the durable source of truth. Old Meta
   // can describe a window that was only half committed, so reconcile it to
-  // the rows that actually exist, preserve only a known quota tail bound, and
-  // redact every survivor before publishing the in-memory snapshot.
+  // the rows that actually exist and preserve only a known quota tail bound
+  // before publishing the in-memory snapshot.
   async function reconcileOwnerRows(db, operationOwner, epoch) {
     assertOwner(operationOwner, epoch);
     const physical = await ownedRows(db, operationOwner, epoch);
     const byChannel = new Map();
     for (const entry of physical) {
       const channel = byChannel.get(entry.channelId) || [];
-      const { row, changed } = sanitizedCacheRow(entry.row);
-      channel.push({ ...entry, row, redacted: changed });
+      channel.push(entry);
       byChannel.set(entry.channelId, channel);
     }
 
@@ -1242,8 +1238,7 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
     }
 
     // Most opens find nothing to repair. Only rows that fall outside a quota
-    // window or still carry unredacted fields are rewritten; the rest is
-    // left exactly where it is.
+    // window are deleted; the rest is left exactly where it is.
     const transaction = db.transaction(['rows', 'meta'], 'readwrite');
     const completion = transactionDone(transaction);
     try {
@@ -1253,15 +1248,6 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
         const kept = new Set(replacement.target.map((entry) => numeric(entry.seq)));
         for (const entry of replacement.existing) {
           if (!kept.has(numeric(entry.seq))) rowsStore.delete([operationOwner, channelId, numeric(entry.seq)]);
-        }
-        for (const entry of replacement.target) {
-          if (!entry.redacted) continue;
-          rowsStore.put({
-            owner: operationOwner,
-            channelId,
-            seq: numeric(entry.seq),
-            row: structuredClone(entry.row),
-          });
         }
         metaStore.put({
           owner: operationOwner,
@@ -1462,9 +1448,7 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
     if (!db) {
       const memory = memoryForOwner();
       available = [];
-      for (const [key, cachedRow] of memory.rows) {
-        const { row, changed } = sanitizedCacheRow(cachedRow);
-        if (changed) memory.rows.set(key, row);
+      for (const row of memory.rows.values()) {
         if (row.channel_id === channelId) {
           const seq = numeric(row.seq);
           physicalOldestSeq = physicalOldestSeq ? Math.min(physicalOldestSeq, seq) : seq;
@@ -1481,7 +1465,7 @@ export function createChannelReplicaCache({ indexedDB = globalThis.indexedDB } =
       ]);
       if (epoch !== ownerEpoch || operationOwner !== owner) throw Object.assign(new Error('replica cache owner changed'), { code: 'cache_owner_changed' });
       physicalOldestSeq = oldestSeq;
-      available = records.map((entry) => sanitizedCacheRow(entry.row).row);
+      available = records.map((entry) => entry.row);
     }
     const selected = [];
     let bytes = 0;

@@ -85,7 +85,7 @@ export function useUiWords({ stateEntries, version, selfFor, wireRef, wireState,
       const next = [...kept, ...accepted.filter((form) => !known.has(form.id))];
       return next.length === current.length && next.every((form, index) => form === current[index]) ? current : next;
     });
-  }, [selfFor, send, stateEntries, version, wireRef, wireState]);
+  }, [selfFor, stateEntries, version, wireRef, wireState]);
 
   const settleClosed = useCallback((form, error, written = []) => {
     if (!CLOSED_CODES.has(error?.code)) return false;

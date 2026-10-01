@@ -780,7 +780,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
           : current);
       }
     }
-  }, [feed, governanceRequestRevision, navigation, wire]);
+  }, [feed, governanceRequestRevision, navigation]);
   useEffect(() => () => resetGovernanceRequests(), [resetGovernanceRequests]);
   const attachments = useAttachmentTransactions({
     activeChannel: navigation.activeChannel,

@@ -22,6 +22,7 @@ function connectionHarness({
   setHistoryGrants,
   cancelFeedTask = vi.fn(),
   roster = null,
+  memberships = [],
 }) {
   const obs = {
     spaceChannels: vi.fn(async () => ({ complete: true, items: [] })),
@@ -36,7 +37,7 @@ function connectionHarness({
       boot: 'world-b',
       session: 'session-b',
       generation: 1,
-      memberships: [],
+      memberships,
       memberships_complete: true,
       history_meta: historyMeta,
     };
@@ -81,7 +82,7 @@ function connectionHarness({
     useWireConnection({ ...stable, port });
     return port;
   });
-  return { cancelFeedTask, result, unmount };
+  return { cancelFeedTask, obs, result, unmount };
 }
 
 describe('server-world reset seam', () => {
@@ -179,6 +180,90 @@ describe('server-world reset seam', () => {
     act(() => wireOptions.onState('attached', next));
     expect(roster.attach).toHaveBeenCalledWith(2, next.memberships);
     expect(roster.noteSelf).toHaveBeenCalledWith('c0', 'human:root:new', expect.anything());
+    harness.unmount();
+  });
+});
+
+// 网关推来的成员清单（BATCH3 §12）：历史授予按到达先后装，只在多了新频道时才重装；
+// 目录里没有的频道触发一次目录重读。
+describe('memberships push', () => {
+  const pushFrom = (memberships, historyMeta) => ({
+    memberships: memberships.map((channelId) => ({ channel_id: channelId, actor_id: 'human:root' })),
+    history_meta: historyMeta ?? memberships.map((channelId) => ({ channel_id: channelId, head_seq: 1 })),
+    generation: 1,
+  });
+
+  it('lands a push that arrives during a world reset after the attach grants, not before', async () => {
+    localStorage.setItem('atoll.server.boot.v2', 'world-a');
+    let release;
+    const reset = new Promise((resolve) => { release = resolve; });
+    const installed = [];
+    const setHistoryGrants = vi.fn((entries) => {
+      installed.push(entries.map((entry) => entry.channel_id));
+      return Promise.resolve({ changed: true });
+    });
+    const harness = connectionHarness({
+      onWorldChanged: vi.fn(() => reset),
+      setHistoryGrants,
+      historyMeta: [{ channel_id: 'c0', head_seq: 1 }],
+      memberships: [{ channel_id: 'c0', actor_id: 'human:root' }],
+    });
+    await waitFor(() => expect(harness.result.current.state).toBe('open'));
+    const wireOptions = createWire.mock.calls[0][0];
+    act(() => wireOptions.onMemberships(pushFrom(['c0', 'c0.new'])));
+    expect(setHistoryGrants).not.toHaveBeenCalled();
+    release();
+    await waitFor(() => expect(setHistoryGrants).toHaveBeenCalledTimes(2));
+    expect(installed).toEqual([['c0'], ['c0', 'c0.new']]);
+    harness.unmount();
+  });
+
+  it('reinstalls grants only when the push lists a channel that was not a member channel', async () => {
+    const setHistoryGrants = vi.fn().mockResolvedValue({ changed: true });
+    const harness = connectionHarness({
+      onWorldChanged: vi.fn(),
+      setHistoryGrants,
+      historyMeta: [{ channel_id: 'c0', head_seq: 1 }, { channel_id: 'c0.old', head_seq: 1 }],
+      memberships: [{ channel_id: 'c0', actor_id: 'human:root' }, { channel_id: 'c0.old', actor_id: 'human:root' }],
+    });
+    await waitFor(() => expect(harness.result.current.state).toBe('open'));
+    await waitFor(() => expect(setHistoryGrants).toHaveBeenCalledTimes(1));
+    const wireOptions = createWire.mock.calls[0][0];
+    const access = harness.result.current.accessRef.current;
+
+    // 什么都没变、或只是退出一个频道：不碰历史。
+    act(() => wireOptions.onMemberships(pushFrom(['c0', 'c0.old'])));
+    act(() => wireOptions.onMemberships(pushFrom(['c0'])));
+    await Promise.resolve();
+    expect(setHistoryGrants).toHaveBeenCalledTimes(1);
+    expect(access.state('c0.old')?.relationship).not.toBe('member');
+
+    // 多了一个频道：按推来的授予重装。
+    act(() => wireOptions.onMemberships(pushFrom(['c0', 'c0.new'])));
+    await waitFor(() => expect(setHistoryGrants).toHaveBeenCalledTimes(2));
+    expect(setHistoryGrants.mock.calls[1][0].map((entry) => entry.channel_id)).toEqual(['c0', 'c0.new']);
+    expect(access.state('c0.new')?.relationship).toBe('member');
+    harness.unmount();
+  });
+
+  it('rereads the channel directory when a pushed channel has no profile yet', async () => {
+    const harness = connectionHarness({
+      onWorldChanged: vi.fn(),
+      setHistoryGrants: vi.fn().mockResolvedValue({ changed: true }),
+      memberships: [{ channel_id: 'c0', actor_id: 'human:root' }],
+    });
+    await waitFor(() => expect(harness.result.current.state).toBe('open'));
+    await waitFor(() => expect(harness.obs.spaceChannels).toHaveBeenCalledTimes(1));
+    const wireOptions = createWire.mock.calls[0][0];
+    const access = harness.result.current.accessRef.current;
+    access.channelsObserved([{ id: 'c0', name: 'c0' }, { id: 'c0.known', name: 'known' }], { complete: false });
+
+    act(() => wireOptions.onMemberships(pushFrom(['c0', 'c0.known'])));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(harness.obs.spaceChannels).toHaveBeenCalledTimes(1);
+
+    act(() => wireOptions.onMemberships(pushFrom(['c0', 'c0.known', 'c0.theirs'])));
+    await waitFor(() => expect(harness.obs.spaceChannels).toHaveBeenCalledTimes(2));
     harness.unmount();
   });
 });
