@@ -55,7 +55,7 @@ test('the process panel fits the phone and stacks tool input keys above values',
   await expect(panel.locator('.progress-tool-output pre, .progress-tool-output .code-block-line').first()).toBeVisible();
 });
 
-test('phone surfaces: reading history in the menu, terminal without the recipient pill, full-page search, tidy member rows', async ({ page, request }) => {
+test('phone surfaces: reading history in the menu, terminal without the recipient pill, tidy member rows', async ({ page, request }) => {
   await login(page, request);
   await expect(page.locator('.reading-history-edge-tab')).toBeHidden();
   await menu(page, '最近阅读');
@@ -66,12 +66,6 @@ test('phone surfaces: reading history in the menu, terminal without the recipien
   await expect(page.locator('.terminal-view')).toBeVisible();
   await expect(page.locator('.composer-target')).toBeHidden();
   await menu(page, '关闭终端');
-
-  await page.getByRole('button', { name: '打开频道列表' }).click();
-  await page.locator('.channel-rail').getByRole('button', { name: '搜索' }).click();
-  const search = await page.locator('.global-search').boundingBox();
-  expect(search.height).toBeGreaterThan(700);
-  await page.keyboard.press('Escape');
 
   await page.getByRole('button', { name: '打开频道列表' }).click();
   await page.locator('.channel-rail').getByRole('button', { name: '新建频道' }).click();

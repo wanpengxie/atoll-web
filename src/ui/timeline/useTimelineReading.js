@@ -55,6 +55,13 @@ let activationSequence = 0;
 
 // view key → { mode: 'following' } | { mode: 'browsing', id, offset }
 const readingPositions = new Map();
+
+// The row a view was left browsing at, if any. A view opening on only its
+// newest stretch still has to include that row.
+export function savedBrowsingRowID(channelID, viewKey) {
+  const saved = readingPositions.get(`${channelID}\u0000${viewKey || ''}`);
+  return saved?.mode === READING_MODE.browsing ? String(saved.id || '') : '';
+}
 const OPEN_AT_LATEST = Object.freeze({ index: 'LAST', align: 'end' });
 
 // The row at the top edge of the list and how far its top sits above that
@@ -102,6 +109,10 @@ export function useTimelineReading({
   history,
   historyViewSpec,
   surfaceVisible = false,
+  // Rows already in memory but not yet handed to the list (see
+  // useConversationProjection). Older history comes from them first.
+  hiddenOlder = false,
+  revealOlder = () => false,
 }) {
   const rows = snapshot.rows;
   const firstItemIndex = Number(snapshot.firstItemIndex || 1);
@@ -136,6 +147,8 @@ export function useTimelineReading({
   const statusRef = useRef(historyStatus);
   const historyRef = useRef(history);
   const surfaceVisibleRef = useRef(surfaceVisible);
+  const revealOlderRef = useRef(revealOlder);
+  revealOlderRef.current = revealOlder;
   rowsRef.current = rows;
   firstRef.current = firstItemIndex;
   statusRef.current = historyStatus;
@@ -177,7 +190,7 @@ export function useTimelineReading({
     const at = index + firstRef.current;
     if (seeking.index === index && range.known && at >= range.start && at <= range.end) return;
     seeking.index = index;
-    port.seek?.({ index, align: 'start', offset: seeking.offset });
+    port.seek?.({ index, align: seeking.align || 'start', offset: seeking.offset });
   };
   const anchorFrameRef = useRef(0);
   const lastTopRef = useRef(0);
@@ -296,9 +309,7 @@ export function useTimelineReading({
     const scheduler = schedulerRef.current;
     const status = statusRef.current || {};
     if (!surfaceVisibleRef.current || !pageVisible()) return;
-    if (status.attached !== true || status.messageCurrent !== true) return;
-    if (status.hasOlder !== true) return;
-    if (scheduler.token || scheduler.retryTimer || scheduler.definitive) return;
+    if (scheduler.token || scheduler.retryTimer) return;
     // Rows prepended while a reopened position is still being sought would
     // move the row it seeks by index; the chain resumes once it has landed.
     if (seekingRef.current) return;
@@ -315,6 +326,10 @@ export function useTimelineReading({
       const above = Math.max(0, range.start - firstRef.current);
       if (above >= PREFETCH_ROWS) return;
     }
+    // Rows this page already holds come back before anything is fetched.
+    if (revealOlderRef.current()) return;
+    if (status.attached !== true || status.messageCurrent !== true) return;
+    if (status.hasOlder !== true || scheduler.definitive) return;
     requestOlder();
   }, [channelID, requestOlder]);
   evaluateRef.current = evaluateHistory;
@@ -511,6 +526,16 @@ export function useTimelineReading({
     for (const type of READER_INPUT) scroller?.addEventListener(type, stop, { capture: true, passive: true });
     globalThis.setTimeout(stop, HOLD_WINDOW_MS);
   }, [setMode]);
+  // Bring one row to the middle of the list (a starred message). It is a
+  // reader's action: the list is browsing from here until they move.
+  const jumpToRow = useCallback((rowID) => {
+    inputAtRef.current = Date.now();
+    movedUpRef.current = true;
+    setMode(READING_MODE.browsing);
+    seekingRef.current = { id: String(rowID), offset: 0, index: -1, align: 'center' };
+    reseekRef.current();
+  }, [setMode]);
+
   const jumpToLatest = useCallback(() => {
     toLatest();
     void historyRef.current?.refreshLatest?.();
@@ -694,7 +719,7 @@ export function useTimelineReading({
   const availability = attached
     ? (rows.length > 0 || historyStatus.hasOlder === true ? 'readable' : 'empty-known')
     : historyStatus.error && rows.length === 0 ? 'error' : 'pending';
-  const historyBoundary = attached && historyStatus.hasOlder === false && demand.phase === 'idle'
+  const historyBoundary = attached && !hiddenOlder && historyStatus.hasOlder === false && demand.phase === 'idle'
     ? Object.freeze({ kind: 'exhausted', generation, actorFiltered: Number(historyViewSpec?.actorFilter?.size || 0) > 0 })
     : null;
 
@@ -712,6 +737,7 @@ export function useTimelineReading({
     list,
     toLatest,
     jumpToLatest,
+    jumpToRow,
     holdPointed,
     availability,
     availabilityError: String(historyStatus.error || ''),
@@ -724,6 +750,6 @@ export function useTimelineReading({
     historyBoundary,
   }), [
     activationID, atBottom, availability, demand, farFromBottom, historyBoundary, historyStatus.error,
-    holdPointed, jumpToLatest, list, mode, opening, retryHistoryDemand, toLatest, unseen,
+    holdPointed, jumpToLatest, jumpToRow, list, mode, opening, retryHistoryDemand, toLatest, unseen,
   ]);
 }

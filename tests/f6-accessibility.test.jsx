@@ -8,7 +8,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { TaskCreationDialog } from '../src/ui/features/tasks/TasksFeature.jsx';
-import { SearchFeature } from '../src/ui/features/search/SearchFeature.jsx';
 
 afterEach(cleanup);
 
@@ -39,25 +38,4 @@ describe('F6 模态焦点契约（恢复自 tests/f6-accessibility.test.jsx）',
     expect(opener.inert).toBe(false);
   });
 
-  it('全局搜索将背景设为 inert，Escape 关闭并恢复焦点', async () => {
-    const user = userEvent.setup();
-    function SearchHarness() {
-      const [open, setOpen] = useState(false);
-      return <>
-        <button type="button" onClick={() => setOpen(true)}>打开搜索</button>
-        {open && <SearchFeature port={{ index: [], commands: { open: vi.fn(), close: () => setOpen(false) } }} />}
-      </>;
-    }
-    render(<SearchHarness />);
-    const opener = screen.getByRole('button', { name: '打开搜索' });
-    await user.click(opener);
-    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: '搜索频道、消息、文件、任务或成员' }));
-    expect(opener.inert).toBe(true);
-    expect(opener.getAttribute('aria-hidden')).toBe('true');
-    await user.keyboard('{Escape}');
-    expect(screen.queryByRole('dialog')).toBeNull();
-    expect(opener.inert).toBe(false);
-    expect(opener.getAttribute('aria-hidden')).toBeNull();
-    expect(document.activeElement).toBe(opener);
-  });
 });

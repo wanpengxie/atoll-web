@@ -3,6 +3,7 @@ import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import { SurfaceShell, useSurfaceTopology } from './SurfaceShell.jsx';
 import { useModalFocus } from '../ui/primitives/useModalFocus.js';
 import { diagnostic } from '../model/diagnostics.js';
+import { perfSwitchCommitted, perfSwitchStart } from '../model/perf-trace.js';
 
 const RAIL_COLLAPSED_KEY = 'atoll.rail.collapsed';
 
@@ -318,7 +319,6 @@ function WorkspaceRail({ session, navigation, onClose, onCollapse, collapsed = f
     </header>
     <nav aria-label="频道">
       <div className="rail-global-actions" aria-label="全局工具">
-        <button type="button" onClick={() => { onClose?.('none'); navigation.openSearch(); }} aria-label="全局搜索"><span aria-hidden="true">⌕</span> 搜索</button>
         {navigation.openActivity && <button type="button" onClick={() => { onClose?.('none'); navigation.openActivity(); }} aria-label="打开活动中心" title="活动中心"><span aria-hidden="true">◷</span> 活动</button>}
       </div>
       <p className="rail-caption">我的频道 <span>{memberChannels.length}</span></p>
@@ -385,6 +385,7 @@ export function WorkspaceLayout({
   const filesOpen = navigation.activeView === 'files';
   const readingHistoryAvailable = typeof navigation.openReadingHistory === 'function'
     && canReadChannel(channel);
+  const starredAvailable = typeof navigation.openStarred === 'function' && canReadChannel(channel);
   const mobileChannelToggleRef = useRef(null);
   const mobileRailRef = useRef(null);
   const inactiveMobileDialogRef = useRef(null);
@@ -511,6 +512,7 @@ export function WorkspaceLayout({
       }
       return;
     }
+    perfSwitchStart(navigation.activeChannelId, channelId);
     const pending = {
       target: channelId,
       origin: navigation.activeChannelId,
@@ -529,6 +531,9 @@ export function WorkspaceLayout({
       throw error;
     }
   }, [clearPendingChannelSelection, navigation.activeChannelId, navigation.select]);
+  useLayoutEffect(() => {
+    perfSwitchCommitted(navigation.activeChannelId);
+  }, [navigation.activeChannelId]);
   useLayoutEffect(() => {
     const pending = pendingChannelSelectionRef.current;
     if (!pending) return;
@@ -732,6 +737,7 @@ export function WorkspaceLayout({
               {(navigation.openChannelCreate || navigation.openChannelAdministration) && <button type="button" role="menuitem" onClick={() => runChannelMenuAction(navigation.openChannelCreate || (() => navigation.openChannelAdministration('overview')))}>新建子频道</button>}
               <button type="button" role="menuitem" className="mobile-channel-menu-action" onClick={() => runChannelMenuAction(toggleFiles)}>{filesOpen ? '关闭文件' : '打开文件'}</button>
               {readingHistoryAvailable && <button type="button" role="menuitem" className="mobile-channel-menu-action" onClick={() => runChannelMenuAction(navigation.openReadingHistory)}>最近阅读</button>}
+              {starredAvailable && <button type="button" role="menuitem" className="mobile-channel-menu-action" onClick={() => runChannelMenuAction(navigation.openStarred)}>星标消息</button>}
               {navigation.openTerminal && <button type="button" role="menuitem" className="mobile-channel-menu-action" disabled={!channel || terminalTransitionPending} onClick={() => runChannelMenuAction(toggleTerminal)}>{navigation.terminalVisible ? '关闭终端' : '打开终端'}</button>}
               {navigation.channelRestart && <button
                 type="button"
@@ -741,6 +747,7 @@ export function WorkspaceLayout({
                 disabled={!channel || typeof navigation.channelRestart.invoke !== 'function'}
                 onClick={() => runChannelMenuAction(navigation.channelRestart.invoke)}
               >重启频道</button>}
+              {navigation.exportPerf && <button type="button" role="menuitem" onClick={() => runChannelMenuAction(navigation.exportPerf)}>导出性能记录</button>}
             </div>}
           </div>
         </div>
@@ -771,6 +778,13 @@ export function WorkspaceLayout({
             title="最近阅读"
             onClick={navigation.openReadingHistory}
           >最近</button>}
+          {starredAvailable && <button
+            type="button"
+            className="starred-edge-tab"
+            aria-label="打开星标列表"
+            title="星标"
+            onClick={navigation.openStarred}
+          >★ 星标</button>}
         </div>
         {features}
         {preview && <div className="preview-view">{preview}</div>}

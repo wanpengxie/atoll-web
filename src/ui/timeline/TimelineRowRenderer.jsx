@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { actorNameFromMap } from '../../model/actor-display.js';
 import { isGeneratedMember } from '../../model/actor-visibility.js';
 import { buildRecord, buildSummaryText, buildTone } from '../../model/build-record.js';
@@ -11,6 +11,8 @@ import { messageTimeLabel } from '../../util/time.js';
 import { MarkdownContent } from '../MarkdownContent.jsx';
 import { FoldableBody } from './FoldableBody.jsx';
 import { useMessageLayoutState } from './MessageLayoutState.jsx';
+import { StarChannelContext } from './star-context.js';
+import { isStarred, subscribeStars, toggleStar } from '../../model/starred-messages.js';
 import { lostReason, memberRestarts } from '../../model/request-lifecycle.js';
 
 const RESULT_META = new Set(['status', 'reason', 'error_code', 'detail', 'cancelled', 'closed_by']);
@@ -486,11 +488,27 @@ function useMessageActionController(envelope, onReply) {
   };
 }
 
+// The reader's own bookmark on a message, kept on this device.
+function StarButton({ envelope }) {
+  const channelId = useContext(StarChannelContext);
+  const id = String(envelope?.id || '');
+  const starred = useSyncExternalStore(subscribeStars, () => isStarred(channelId, id));
+  if (!channelId || !id) return null;
+  return <button
+    type="button"
+    className={`message-star${starred ? ' is-starred' : ''}`}
+    aria-pressed={starred}
+    title={starred ? '取消星标' : '加星标，之后可在右侧“星标”里直接回到这里'}
+    onClick={() => toggleStar(channelId, { id, sender: envelope?.sender?.id || '', text: textOf(envelope), ts: envelope?.ts })}
+  >{starred ? '★ 已星标' : '☆ 星标'}</button>;
+}
+
 function MessageActions({ envelope, turn = null, onReply, onCreateTask, onOpen, extraActions = null, copy, copyState, onCopyClick, onReplyClick, actionGestureProps }) {
   if (!copy && !onReply && !onCreateTask && !onOpen && !extraActions) return null;
   const feedback = copyState === 'copied' ? '已复制正文' : copyState === 'error' ? '复制失败' : '';
   return <div className={`message-actions${feedback ? ' has-feedback' : ''}`} aria-label="条目操作">
     {copy && <button type="button" onClick={onCopyClick} {...actionGestureProps('copy')}>{copyState === 'copied' ? '✓ 已复制' : '复制'}</button>}
+    <StarButton envelope={envelope} />
     {onReply && <button type="button" onClick={onReplyClick} {...actionGestureProps('reply')}>↩ 回复</button>}
     {onCreateTask && <button type="button" onClick={() => turn ? onCreateTask(envelope, turn) : onCreateTask(envelope)}>创建任务</button>}
     {onOpen && turn && <button type="button" onClick={() => onOpen(turn)}>查看过程</button>}
@@ -502,6 +520,7 @@ function MessageActions({ envelope, turn = null, onReply, onCreateTask, onOpen, 
 function ReplyableMessageFrame({ envelope, turn = null, onReply, onCreateTask, onOpen, extraActions = null, children, className = '', ...props }) {
   const actions = useMessageActionController(envelope, onReply);
   return <MessageFrame {...props} className={`replyable-message ${className}`.trim()}
+    data-envelope-id={envelope?.id || undefined}
     contentProps={actions.surfaceProps}
     actions={<MessageActions envelope={envelope} turn={turn} onReply={onReply} onCreateTask={onCreateTask} onOpen={onOpen} extraActions={extraActions}
       copy={actions.copy} copyState={actions.copyState} onCopyClick={actions.onCopyClick}

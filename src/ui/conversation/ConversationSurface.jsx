@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import { StarChannelContext } from '../timeline/star-context.js';
 import { createPortal } from 'react-dom';
 import { actorNameMap } from '../../model/actor-display.js';
 import { MarkdownFileReferenceProvider } from '../MarkdownContent.jsx';
@@ -319,14 +320,16 @@ export function ConversationSurface({
                     {/* One list per view: a scope or member filter replaces the
                         whole item set, which Virtuoso cannot follow from a pixel
                         offset. A new view opens at its latest row, like a channel. */}
-                    <TimelineList
-                      key={messageListKey}
-                      snapshot={projection.presentation}
-                      reading={viewport}
-                      rowRevision={rowRenderRevision}
-                      historyStartBoundary={historyStartBoundary}
-                      renderRow={renderRow}
-                    />
+                    <StarChannelContext.Provider value={state.channelId || ''}>
+                      <TimelineList
+                        key={messageListKey}
+                        snapshot={projection.presentation}
+                        reading={viewport}
+                        rowRevision={rowRenderRevision}
+                        historyStartBoundary={historyStartBoundary}
+                        renderRow={renderRow}
+                      />
+                    </StarChannelContext.Provider>
                   </div>
                 </div>
                 {viewport.unseenNotice > 0 && <button

@@ -682,7 +682,7 @@ describe('ChannelFeedRuntime ownership', () => {
     expect(snapshot.agentActivityPort.attach({ generation: 1 })).toBe(false);
     expect(snapshot.agentActivityPort.disconnect()).toBe(false);
     expect(snapshot.notificationAuthorityPort.reset()).toBe(false);
-    expect(snapshot.requestBackgroundInterest('c0', { intent: 'search-context' })).toMatchObject({
+    expect(snapshot.requestBackgroundInterest('c0', { intent: 'channel-entry' })).toMatchObject({
       accepted: false,
     });
     expect(runtime.getOwnerSnapshot(ownerToken).enqueue({
@@ -927,7 +927,7 @@ describe('ChannelFeedRuntime ownership', () => {
       historyBefore: vi.fn(() => {
         requestNumber += 1;
         const accepted = Promise.resolve({ accepted: true, generation: 1, channel_id: 'c0.project' });
-        accepted.ref = `search-interest-${requestNumber}`;
+        accepted.ref = `entry-interest-${requestNumber}`;
         return accepted;
       }),
       cancelHistory: vi.fn(() => Promise.reject(cancelError)),
@@ -940,7 +940,7 @@ describe('ChannelFeedRuntime ownership', () => {
     ], { generation: 1, boot: 'background-cancel' });
 
     const detached = runtime.getSnapshot().requestBackgroundInterest('c0.project', {
-      intent: 'search-context',
+      intent: 'channel-entry',
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(wireRef.current.historyBefore).toHaveBeenCalledTimes(1);
@@ -948,7 +948,7 @@ describe('ChannelFeedRuntime ownership', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(wireRef.current.cancelHistory).toHaveBeenCalledWith(
-      'c0.project', 'search-interest-1', 1,
+      'c0.project', 'entry-interest-1', 1,
     );
     expect(onError).not.toHaveBeenCalled();
     expect(runtime.getSnapshot().historyFor('c0.project')).toMatchObject({
@@ -958,7 +958,7 @@ describe('ChannelFeedRuntime ownership', () => {
 
     cancelError = Object.assign(new Error('server refused cancellation'), { code: 'forbidden' });
     const attachedWireFailure = runtime.getSnapshot().requestBackgroundInterest('c0.project', {
-      intent: 'search-context',
+      intent: 'channel-entry',
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(wireRef.current.historyBefore).toHaveBeenCalledTimes(2);

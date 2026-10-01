@@ -10,7 +10,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createChannelFeedRuntime } from '../src/model/channel-feed-runtime.js';
 import { createChannelReplicaStore } from '../src/model/channel-replica.js';
 import { setDeviceProfile } from '../src/model/device-profile.js';
-import { selectFeatureSearchIndex, searchFeatureIndex } from '../src/model/feature-search.js';
 import { WorkspaceLayout } from '../src/app/WorkspaceLayout.jsx';
 import { WorkspaceFeatures } from '../src/ui/features/WorkspaceFeatures.jsx';
 import { ChannelAdministrationPanel } from '../src/ui/features/governance/GovernanceFeature.jsx';
@@ -494,54 +493,6 @@ describe('A-D round 25 public-owner evidence', () => {
       count: 1, pending: false, unknown: false,
     });
     runtime.destroy();
-  });
-
-  it('[AD-002] exposes terminal, WorkItem, and Operation as one locatable business fact', () => {
-    // 用户能力：活动中心合并同一 request 的终态、任务与操作，并返回公开来源。
-    // 不变量：频道/request 去重边界不能泄露私有 ticket；公开 owner：selectFeatureSearchIndex。
-    const operations = [{
-      operationId: 'approval-submit', channelId: 'c1', requestId: 'approval-1',
-      kind: 'message_submit', title: '提交审批', state: 'failed', updatedAt: 7,
-      source: { channelId: 'c1', view: 'artifacts', objectType: 'operation', objectId: 'approval-submit' },
-    }];
-    const index = selectFeatureSearchIndex({
-      states: [['c1', approvalState()]], channels, tasks, operations,
-    });
-    expect(index.filter((entry) => entry.kind === 'operation')).toHaveLength(0);
-    expect(index.filter((entry) => entry.kind === 'work_item')).toEqual([
-      expect.objectContaining({
-        id: 'approval:c1:approval-1',
-        requestId: 'approval-1',
-        source: expect.objectContaining({ view: 'tasks' }),
-      }),
-    ]);
-  });
-
-  it('[AD-003] deduplicates Operation by channel/native id and retains latest unsettled state', () => {
-    // 用户能力：重复上传只显示最新未收敛状态，完成项不出现。
-    // 不变量：channel/native operation id 是去重边界；公开 owner：selectFeatureSearchIndex。
-    const operations = [
-      { operationId: 'upload-1', channelId: 'c1', title: '旧上传', state: 'transferring', updatedAt: 10 },
-      { operationId: 'upload-1', channelId: 'c1', title: '新上传', state: 'waiting_ledger', updatedAt: 20 },
-      { operationId: 'done-1', channelId: 'c1', title: '已完成', state: 'completed', updatedAt: 30 },
-    ];
-    const index = selectFeatureSearchIndex({ states: [], channels, operations });
-    expect(index.filter((entry) => entry.kind === 'operation')).toEqual([
-      expect.objectContaining({ id: 'upload-1', state: 'waiting_ledger' }),
-    ]);
-  });
-
-  it('[AD-004] searches visible channels across operations with a public SourceRef', () => {
-    // 用户能力：全局搜索命中进行中的操作并可回到 artifacts 来源。
-    // 不变量：搜索只消费可见频道的公开 Operation projection；公开 owner：searchFeatureIndex。
-    const operations = [{
-      operationId: 'export-1', channelId: 'c1', title: '上传预算附件', state: 'waiting_ledger', updatedAt: 20,
-      source: { channelId: 'c1', view: 'artifacts', objectType: 'operation', objectId: 'export-1' },
-    }];
-    const index = selectFeatureSearchIndex({ states: [], channels, operations });
-    expect(searchFeatureIndex(index, '预算附件', { kinds: ['operation'] })).toEqual([
-      expect.objectContaining({ kind: 'operation', source: expect.objectContaining({ objectId: 'export-1' }) }),
-    ]);
   });
 
   it('[AD-093] provides a recent-reading drawer at the right edge', () => {

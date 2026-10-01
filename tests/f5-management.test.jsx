@@ -11,7 +11,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ChannelAdministrationPanel } from '../src/ui/features/governance/GovernanceFeature.jsx';
-import { SearchFeature } from '../src/ui/features/search/SearchFeature.jsx';
 
 afterEach(cleanup);
 
@@ -140,50 +139,4 @@ describe('F5 成员与全局表面', () => {
     expect(screen.getByRole('status').getAttribute('data-participant-id')).toBe('same@1');
   });
 
-  it('全局搜索返回规范 SourceRef 并可用其打开结果', async () => {
-    const user = userEvent.setup();
-    const onOpen = vi.fn();
-    render(<SearchFeature port={{
-      index: [{ key: 's1', kind: 'artifact', objectType: 'artifact', title: '设计报告', channelId: 'c0.project', source: { channelId: 'c0.project', view: 'artifacts', objectType: 'artifact', objectId: 'artifact-1' } }],
-      commands: { open: onOpen, close: vi.fn() },
-    }} />);
-    await user.type(screen.getByLabelText('搜索频道、消息、文件、任务或成员'), '设计');
-    await user.click(screen.getByRole('button', { name: /设计报告/ }));
-    expect(onOpen).toHaveBeenCalledWith({
-      source: { channelId: 'c0.project', view: 'artifacts', objectType: 'artifact', objectId: 'artifact-1' },
-    });
-  });
-
-  it('全局搜索恢复 WorkItem 的 Tasks 视图与 focus SourceRef', async () => {
-    const user = userEvent.setup();
-    const onOpen = vi.fn();
-    render(<SearchFeature port={{
-      index: [{
-        key: 'work-item-1',
-        kind: 'work_item',
-        objectType: 'work_item',
-        title: '审核频道权限',
-        channelId: 'c0.project',
-        source: {
-          channelId: 'c0.project',
-          view: 'tasks',
-          objectType: 'work_item',
-          objectId: 'work-item-1',
-          focus: { type: 'work_item', key: 'work-item-1' },
-        },
-      }],
-      commands: { open: onOpen, close: vi.fn() },
-    }} />);
-    await user.type(screen.getByLabelText('搜索频道、消息、文件、任务或成员'), '审核');
-    await user.click(screen.getByRole('button', { name: /审核频道权限/ }));
-    expect(onOpen).toHaveBeenCalledWith({
-      source: {
-        channelId: 'c0.project',
-        view: 'tasks',
-        objectType: 'work_item',
-        objectId: 'work-item-1',
-        focus: { type: 'work_item', key: 'work-item-1' },
-      },
-    });
-  });
 });

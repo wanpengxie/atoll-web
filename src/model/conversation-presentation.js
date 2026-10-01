@@ -590,7 +590,7 @@ function envelopeOf(entry) {
   return entry?.kind === 'turn' ? entry.turn?.request : entry?.envelope;
 }
 
-function entryEnvelopes(entry) {
+export function entryEnvelopes(entry) {
   if (entry?.kind !== 'turn') return [entry?.envelope].filter(Boolean);
   const envelopes = [entry.turn?.request, entry.turn?.terminal];
   for (const provisional of entry.turn?.provisional || []) envelopes.push(provisional?.envelope);

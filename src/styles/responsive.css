@@ -132,7 +132,7 @@
   .mobile-shell .mock-advance-action { display: none; }
   .mobile-shell .mobile-channel-menu-action { display: block; min-height: 44px; }
   /* On a phone the edge tab would sit on top of the messages; 最近阅读 lives in the ••• menu. */
-  .mobile-shell .reading-history-edge-tab { display: none; }
+  .mobile-shell .reading-history-edge-tab, .mobile-shell .starred-edge-tab { display: none; }
   .mobile-shell .channel-view-tabs { grid-row: 1; grid-column: 2; min-height: 44px; align-items: center; gap: 0; padding: 0; border-bottom: 1px solid var(--line-subtle); }
   .mobile-shell .channel-view-tabs button { min-width: 44px; min-height: 44px; height: 44px; align-self: auto; border-bottom: 0; border-radius: 5px; font-size: 10px; }
   /* The bar reads light, as an app's does: the current view is marked by
@@ -161,10 +161,10 @@
   .mobile-shell .composer-state-rail:empty { display: none; }
   .mobile-shell .composer-wrap.is-empty:not(:focus-within) .composer-toolbar { display: none; }
   .mobile-shell .send-button, .mobile-shell .task-create-modal > header button, .mobile-shell .task-create-modal footer button,
-  .mobile-shell .global-search > header button, .mobile-shell .tasks-header-actions button, .mobile-shell .artifact-upload { min-height: 44px; }
+  .mobile-shell .tasks-header-actions button, .mobile-shell .artifact-upload { min-height: 44px; }
   .mobile-shell .composer-tools > button,
   .mobile-shell .composer-file-control { width: 44px; height: 44px; }
-  .mobile-shell .task-create-modal > header button, .mobile-shell .global-search > header button { min-width: 44px; }
+  .mobile-shell .task-create-modal > header button { min-width: 44px; }
   .mobile-shell .seq-label { display: none; }
   .mobile-shell .timeline-inner { padding: 8px 7px 18px; }
 	.mobile-shell .timeline-virtual-item { padding-right: 7px; padding-left: 7px; }
