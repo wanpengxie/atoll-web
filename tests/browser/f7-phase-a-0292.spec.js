@@ -43,13 +43,14 @@ test('TC-0292 phase-A multi-channel isolation, terminal approval, and actor visi
   await expect(page.getByText('c0.project history 1: ask project-agent for PONG', { exact: true })).toBeVisible();
   await expect(page.locator('main').getByText(/^c0 history 1/)).toHaveCount(0);
 
-  // The member tab is the public governance projection. System and service
-  // actors may occur in the ledger but must not be exposed as user members.
+  // The member tab lists the members the channel's description writes: the
+  // svcactor is one of them; the system door is not a member, and the
+  // registrar lives in c0 only.
   const panel = await openMembers(page);
   await expect(panel.getByText('project-agent', { exact: true })).toBeVisible();
   await expect(panel.getByText('system', { exact: true })).toHaveCount(0);
   await expect(panel.getByText('registrar', { exact: true })).toHaveCount(0);
-  await expect(panel.getByText('svcactor', { exact: true })).toHaveCount(0);
+  await expect(panel.getByText('svcactor', { exact: true })).toBeVisible();
   await panel.getByRole('button', { name: '关闭频道详情' }).click();
 
   // A user message must reach its terminal response, while the pre-seeded

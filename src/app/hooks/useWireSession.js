@@ -1233,6 +1233,9 @@ export function useWireConnection({
           access.wire('attached', newId());
           if (Array.isArray(detail?.memberships)) {
             applyMemberships(detail.memberships, detail.memberships_complete === true);
+            // 成员关系是频道成为"我的"的唯一依据（9.7）：落下来就要让频道列表重算，
+            // 和推来的成员关系一样。
+            bumpAccess();
           }
           flushSync(() => setState('open'));
           if (attachedOnce) scheduleAccessRefresh();

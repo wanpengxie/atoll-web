@@ -16,7 +16,7 @@ async function login(page) {
   await expect(page.locator('.connection-state')).toHaveClass(/state-open/);
 }
 
-test('TC-0296 B-BR-01 keeps root/project/public channels and hides internal actors', async ({ page, request }) => {
+test('TC-0296 B-BR-01 keeps root/project/public channels and lists c0\'s described members, not the system door', async ({ page, request }) => {
   await reset(request);
   await login(page);
 
@@ -30,7 +30,9 @@ test('TC-0296 B-BR-01 keeps root/project/public channels and hides internal acto
   const panel = page.getByRole('complementary', { name: '频道成员' });
   await expect(panel).toBeVisible();
   await expect(panel.getByText('steward', { exact: true })).toBeVisible();
-  for (const name of ['system', 'registrar', 'svcactor']) {
-    await expect(panel.getByText(name, { exact: true })).toHaveCount(0);
+  // c0 的描述（内核写的）里的成员照常列出；system 门不是成员。
+  await expect(panel.getByText('system', { exact: true })).toHaveCount(0);
+  for (const name of ['registrar', 'svcactor', 'metapeer']) {
+    await expect(panel.getByText(name, { exact: true })).toBeVisible();
   }
 });
