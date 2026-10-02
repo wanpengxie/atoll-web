@@ -15,7 +15,7 @@ import { createObsClient } from '../../net/obs.js';
 import { foregroundWake } from '../../net/wake.js';
 import { createWire } from '../../net/wire.js';
 import { newId } from '../../util/id.js';
-import { LOBBY_CHANNEL_ID, ROOT_CHANNEL_ID } from '../../protocol/vocab.js';
+import { HOME_PARENT_CHANNEL_ID, LOBBY_CHANNEL_ID, ROOT_CHANNEL_ID } from '../../protocol/vocab.js';
 
 const SERVER_WORLD_KEY = 'atoll.server.boot.v2';
 const CHANNEL_NAME_KEY = 'atoll.channel.names.v1';
@@ -297,9 +297,10 @@ function accessMode(state, connected) {
   return state.relationship === 'discoverable' ? 'discoverable' : 'loading';
 }
 
+// 大厅和 c0.home 不进频道列表：c0.home 只是放 home 频道的命名空间，里面没有成员。
 function isHiddenChannel(profile) {
   const id = String(profile?.id || '');
-  return id === LOBBY_CHANNEL_ID || profile?.type === 'actor';
+  return id === LOBBY_CHANNEL_ID || id === HOME_PARENT_CHANNEL_ID || profile?.type === 'actor';
 }
 
 function createSessionAccess({ principalId }) {

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { actorDisplayName } from '../../../model/actor-display.js';
-import { actorDescriptionRef, isVisibleActor } from '../../../model/actor-visibility.js';
+import { actorDescriptionName, actorDescriptionRef, isVisibleActor } from '../../../model/actor-visibility.js';
 import { isPlatformChannel, LOCAL_DEVICE_ID, ROOT_CHANNEL_ID } from '../../../protocol/vocab.js';
 import { TERMINAL_RESULT_UNAVAILABLE } from '../../../model/terminal-result.js';
 import { rosterBodyLabel } from '../../../model/member-config.js';
@@ -260,7 +260,7 @@ function ChannelMembers({ channel, port }) {
     .map((row) => ({ value: `principal:${row.id}`, label: `${row.display_name || row.email || row.id} · 用户`, row, kind: 'principal', participantKind: 'human' }))
     .sort(compareParticipantCandidates);
   const descriptionCandidates = (port.actorDescriptions || [])
-    .map((row) => ({ value: `description:${actorDescriptionRef(row)}`, label: `${row.name || row.id} @${row.version || '?'} · Actor 描述（class ${row.class || '?'}）`, row: { ...row, ref: actorDescriptionRef(row) }, kind: 'description', participantKind: 'actor' }))
+    .map((row) => ({ value: `description:${actorDescriptionRef(row)}`, label: `${actorDescriptionName(row, port.actorDescriptions)} @${row.version || '?'} · Actor 描述（class ${row.class || '?'}）`, row: { ...row, ref: actorDescriptionRef(row) }, kind: 'description', participantKind: 'actor' }))
     .sort(compareParticipantCandidates);
   const candidates = [
     ...principalCandidates,

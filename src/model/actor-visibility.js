@@ -27,6 +27,17 @@ export function latestActorDescriptions(rows = []) {
     || String(left.id).localeCompare(String(right.id)));
 }
 
+// 描述的显示名：名字可以重复，同名的几条后面带上 id 的前 8 位好区分。
+export function actorDescriptionName(row, rows = []) {
+  const name = String(row?.name || row?.id || '');
+  const id = String(row?.id || '');
+  const clash = (rows || []).some((other) => {
+    const value = other?.declared || other || {};
+    return value.id && value.id !== id && String(value.name || '') === String(row?.name || '');
+  });
+  return clash && id ? `${name}（${id.slice(0, 8)}）` : name;
+}
+
 // 引用一条 actor 描述的某一版：<描述 id>@<版本>。
 export function actorDescriptionRef(row) {
   return String(row?.ref || (row?.id && row?.version ? `${row.id}@${row.version}` : ''));

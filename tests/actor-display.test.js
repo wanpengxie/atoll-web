@@ -10,6 +10,9 @@ describe('actor display name', () => {
     expect(actorDisplayName({ id: 'agent:x:1', body: 'class kimi' })).toBe('class kimi');
     expect(actorDisplayName({ id: 'human:root:1787128257816' })).toBe('未命名成员');
     expect(actorIdLabel('human:alice:1787128257816')).toBe('human:alice:1787128257816');
+    // 频道自己的 system actor 是固定 id，照基线显示 system。
+    expect(actorDisplayName({ id: 'system', body: 'generated' })).toBe('system');
+    expect(actorNameFromMap('system', new Map())).toBe('system');
   });
 
   it('同名两个成员各自显示自己的名字，按完整 id 区分', () => {

@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { actorDescriptionName } from '../../../model/actor-visibility.js';
 import { GLOBAL_PREFIX } from '../../../model/global-keys.js';
 import {
   insertGlobalReference,
@@ -90,7 +91,7 @@ function actorRefOptions(descriptions = [], current = '') {
   const options = [];
   for (const row of descriptions || []) {
     if (!row?.id) continue;
-    const label = row.name || row.id;
+    const label = actorDescriptionName(row, descriptions);
     options.push({ value: row.id, label: `${label} · 最新版（频道打开时解析）` });
     for (let version = Number(row.version || 0); version >= 1; version -= 1) {
       options.push({ value: `${row.id}@${version}`, label: `${label} · 钉死 @${version}` });

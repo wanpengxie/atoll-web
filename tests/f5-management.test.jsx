@@ -128,8 +128,9 @@ describe('F5 成员与全局表面', () => {
       'Alice · 用户',
       'Same · 用户',
       'Same · 用户',
-      'same @1 · Actor 描述（class mcp-tool）',
-      'same @2 · Actor 描述（class mcp-tool）',
+      // 同名的描述后面带上 id 的前 8 位好区分。
+      'same（d-a） @1 · Actor 描述（class mcp-tool）',
+      'same（d-z） @2 · Actor 描述（class mcp-tool）',
       '直接按 Class 新建…',
     ]);
     await user.click(options[2]);

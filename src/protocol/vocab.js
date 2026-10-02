@@ -138,13 +138,15 @@ export const DECISIONS = Object.freeze({ approve: 'approve', reject: 'reject' })
 // c0 的 registrar，所以客户端只需要认识这一个收件人。
 export const SYSTEM_ACTOR_ID = 'system';
 
-// 平台自己建的两个频道（platform/channelspec/wellknown.go）：空间根 c0 和登录用
-// 的大厅。它们没有频道描述，所以不能被复制（lagoon.SystemChannel）。
+// 平台自己建的频道（platform/channelspec/wellknown.go）：空间根 c0、登录用的大厅，
+// 以及放所有人 home 频道的 c0.home。它们没有频道描述，所以不能被复制
+// （lagoon.SystemChannel）。
 export const ROOT_CHANNEL_ID = 'c0';
 export const LOBBY_CHANNEL_ID = 'c0.lobby';
+export const HOME_PARENT_CHANNEL_ID = 'c0.home';
 
 export function isPlatformChannel(id) {
-  return id === ROOT_CHANNEL_ID || id === LOBBY_CHANNEL_ID;
+  return id === ROOT_CHANNEL_ID || id === LOBBY_CHANNEL_ID || id === HOME_PARENT_CHANNEL_ID;
 }
 
 // 节点自己的设备：除大厅外每个频道都有它，文件和成员默认都在它上面，不需要
