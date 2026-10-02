@@ -162,6 +162,16 @@ describe('sub tasks: background work sits in the card of the request that set it
     expect(rows[0].subTasks.map((envelope) => envelope.id)).toEqual(['o1', 'o2', 'o3']);
   });
 
+  it('shows a task resumed from a later message as ended in the card that set it off', () => {
+    const resume = row(3, { id: 'resume', kind: 'request', type: 'agent.ask', sender: SELF, audience: [CLAUDE], body: { text: 'continue it' } });
+    const resumeDone = row(4, { id: 'resume-done', kind: 'response', type: 'agent.ask', sender: CLAUDE, audience: [SELF], parentId: 'resume', body: { status: 'completed', text: 'resumed' } });
+    const started = row(5, { id: 's1', type: 'agent.task', sender: CLAUDE, parentId: 'ask', correlationId: 'ask', body: { call_id: 'toolu_first', task_id: 'a42', phase: 'started', kind: 'agent', title: 'Build' } });
+    const ended = row(6, { id: 's2', type: 'agent.task', sender: CLAUDE, parentId: 'resume', correlationId: 'resume', body: { call_id: 'toolu_resume', task_id: 'a42', phase: 'failed', text: 'stopped' } });
+    const result = items([ask, done, resume, resumeDone, started, ended]);
+    const first = result.find((entry) => entry.turn?.requestId === 'ask');
+    expect(first.subTasks.map((envelope) => envelope.id)).toEqual(['s1', 's2']);
+  });
+
   it('draws nothing for tasks whose request is not on the page', () => {
     const task = (seq, id, call, phase) => row(seq, {
       id, type: 'agent.task', sender: CODEX, parentId: 'old-request', correlationId: 'ask',

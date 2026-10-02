@@ -13,6 +13,7 @@ import { FoldableBody } from './FoldableBody.jsx';
 import { useMessageLayoutState } from './MessageLayoutState.jsx';
 import { StarChannelContext } from './star-context.js';
 import { isStarred, subscribeStars, toggleStar } from '../../model/starred-messages.js';
+import { subTaskIdentity } from '../../model/background-tasks.js';
 import { lostReason, memberRestarts } from '../../model/request-lifecycle.js';
 
 const RESULT_META = new Set(['status', 'reason', 'error_code', 'detail', 'cancelled', 'closed_by']);
@@ -1224,9 +1225,12 @@ function subTaskDuration(ms) {
 
 function groupSubTasks(steps) {
   const tasks = new Map();
+  // One task per sub agent, not per call: a resumed agent reports under the
+  // call that resumed it (see model/background-tasks.js).
+  const identity = subTaskIdentity(steps);
   for (const envelope of steps) {
     const body = argsOf(envelope) || {};
-    const key = String(body.call_id || envelope.id);
+    const key = identity(envelope);
     const task = tasks.get(key) || { key, sender: envelope.sender?.id, kind: '', title: '', phase: 'started', startedAt: 0, endedAt: 0, latest: '', messages: [], result: '' };
     const ts = Number(envelope.ts) || 0;
     if (!task.startedAt || (ts && ts < task.startedAt)) task.startedAt = ts;

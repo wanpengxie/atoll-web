@@ -1,5 +1,6 @@
 import { argsOf, correlationOf } from '../protocol/envelope.js';
 import { isConversationCall, isOperationCall, TYPES } from '../protocol/vocab.js';
+import { subTaskEnds } from './background-tasks.js';
 import { isControlOnlyTurn } from './conversation-visibility.js';
 import { LIFECYCLE, memberRestarts, requestLifecycle } from './request-lifecycle.js';
 
@@ -798,6 +799,17 @@ function attachSubTasks(items, state) {
     const list = attached.get(index) || [];
     list.push(...byRequest.get(requestID));
     attached.set(index, list);
+  }
+  // A task resumed from a later message ends there, not in the card that set
+  // it off: that card is shown the end too, so it does not read as running
+  // forever.
+  const { identity, ends } = subTaskEnds(state);
+  for (const list of attached.values()) {
+    const keys = new Set(list.map(identity));
+    for (const key of keys) {
+      const end = ends.get(key);
+      if (end && !list.includes(end)) list.push(end);
+    }
   }
   // Steps whose request is not on screen (an old request, or none: a task
   // started before the agent restarted) still read as one piece of work, not a

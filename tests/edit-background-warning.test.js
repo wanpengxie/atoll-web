@@ -42,4 +42,19 @@ describe('editing warns about background work the interrupt would stop', () => {
     const [running] = runningBackgroundTasks(state);
     expect(running).toMatchObject({ requestId: 'req-1', lastText: 'Reading the ledger', startedAt: 1000, sender: CLAUDE });
   });
+
+  it('follows a resumed sub agent to the end it reports under another call', () => {
+    const state = { rows: new Map([
+      task(1, 'toolu_first', 'started', { body: { task_id: 'a42', kind: 'agent', title: 'Build the spec' } }),
+      task(2, 'toolu_first', 'message', { body: { text: 'reading' } }),
+      task(3, 'toolu_resume', 'progress', { body: { task_id: 'a42', text: 'fixing' } }),
+      task(4, 'toolu_resume', 'failed', { body: { task_id: 'a42', text: 'stopped' } }),
+    ]) };
+    expect(runningBackgroundTasks(state)).toEqual([]);
+  });
+
+  it('does not count fragments with no start on record as running', () => {
+    const state = { rows: new Map([task(1, 'toolu_lost', 'message', { body: { text: 'a late report' } })]) };
+    expect(runningBackgroundTasks(state)).toEqual([]);
+  });
 });
