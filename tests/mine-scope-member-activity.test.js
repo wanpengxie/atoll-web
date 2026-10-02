@@ -162,18 +162,16 @@ describe('sub tasks: background work sits in the card of the request that set it
     expect(rows[0].subTasks.map((envelope) => envelope.id)).toEqual(['o1', 'o2', 'o3']);
   });
 
-  it('folds every task of one off-screen request into a single row', () => {
+  it('draws nothing for tasks whose request is not on the page', () => {
     const task = (seq, id, call, phase) => row(seq, {
       id, type: 'agent.task', sender: CODEX, parentId: 'old-request', correlationId: 'ask',
       body: { call_id: call, phase, kind: 'agent', title: call },
     });
     // The request that started them is part of the reader's conversation but
-    // no longer loaded on the page.
+    // no longer loaded on the page: its tasks wait for it.
     const result = items([ask, task(11, 'a1', 'luna_00', 'started'), task(12, 'b1', 'luna_01', 'started'),
       task(13, 'a2', 'luna_00', 'completed'), task(14, 'c1', 'luna_02', 'started'), task(15, 'b2', 'luna_01', 'failed')]);
-    const rows = result.filter((entry) => entry.kind === 'standalone');
-    expect(rows).toHaveLength(1);
-    expect(rows[0].subTasks).toHaveLength(5);
+    expect(result.filter((entry) => entry.kind === 'standalone')).toHaveLength(0);
   });
 
   it('folds requestless tasks one agent started back to back into a single row', () => {
@@ -203,13 +201,56 @@ describe('sub tasks: background work sits in the card of the request that set it
     expect(revision([...base, step(4, 'p1', 'progress', 2_000), step(5, 'm', 'message', 3_000)])).not.toBe(first);
   });
 
-  it('keeps a step whose request is not on screen as its own row', () => {
+  it('draws nothing for a step whose request is not on the page', () => {
     const orphan = row(1, {
       id: 'orphan', type: 'agent.task', sender: CLAUDE, parentId: 'gone', correlationId: 'gone',
       body: { call_id: 'toolu_9', phase: 'completed', text: 'late' },
     });
     const own = row(2, { id: 'own', kind: 'request', type: 'agent.ask', sender: SELF, audience: [CLAUDE], parentId: 'gone', correlationId: 'gone', body: { text: 'x' } });
-    const result = items([orphan, own]);
-    expect(result.some((entry) => entry.kind === 'standalone' && entry.envelope.id === 'orphan')).toBe(true);
+    const ownDone = row(3, { id: 'own-done', kind: 'response', type: 'agent.ask', sender: CLAUDE, audience: [SELF], parentId: 'own', correlationId: 'gone', body: { status: 'completed', text: 'ok' } });
+    const result = items([orphan, own, ownDone]);
+    expect(result.some((entry) => entry.kind === 'standalone' && entry.envelope.id === 'orphan')).toBe(false);
+    // What the reader wrote is drawn whatever it replies to.
+    expect(result.some((entry) => entry.kind === 'turn' && entry.turn.requestId === 'own')).toBe(true);
+  });
+});
+
+describe('work under a message that is not on the page is not drawn on its own', () => {
+  function shown(rows, scope = CONVERSATION_SCOPE.all) {
+    const store = createChannelReplicaStore();
+    for (const value of rows) store.commit(value, SELF);
+    return selectTimelineItems(store.state(CHANNEL), { scope, selfId: SELF }).items
+      .map((entry) => (entry.kind === 'turn' ? entry.turn.requestId : entry.envelope.id));
+  }
+  const call = (seq, id, parentId) => row(seq, {
+    id, kind: 'request', type: 'device.exec', sender: CODEX, audience: ['tool:device-mac:1'], parentId, correlationId: 'root',
+    body: { command: 'ls' },
+  });
+  const callDone = (seq, id, parentId) => row(seq, {
+    id: `${id}-done`, kind: 'response', type: 'device.exec', sender: 'tool:device-mac:1', audience: [CODEX], parentId: id, correlationId: 'root',
+    body: { status: 'completed', exit_code: 0 },
+  });
+  const progress = (seq, id) => row(seq, {
+    id, kind: 'response', type: 'agent.ask', sender: CODEX, audience: [SELF], parentId: 'root', correlationId: 'root',
+    body: { status: 'processing', process: { kind: 'tool', tool: 'commandExecution', phase: 'ended' } },
+  });
+
+  it('hides a long turn\'s calls and progress while its request is further back', () => {
+    for (const scope of [CONVERSATION_SCOPE.all, CONVERSATION_SCOPE.mine]) {
+      expect(shown([call(10, 'c1', 'root'), callDone(11, 'c1'), progress(12, 'p1'), call(13, 'c2', 'root'), callDone(14, 'c2')], scope)).toEqual([]);
+    }
+  });
+
+  it('folds them into the request once it is on the page', () => {
+    const root = row(1, { id: 'root', kind: 'request', type: 'agent.ask', sender: SELF, audience: [CODEX], body: { text: 'keep going' } });
+    expect(shown([root, call(10, 'c1', 'root'), callDone(11, 'c1'), progress(12, 'p1')])).toEqual(['root']);
+  });
+
+  it('still draws an agent asking the reader to act', () => {
+    const ask = row(10, {
+      id: 'approve', kind: 'request', type: 'human.approve', sender: CODEX, audience: [SELF], parentId: 'root', correlationId: 'root',
+      body: { text: 'may I delete the build?' },
+    });
+    expect(shown([ask])).toEqual(['approve']);
   });
 });

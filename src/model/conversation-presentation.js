@@ -875,6 +875,23 @@ function subTaskRevision(steps) {
   return `${settled}.${Math.floor(progressAt / 15000)}`;
 }
 
+// Work hung under a message is read inside that message's card. With the
+// message not on the page — it is further back than what is loaded, or a
+// reload left it behind — a call, a progress step or an answer that belongs
+// to it has nothing to be read against, so it is not drawn on its own: a long
+// turn's hundreds of calls used to flood the timeline one card each. They come
+// back folded in their card once history reaches it. Kept on their own: what a
+// person wrote, what asks a person to act, and an agent speaking after its
+// background work (that is prose, anchored only for placement).
+function detachedFromParent(entry, state) {
+  const envelope = entry?.kind === 'turn' ? entry.turn?.request : entry?.envelope;
+  const parent = String(envelope?.parent_id || '');
+  if (!parent || envelope?.sender?.kind === 'human') return false;
+  if (envelope?.type === TYPES.agentProviderRun) return false;
+  if (envelope?.kind === 'request' && (envelope.audience || []).some((id) => String(id).startsWith('human:'))) return false;
+  return !state?._envelopesById?.has(parent);
+}
+
 // Semantic projection is exported from the Presentation owner. It consumes the
 // Replica's canonical timeline and does not retain or mutate another ledger.
 export function selectTimelineItems(state, {
@@ -897,6 +914,7 @@ export function selectTimelineItems(state, {
   const scoped = [];
   const filtered = [];
   for (const rawEntry of state?.timeline || []) {
+    if (detachedFromParent(rawEntry, state)) continue;
     if (!visibleEntry(rawEntry, scope, editingTargetId, editingReplacementId, lifecycleOf, timelinePlaced)) continue;
     allEntries.push(rawEntry);
     const entry = withoutUiChildren(rawEntry, scope);

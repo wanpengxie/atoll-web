@@ -307,7 +307,10 @@ export function ConversationSurface({
                     <span>{viewport.availabilityError || '确认频道内容失败'}</span>
                     <button type="button" onClick={viewport.retryAvailability}>重试</button>
                   </div>}
-                  {viewport.historyDemand?.phase !== 'idle' && !presentationEmpty && <div
+                  {/* Older history is fetched ahead of the reader in the
+                      background; it is only worth a word once the reader has
+                      reached the top and is waiting for it. */}
+                  {viewport.historyDemand?.phase !== 'idle' && !presentationEmpty && viewport.atTop && <div
                     className="timeline-history-status timeline-history-demand"
                     data-phase={viewport.historyDemand.phase}
                     role={viewport.historyDemand.phase === 'error' ? 'alert' : 'status'}
