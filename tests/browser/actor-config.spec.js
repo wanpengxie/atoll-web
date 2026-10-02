@@ -33,6 +33,12 @@ async function mockState(request) {
   return response.json();
 }
 
+// 按条目的显示名找到它这一台的配置（测试里方便；配置只按配置 id / 条目 id 存）。
+function configOf(state, channelId, name) {
+  const entry = state.descriptions[channelId].body.members.find((row) => row.name === name);
+  return state.member_configs.find((row) => row.channel_id === channelId && row.entry_id === entry?.id);
+}
+
 function captureSubmits(page) {
   const submits = [];
   page.on('websocket', (socket) => socket.on('framesent', (event) => {
@@ -63,7 +69,7 @@ test('one state: a member that did not start reads unbuilt, with no layer or rea
   // 对外只有"建好了没有"（owner 09-30）：起不来的成员只是没建好，原因在它自己里面。
   const stuck = roster.getByRole('button', { name: /deepseek/ });
   await expect(stuck).toContainText('未绑定');
-  await expect(stuck).toContainText('actor deepseek@1');
+  await expect(stuck).toContainText('actor d-deepseek@1');
   await expect(stuck).not.toContainText('卡住');
   await expect(stuck).not.toContainText('业务层');
   await expect(roster.getByRole('button', { name: /search-tool/ })).toContainText('未绑定');
@@ -79,7 +85,7 @@ test('one state: a member that did not start reads unbuilt, with no layer or rea
   // 各层按需读（手动挡）：打开详情不发 member.get。读到的是引用不是值。
   expect(submits.filter((payload) => payload.msg_type === 'system.member.get')).toHaveLength(0);
   await detail.getByRole('button', { name: '读取配置' }).click();
-  await expect(detail.locator('.member-config-facts')).toContainText('Actor 描述 deepseek@1');
+  await expect(detail.locator('.member-config-facts')).toContainText('Actor 描述 d-deepseek@1');
   // 起不来的那次构建只有"开始"回执，没有失败回执（owner 09-30：不补回执）。
   await expect(detail.locator('.member-build')).toContainText('构建中');
   expect((await sourceTable(detail)).api_key).toEqual(['$global.deepseek_prod', 'Actor 描述']);
@@ -96,13 +102,13 @@ test('one state: a member that did not start reads unbuilt, with no layer or rea
   await editor.getByRole('button', { name: '插入引用' }).click();
   await expect(editor.getByLabel('成员配置 JSON')).toHaveValue('{"temperature":9,"api_key":"$global.openai_prod"}');
   await editor.getByRole('button', { name: '保存配置' }).click();
-  await expect(detail.getByText(/这一台的配置已保存（第 1 版）/)).toBeVisible();
+  await expect(detail.getByText(/这一台的配置已保存（第 2 版）/)).toBeVisible();
 
   // 温度改回合法值：只发变了的键（合并补丁），构建成功，成员建好。
   await detail.getByRole('button', { name: '编辑配置' }).click();
   await editor.getByLabel('成员配置 JSON').fill('{"temperature":0.5,"api_key":"$global.openai_prod"}');
   await editor.getByRole('button', { name: '保存配置' }).click();
-  await expect(detail.getByText(/这一台的配置已保存（第 2 版）/)).toBeVisible();
+  await expect(detail.getByText(/这一台的配置已保存（第 3 版）/)).toBeVisible();
   // 构建在回复之后完成：按需再读，直到读到这次构建的结果。
   await expect(async () => {
     await detail.getByRole('button', { name: '刷新', exact: true }).click();
@@ -112,9 +118,9 @@ test('one state: a member that did not start reads unbuilt, with no layer or rea
   const sets = submits.filter((payload) => payload.msg_type === 'system.member.config.set');
   expect(sets.map((payload) => payload.payload.values)).toEqual([{ temperature: 9, api_key: '$global.openai_prod' }, { temperature: 0.5 }]);
   const state = await mockState(request);
-  expect(state.member_configs.find((row) => row.channel_id === 'c0.project' && row.member === 'deepseek')).toMatchObject({
+  expect(configOf(state, 'c0.project', 'deepseek')).toMatchObject({
     values: { temperature: 0.5, api_key: '$global.openai_prod' },
-    revision: 2,
+    revision: 3,
   });
 });
 
@@ -138,7 +144,7 @@ test('成员两块编辑: the entry and this member\'s own configuration are edi
   const entryEditor = detail.getByRole('form', { name: '编辑成员条目' });
   // 没有预览：只有取消和保存。
   await expect(entryEditor.getByRole('button', { name: '检查变更' })).toHaveCount(0);
-  await expect(entryEditor.getByLabel('成员 Actor 描述')).toHaveValue('search@1');
+  await expect(entryEditor.getByLabel('成员 Actor 描述')).toHaveValue('d-search@1');
   await entryEditor.getByLabel('成员 params JSON').fill('{"endpoint":"http://127.0.0.1:9100/mcp","timeout_ms":5000}');
   await entryEditor.getByRole('button', { name: '保存条目', exact: true }).click();
   await expect(detail.getByText(/成员条目已写进频道描述（第 3 版）/)).toBeVisible();
@@ -156,7 +162,7 @@ test('成员两块编辑: the entry and this member\'s own configuration are edi
   await expect(ownEditor.getByLabel('成员运行设备')).toHaveValue('');
   await ownEditor.getByLabel('成员配置 JSON').fill('{"timeout_ms":900}');
   await ownEditor.getByRole('button', { name: '保存配置', exact: true }).click();
-  await expect(detail.getByText(/这一台的配置已保存（第 1 版）/)).toBeVisible();
+  await expect(detail.getByText(/这一台的配置已保存（第 2 版）/)).toBeVisible();
   const configSet = submits.filter((payload) => payload.msg_type === 'system.member.config.set');
   expect(configSet).toHaveLength(1);
   expect(configSet[0].payload).toEqual({ member: expect.stringMatching(/^tool:search-tool:/), values: { timeout_ms: 900 } });
@@ -165,7 +171,7 @@ test('成员两块编辑: the entry and this member\'s own configuration are edi
   // 重新读回：两块各是各的值，合成表说出每个键来自哪一层。
   await expect(entry.getByLabel('当前 params')).toContainText('"timeout_ms": 5000');
   await expect(own.getByLabel('当前配置')).toContainText('"timeout_ms": 900');
-  await expect(own).toContainText('第 1 版');
+  await expect(own).toContainText('第 2 版');
   const table = await sourceTable(detail);
   expect(table.endpoint).toEqual(['http://127.0.0.1:9100/mcp', '成员条目']);
   expect(table.timeout_ms).toEqual(['900', '这一台的配置']);
@@ -174,11 +180,12 @@ test('成员两块编辑: the entry and this member\'s own configuration are edi
 
   const state = await mockState(request);
   expect(state.descriptions['c0.project'].body.members.find((row) => row.name === 'search-tool')).toEqual({
+    id: expect.any(String),
     name: 'search-tool',
-    body: { actor: 'search@1' },
+    body: { actor: 'd-search@1' },
     params: { endpoint: 'http://127.0.0.1:9100/mcp', timeout_ms: 5000 },
   });
-  expect(state.member_configs.find((row) => row.channel_id === 'c0.project' && row.member === 'search-tool')).toMatchObject({ values: { timeout_ms: 900 }, revision: 1 });
+  expect(configOf(state, 'c0.project', 'search-tool')).toMatchObject({ values: { timeout_ms: 900 }, revision: 2 });
 });
 
 // 时间线把 system 事件画在一个 narration 块里。起不来的成员只有"开始"回执（owner

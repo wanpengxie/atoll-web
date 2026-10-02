@@ -190,7 +190,7 @@ test('UI-VIS-08 600px 选择用户菜单视觉基线', async ({ page, request })
   const listbox = panel.getByRole('listbox', { name: '选择参与者选项' });
   await expect(listbox).toBeVisible();
   await expect(panel.getByRole('option', { name: /Alice · 用户/ })).toBeVisible();
-  await expect(panel.getByRole('option', { name: /analyst@1 · Actor 描述/ })).toBeVisible();
+  await expect(panel.getByRole('option', { name: /analyst @1 · Actor 描述/ })).toBeVisible();
   await expect(panel.getByRole('option', { name: /svcactor/ })).toHaveCount(0);
   // fae8b70's public directory owner sorted candidates by display name. Keep
   // that observable order: users first, then Actor 描述 (名字@版本, the latest
@@ -200,10 +200,10 @@ test('UI-VIS-08 600px 选择用户菜单视觉基线', async ({ page, request })
     '搜索用户或 Actor 描述',
     'Alice · 用户',
     'Bob · 用户',
-    'analyst@1 · Actor 描述（class codex-agent）',
-    'claude@1 · Actor 描述（class claude）',
-    'search@1 · Actor 描述（class mcp-tool）',
-    'steward@1 · Actor 描述（class codex）',
+    'analyst @1 · Actor 描述（class codex-agent）',
+    'claude @1 · Actor 描述（class claude）',
+    'search @1 · Actor 描述（class mcp-tool）',
+    'steward @1 · Actor 描述（class codex）',
     '直接按 Class 新建…',
   ]);
   const geometry = await page.evaluate(() => ({
@@ -290,18 +290,18 @@ test('UI-VIS-08 600px 成员菜单保留键盘选择与点击选择路径', asyn
 
   await select.click();
   await expect(listbox).toBeVisible();
-  await panel.getByRole('option', { name: /analyst@1 · Actor 描述/ }).click();
+  await panel.getByRole('option', { name: /analyst @1 · Actor 描述/ }).click();
   await expect(select).toBeFocused();
-  await expect(panel.getByRole('status')).toContainText('analyst@1');
-  await expect(panel.locator('[data-participant-id="analyst@1"][data-participant-kind="actor"]')).toBeVisible();
+  await expect(panel.getByRole('status')).toContainText('analyst @1');
+  await expect(panel.locator('[data-participant-id="d-analyst@1"][data-participant-kind="actor"]')).toBeVisible();
   // 选了描述，成员名默认取描述的名字。
   await expect(panel.getByLabel('成员名')).toHaveValue('analyst');
 
   await select.click();
-  await panel.getByRole('option', { name: /steward@1 · Actor 描述/ }).click();
+  await panel.getByRole('option', { name: /steward @1 · Actor 描述/ }).click();
   await expect(select).toBeFocused();
-  await expect(panel.getByRole('status')).toContainText('steward@1');
-  await expect(panel.locator('[data-participant-id="steward@1"]')).toBeVisible();
+  await expect(panel.getByRole('status')).toContainText('steward @1');
+  await expect(panel.locator('[data-participant-id="d-steward@1"]')).toBeVisible();
   await expect(panel.getByLabel('成员名')).toHaveValue('steward');
 });
 

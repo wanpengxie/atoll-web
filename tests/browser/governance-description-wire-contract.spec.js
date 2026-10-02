@@ -119,7 +119,7 @@ test('picking members reads this channel\'s description and copies the chosen en
   for (const name of ['project-agent', 'deepseek', 'search-tool', 'writer']) {
     await expect(modal.getByRole('checkbox', { name: `抄成员条目 ${name}`, exact: true })).toBeVisible();
   }
-  await expect(modal.getByText('actor deepseek@1', { exact: true })).toBeVisible();
+  await expect(modal.getByText('actor d-deepseek@1', { exact: true })).toBeVisible();
   await modal.getByRole('checkbox', { name: '抄成员条目 project-agent', exact: true }).check();
   await modal.getByRole('checkbox', { name: '抄成员条目 search-tool', exact: true }).check();
   await modal.getByLabel('频道用途').fill('挑两个成员');
@@ -135,13 +135,16 @@ test('picking members reads this channel\'s description and copies the chosen en
     description: {
       description: '挑两个成员',
       members: [
+        // 抄过去的条目不带 id：新频道的条目 id 由 registrar 重新铸。
         { name: 'project-agent', body: { class: 'codex' } },
-        { name: 'search-tool', body: { actor: 'search@1' }, params: { endpoint: 'http://127.0.0.1:9000/mcp' } },
+        { name: 'search-tool', body: { actor: 'd-search@1' }, params: { endpoint: 'http://127.0.0.1:9000/mcp' } },
       ],
     },
   });
   const state = await mockState(request);
-  expect(state.descriptions['c0.project.picked-room'].body.members.map((entry) => entry.name)).toEqual(['project-agent', 'search-tool', 'root']);
+  const picked = state.descriptions['c0.project.picked-room'].body.members;
+  expect(picked.map((entry) => entry.name)).toEqual(['project-agent', 'search-tool', 'root']);
+  expect(picked.every((entry) => entry.id)).toBe(true);
 });
 
 test('复制频道: copy_from creates a channel whose member entries match the source', async ({ page, request }) => {
@@ -172,7 +175,8 @@ test('复制频道: copy_from creates a channel whose member entries match the s
   const source = state.descriptions['c0.project'].body.members;
   expect(source.map((entry) => entry.name)).toEqual(['project-agent', 'root', 'deepseek', 'search-tool', 'writer']);
   expect(state.descriptions['c0.copy-room'].body.members).toEqual(source);
-  expect(state.member_configs.filter((row) => row.channel_id === 'c0.copy-room')).toEqual([]);
+  // 新频道给每个条目建了自己的配置，全是空值：源频道的配置没跟过来。
+  expect(state.member_configs.filter((row) => row.channel_id === 'c0.copy-room').every((row) => Object.keys(row.values).length === 0)).toBe(true);
 
   // 进入新频道：名册上是按同样条目造出来的成员（writer 占位没填，构建失败，不在名册上）。
   await modal.getByRole('button', { name: '进入新频道', exact: true }).click();

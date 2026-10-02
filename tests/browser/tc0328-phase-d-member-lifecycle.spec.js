@@ -51,18 +51,18 @@ test('TC-0328 D-BR-07/08/09 member Agent lifecycle keeps restart and instance re
 
   const candidates = panel.getByRole('combobox', { name: '选择参与者' });
   await candidates.click();
-  await panel.getByRole('option', { name: /analyst@1 · Actor 描述/ }).click();
+  await panel.getByRole('option', { name: /analyst @1 · Actor 描述/ }).click();
   // 选了描述，成员名默认取描述的名字。
   await expect(panel.getByLabel('成员名')).toHaveValue('analyst');
   await panel.getByRole('button', { name: '添加到频道' }).click();
   await expect.poll(() => submits.find((payload) => payload?.msg_type === 'system.member.create')).toMatchObject({
     channel_id: 'c0.project',
-    payload: { name: 'analyst', body: { actor: 'analyst@1' } },
+    payload: { name: 'analyst', body: { actor: 'd-analyst@1' } },
   });
 
   const agentRow = panel.locator('.managed-actor').filter({ hasText: 'agent:analyst:' });
   await expect(agentRow).toHaveCount(1);
-  await expect(agentRow.locator('small').first()).toContainText('actor analyst@1');
+  await expect(agentRow.locator('small').first()).toContainText('actor d-analyst@1');
   await expect(panel.locator('.roster-ready')).toHaveText('成员已就绪');
 
   // D-BR-07 requires lifecycle control on the managed member row itself;
@@ -84,6 +84,6 @@ test('TC-0328 D-BR-07/08/09 member Agent lifecycle keeps restart and instance re
 
   await candidates.click();
   const options = panel.getByRole('listbox', { name: '选择参与者选项' });
-  await expect(options.getByRole('option', { name: /analyst@1 · Actor 描述/ })).toHaveCount(1);
-  await expect(options.getByRole('option', { name: /search@1 · Actor 描述（class mcp-tool）/ })).toHaveCount(1);
+  await expect(options.getByRole('option', { name: /analyst @1 · Actor 描述/ })).toHaveCount(1);
+  await expect(options.getByRole('option', { name: /search @1 · Actor 描述（class mcp-tool）/ })).toHaveCount(1);
 });

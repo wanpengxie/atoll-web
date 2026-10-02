@@ -44,7 +44,7 @@ async function openChannelPanel(page, tab) {
   return panel;
 }
 
-test('Actor 描述新建与版本: the same name twice is @1 and @2; retiring @1 shows it retired', async ({ page, request }) => {
+test('Actor 描述新建与版本: a new one gets an id; a new version names that id; retiring @1 shows it retired', async ({ page, request }) => {
   const submits = captureSubmits(page);
   await reset(request, 'space-administration', 4101);
   await login(page);
@@ -57,7 +57,6 @@ test('Actor 描述新建与版本: the same name twice is @1 and @2; retiring @1
   }
 
   await space.getByLabel('Actor 描述名字').fill('research-claude');
-  await expect(space.getByText('将建成 research-claude@1')).toBeVisible();
   await space.getByLabel('Actor 描述 Class').fill('claude');
   await space.getByLabel('Actor 描述说明').fill('研究助手');
   await space.getByLabel('Actor 描述参数 JSON').fill('{"model":"claude-opus","api_key":"$required:研究服务的 key"}');
@@ -65,52 +64,55 @@ test('Actor 描述新建与版本: the same name twice is @1 and @2; retiring @1
   await expect(space.getByText('Actor 描述已新建。')).toBeVisible();
   const group = space.getByRole('region', { name: 'Actor 描述 research-claude', exact: true });
   await expect(group).toContainText('1 个版本');
-  await expect(group.locator('[data-ref="research-claude@1"]')).toContainText('class claude · 可用');
-  await expect(group.locator('[data-ref="research-claude@1"]')).toContainText('研究助手');
+  const id = await group.getAttribute('data-description-id');
+  expect(id).toBeTruthy();
+  await expect(group.locator(`[data-ref="${id}@1"]`)).toContainText('class claude · 可用');
+  await expect(group.locator(`[data-ref="${id}@1"]`)).toContainText('研究助手');
 
-  // 同名再建：已有版本不变，多出下一个版本。
-  await space.getByLabel('Actor 描述名字').fill('research-claude');
-  await expect(space.getByText('将建成 research-claude@2')).toBeVisible();
+  // 给这条描述出新版本：带它的 id；已有版本不变，多出下一个版本。
+  await space.getByRole('combobox', { name: '新建还是出新版本' }).click();
+  await space.getByRole('option', { name: 'research-claude 的新版本（现为 @1）' }).click();
+  await expect(space.getByText('将建成 research-claude @2')).toBeVisible();
   await space.getByLabel('Actor 描述参数 JSON').fill('{"model":"claude-sonnet"}');
-  await space.getByRole('button', { name: '新建', exact: true }).click();
+  await space.getByRole('button', { name: '出新版本', exact: true }).click();
   await expect(group).toContainText('2 个版本');
   // 新版本排在前面。
   await expect(group.locator('[data-ref]')).toHaveCount(2);
-  expect(await group.locator('[data-ref]').evaluateAll((rows) => rows.map((row) => row.dataset.ref))).toEqual(['research-claude@2', 'research-claude@1']);
+  expect(await group.locator('[data-ref]').evaluateAll((rows) => rows.map((row) => row.dataset.ref))).toEqual([`${id}@2`, `${id}@1`]);
 
   const creates = submits.filter((payload) => payload.msg_type === 'system.actor.description.create');
   expect(creates.map((payload) => payload.payload)).toEqual([
     { name: 'research-claude', class: 'claude', params: { model: 'claude-opus', api_key: '$required:研究服务的 key' }, description: '研究助手' },
-    { name: 'research-claude', class: 'claude', params: { model: 'claude-sonnet' } },
+    { id, name: 'research-claude', class: 'claude', params: { model: 'claude-sonnet' }, description: '研究助手' },
   ]);
 
   // 退役 @1：它显示已退役、不能再退役；@2 照旧可用。
-  const first = group.locator('[data-ref="research-claude@1"]');
+  const first = group.locator(`[data-ref="${id}@1"]`);
   await first.getByRole('button', { name: '退役', exact: true }).click();
-  await expect(space.getByRole('heading', { name: '退役 research-claude@1？' })).toBeVisible();
+  await expect(space.getByRole('heading', { name: '退役 research-claude @1？' })).toBeVisible();
   await space.getByRole('button', { name: '确认操作', exact: true }).click();
-  await expect(space.getByText('research-claude@1 已退役。')).toBeVisible();
+  await expect(space.getByText('research-claude @1 已退役。')).toBeVisible();
   await expect(first).toContainText('已退役');
   await expect(first).toHaveClass(/status-retired/);
   await expect(first.getByRole('button', { name: '退役' })).toHaveCount(0);
-  await expect(group.locator('[data-ref="research-claude@2"]')).toContainText('可用');
-  expect(submits.find((payload) => payload.msg_type === 'system.actor.description.retire')?.payload).toEqual({ name: 'research-claude', version: 1 });
+  await expect(group.locator(`[data-ref="${id}@2"]`)).toContainText('可用');
+  expect(submits.find((payload) => payload.msg_type === 'system.actor.description.retire')?.payload).toEqual({ id, version: 1 });
 
   const state = await mockState(request);
-  expect(state.actor_descriptions.filter((row) => row.name === 'research-claude').map((row) => [row.ref, row.status])).toEqual([
-    ['research-claude@1', 'retired'],
-    ['research-claude@2', 'present'],
+  expect(state.actor_descriptions.filter((row) => row.id === id).map((row) => [row.ref, row.status])).toEqual([
+    [`${id}@1`, 'retired'],
+    [`${id}@2`, 'present'],
   ]);
 
-  // 加成员时只能挑每个名字最新的、没退役的版本。
+  // 加成员时每条描述只能挑最新的、没退役的版本。
   await space.getByRole('button', { name: '关闭空间管理' }).click();
   await page.getByRole('button', { name: /c0\.project/ }).click();
   await expect(page.locator('main h1')).toHaveText('c0.project');
   const panel = await openChannelPanel(page, '成员');
   await panel.getByRole('combobox', { name: '选择参与者' }).click();
   const options = panel.getByRole('listbox', { name: '选择参与者选项' });
-  await expect(options.getByRole('option', { name: /^research-claude@2 · Actor 描述（class claude）/ })).toHaveCount(1);
-  await expect(options.getByRole('option', { name: /research-claude@1/ })).toHaveCount(0);
+  await expect(options.getByRole('option', { name: /^research-claude @2 · Actor 描述（class claude）/ })).toHaveCount(1);
+  await expect(options.getByRole('option', { name: /research-claude @1/ })).toHaveCount(0);
 });
 
 test('频道设置: status is read on demand, description and serving are saved, devices attach here', async ({ page, request }) => {

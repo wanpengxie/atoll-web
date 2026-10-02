@@ -47,7 +47,7 @@ test('TC-0191 F5-001/002 Channel Context 成员优先且添加参与者不改变
   await select.click();
   await expect(panel.getByRole('option', { name: /Alice · 用户/ })).toBeVisible();
   // Agent 和工具的候选是 Actor 描述（名字@版本），不再是声明。
-  await expect(panel.getByRole('option', { name: /analyst@1 · Actor 描述/ })).toBeVisible();
+  await expect(panel.getByRole('option', { name: /analyst @1 · Actor 描述/ })).toBeVisible();
   await expect(panel.getByRole('option', { name: '直接按 Class 新建…' })).toBeVisible();
   await expect(panel.getByRole('option', { name: /svcactor/ })).toHaveCount(0);
   const after = await submit.boundingBox();

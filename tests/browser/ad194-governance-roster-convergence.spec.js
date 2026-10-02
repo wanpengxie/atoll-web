@@ -31,7 +31,7 @@ test('AD-194 only exposes member ready after the canonical roster settles', asyn
 
   const select = panel.getByRole('combobox', { name: '选择参与者' });
   await select.click();
-  await panel.getByRole('option', { name: /analyst@1 · Actor 描述/ }).click();
+  await panel.getByRole('option', { name: /analyst @1 · Actor 描述/ }).click();
   await panel.getByRole('button', { name: '添加到频道' }).click();
 
   // The command receipt is not roster readiness. The ready fact must come
