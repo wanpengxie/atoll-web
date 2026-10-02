@@ -147,7 +147,8 @@ describe('channel access model (public useWireConnection port)', () => {
     harness.unmount();
   });
 
-  it('never hides c0 and activates the root owner without a membership projection', async () => {
+  // 9.7：c0 的描述里本来就有 root；是不是成员只看后端的成员关系，不按 owner 推。
+  it('never hides c0, and takes c0 membership from the membership facts, not from being its owner', async () => {
     const harness = await accessPort({
       profiles: [
         { id: 'c0', name: 'home', status: 'present', open: true, systemReserved: true, owner_principal: 'root' },
@@ -158,8 +159,10 @@ describe('channel access model (public useWireConnection port)', () => {
     });
     const access = harness.result.current.accessRef.current;
     expect(access.rows().map((row) => row.id)).toEqual(['c0', 'c0.project']);
-    expect(access.rows().find((row) => row.id === 'c0').access).toBe('member_active');
+    expect(access.rows().find((row) => row.id === 'c0').access).toBe('discoverable');
     expect(access.rows().find((row) => row.id === 'c0.project').access).toBe('discoverable');
+    access.membershipsObserved([{ channel_id: 'c0', actor_id: 'human:root:1', status: 'active' }]);
+    expect(access.rows().find((row) => row.id === 'c0').access).toBe('member_active');
     harness.unmount();
   });
 

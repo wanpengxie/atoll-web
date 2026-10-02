@@ -1112,6 +1112,7 @@ export function createMockServer({
                 return {
                   id: row.id, kind: row.kind, ...(row.name ? { name: row.name } : {}),
                   ...(row.config_id ? { config_id: row.config_id } : {}),
+                  ...(row.entry_id ? { entry_id: row.entry_id } : {}),
                   ...(row.generated ? { generated: row.generated } : {}),
                   ...(row.principal ? { principal: row.principal } : {}),
                   body: domain.memberSummary(channelId, row),
@@ -1224,6 +1225,11 @@ export function createMockServer({
             later(80, () => domain.retireChannel(targetChannelId));
             return;
           }
+          // 这个节点能跑的类：class、kind、placement。
+          case 'system.class.list':
+            assertClosedPayload(body, []);
+            complete(domain.classRows());
+            return;
           // Actor 描述按 id（版本挂在 id 下）；名字只显示。
           case 'system.actor.description.list':
             assertClosedPayload(body, ['id']);

@@ -70,7 +70,7 @@ describe('phase E stateful mock', () => {
 
   it('edits a channel description with channel.set and copies it with copy_from, leaving member configs behind', async () => {
     const h = await harness();
-    // c0 是平台搭的，没有描述可改。
+    // c0 的描述是内核写的，只读：改不了。
     const platform = await submitTerminal(h, 'system.channel.set', { channel_id: 'c0', description: 'Configured', serving: 1 });
     expect(platform.payload.body).toMatchObject({ status: 'failed', error_code: 'reserved' });
 
@@ -79,12 +79,12 @@ describe('phase E stateful mock', () => {
     const view = await submitTerminal(h, 'system.channel.get', { channel_id: 'c0.project' });
     expect(view.payload.body.value).toMatchObject({
       id: 'c0.project',
-      description: { revision: 2, body: { description: 'Configured', serving: 1, members: [{ name: 'project-agent', body: { class: 'codex' } }, { name: 'root', body: { human: true }, principal: 'root' }].map((entry) => expect.objectContaining({ ...entry, id: expect.any(String) })) } },
+      description: { revision: 2, body: { description: 'Configured', serving: 1, members: [{ name: 'svcactor', body: { actor: 'svcactor' } }, { name: 'project-agent', body: { class: 'codex' } }, { name: 'root', body: { human: true }, principal: 'root' }].map((entry) => expect.objectContaining({ ...entry, id: expect.any(String) })) } },
     });
     // channel.get 只答注册库里的事实：没有健康，没有构建。
     for (const gone of ['health', 'health_reason', 'build', 'members']) expect(view.payload.body.value).not.toHaveProperty(gone);
-    // 平台频道的 channel.get 没有描述。
-    expect((await submitTerminal(h, 'system.channel.get', { channel_id: 'c0' })).payload.body.value).not.toHaveProperty('description');
+    // c0 的 channel.get 照样给它的描述：只读，能读能复制。
+    expect((await submitTerminal(h, 'system.channel.get', { channel_id: 'c0' })).payload.body.value.description.body).toMatchObject({ readonly: true });
 
     // 源频道成员这一台的配置不跟着复制。
     const agentConfig = (await submitTerminal(h, 'system.member.list', {}, ['system'], 'c0.project')).payload.body.actors.find((row) => row.name === 'project-agent').config_id;
@@ -107,17 +107,17 @@ describe('phase E stateful mock', () => {
     expect(configs.map((row) => [row.channel_id, row.values])).toEqual(expect.arrayContaining([['c0.project', { effort: 'high' }], ['c0.copy', {}]]));
     expect(state.builds).toEqual(expect.arrayContaining([expect.objectContaining({ object: expect.objectContaining({ kind: 'member', channel: 'c0.copy', entry_id: entryId, name: 'project-agent' }), result: 'ok' })]));
 
-    // description 和 copy_from 最多给一个；平台频道没有描述可复制。
+    // description 和 copy_from 最多给一个；只读的描述（c0 的）也能复制。
     const both = await createChannel(h, { name: 'both', parent: 'c0', humans: [], description: {}, copy_from: 'c0.project' });
     expect(both.payload.body).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
-    const fromPlatform = await createChannel(h, { name: 'plat', parent: 'c0', humans: [], copy_from: 'c0' });
-    expect(fromPlatform.payload.body).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
+    const fromKernel = await createChannel(h, { name: 'plat', parent: 'c0', humans: [], copy_from: 'c0' });
+    expect(fromKernel.payload.body).toMatchObject({ status: 'completed' });
 
-    // 从本频道挑成员：新频道的描述里只有挑出来的条目。
+    // 从本频道挑成员：新频道的描述里是挑出来的条目，加上每个频道都有的 svcactor 和放进来的人。
     const picked = await createChannel(h, { name: 'picked', parent: 'c0', humans: ['root'], description: { description: '挑的', members: [{ name: 'helper', body: { actor: 'd-analyst@1' }, params: { effort: 'low' } }] } });
     expect(picked.payload.body.value).toEqual({ channel_id: 'c0.picked', revision: 1 });
     const pickedDescription = await submitTerminal(h, 'system.channel.description.get', { channel: 'c0.picked' });
-    expect(pickedDescription.payload.body.value.body).toMatchObject({ description: '挑的', serving: 0, members: [{ name: 'helper', body: { actor: 'd-analyst@1' }, params: { effort: 'low' } }, { name: 'root', body: { human: true }, principal: 'root' }] });
+    expect(pickedDescription.payload.body.value.body).toMatchObject({ description: '挑的', serving: 0, members: [{ name: 'helper', body: { actor: 'd-analyst@1' }, params: { effort: 'low' } }, { name: 'svcactor', body: { actor: 'svcactor' } }, { name: 'root', body: { human: true }, principal: 'root' }] });
     expect(pickedDescription.payload.body.value.body.members.every((row) => row.id)).toBe(true);
     h.wire.close(); await close(h.server);
   });

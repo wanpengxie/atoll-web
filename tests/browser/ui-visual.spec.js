@@ -301,7 +301,7 @@ test('UI-VIS-08 600px 成员菜单保留键盘选择与点击选择路径', asyn
   await panel.getByRole('option', { name: /steward @1 · Actor 描述/ }).click();
   await expect(select).toBeFocused();
   await expect(panel.getByRole('status')).toContainText('steward @1');
-  await expect(panel.locator('[data-participant-id="d-steward@1"]')).toBeVisible();
+  await expect(panel.locator('[data-participant-id="steward@1"]')).toBeVisible();
   await expect(panel.getByLabel('成员名')).toHaveValue('steward');
 });
 

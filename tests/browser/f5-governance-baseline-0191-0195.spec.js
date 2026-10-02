@@ -34,12 +34,14 @@ async function openChannelGovernance(page) {
 
 test('TC-0191 F5-001/002 Channel Context 成员优先且添加参与者不改变按钮布局', async ({ page, request }) => {
   await reset(request, 'actor-governance', 1501); await login(page);
-  // 人进频道是写频道描述；c0 由平台搭、没有描述，所以在 c0.project 里加人（BATCH3 §5）。
+  // 人进频道是写频道描述；c0 的描述是内核写的、只读，所以在 c0.project 里加人（BATCH3 §5）。
   await page.locator('.channel-rail, aside').first().getByText('c0.project', { exact: true }).click();
   await expect(page.locator('main h1')).toHaveText('c0.project');
   const panel = await openChannelGovernance(page);
   await expect(panel.getByRole('tab', { name: '成员' })).toHaveAttribute('aria-selected', 'true');
-  for (const name of ['system', 'registrar', 'svcactor']) await expect(panel.getByText(name, { exact: true })).toHaveCount(0);
+  // system 门不是成员；registrar 只在 c0；svcactor 是描述里的条目，照常列出。
+  for (const name of ['system', 'registrar']) await expect(panel.getByText(name, { exact: true })).toHaveCount(0);
+  await expect(panel.locator('.managed-actor').filter({ hasText: 'svcactor' })).toHaveCount(1);
 
   const select = panel.getByRole('combobox', { name: '选择参与者' });
   const submit = panel.getByRole('button', { name: '添加到频道' });
@@ -49,7 +51,8 @@ test('TC-0191 F5-001/002 Channel Context 成员优先且添加参与者不改变
   // Agent 和工具的候选是 Actor 描述（名字@版本），不再是声明。
   await expect(panel.getByRole('option', { name: /analyst @1 · Actor 描述/ })).toBeVisible();
   await expect(panel.getByRole('option', { name: '直接按 Class 新建…' })).toBeVisible();
-  await expect(panel.getByRole('option', { name: /svcactor/ })).toHaveCount(0);
+  // 内核的 actor 描述也是公开的描述，可以挑（比如给一个删了 svcactor 的频道再加一个）。
+  await expect(panel.getByRole('option', { name: /svcactor @1 · Actor 描述/ })).toBeVisible();
   const after = await submit.boundingBox();
   expect(after.y).toBe(before.y);
   await panel.getByRole('option', { name: /Alice · 用户/ }).click();

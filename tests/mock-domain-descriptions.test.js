@@ -40,16 +40,20 @@ describe('mock domain: descriptions, member config and builds', () => {
     expect(mock.activeMembership('root', 'c0.copy')).toMatchObject({ role: 'owner' });
   });
 
-  it('refuses create payloads that name both a description and copy_from, or copy a platform channel', () => {
+  it('refuses create payloads that name both a description and copy_from; copies a read-only description as a writable one', () => {
     const mock = domain();
     expect(() => mock.createChannel('c0', { name: 'x', description: {}, copy_from: 'c0.project' })).toThrow(expect.objectContaining({ code: 'invalid_args' }));
-    expect(() => mock.createChannel('c0', { name: 'y', copy_from: 'c0' })).toThrow(expect.objectContaining({ code: 'invalid_args' }));
     expect(() => mock.createChannel('c0', { name: 'z', copy_from: 'c0.nope' })).toThrow(expect.objectContaining({ code: 'not_found' }));
     expect(() => mock.createChannel('c0', { name: 'w', humans: ['stranger'] })).toThrow(expect.objectContaining({ code: 'not_found' }));
     expect(() => mock.createChannel('c0', { name: 'v', description: { members: [{ name: 'a', body: { class: 'codex', actor: 'x@1' } }] } })).toThrow(expect.objectContaining({ code: 'invalid_args' }));
     // 新频道的条目 id 由 registrar 铸：带了 id 就拒。
     expect(() => mock.createChannel('c0', { name: 'u', description: { members: [{ id: 'e-forged', name: 'a', body: { class: 'codex' } }] } })).toThrow(expect.objectContaining({ code: 'invalid_args' }));
     expect(mock.channel('c0.x')).toBeNull();
+    // c0 的描述（只读）能复制：新频道的描述是它自己的，可写。
+    mock.createChannel('c0', { name: 'y', copy_from: 'c0' });
+    expect(mock.channelDescription('c0.y').body.readonly).toBeUndefined();
+    expect(mock.channelDescription('c0.y').body.members.some((entry) => entry.body?.actor === 'steward')).toBe(true);
+    expect(() => mock.setChannel('c0.y', { description: 'mine' })).not.toThrow();
   });
 
   it('turns a failed build ok when member.config.set fills the placeholder', () => {
@@ -80,18 +84,16 @@ describe('mock domain: descriptions, member config and builds', () => {
     expect(mock.memberInfo('c0.project', writer)).toMatchObject({ member: false, missing: [{ key: 'service.api_key' }], build: { result: 'failed', state: 'stopped' } });
   });
 
-  it('refuses member.set and member.create in c0, whose members are fixed, but still edits their own config', () => {
-    // c0 has no description: the registry answers reserved, as it does for
-    // every description write on a channel the platform builds.
+  it('refuses writing c0\'s read-only description, reads it, and still edits its members\' own config', () => {
+    // c0 的描述由内核写、只读：描述写一律 reserved；能读；条目各自的配置照常能改。
     const mock = domain();
-    // c0 的 steward 是平台推导出来的成员（生成键），不在任何描述里，也没有配置。
-    const steward = mock.rosters.get('c0').find((row) => row.declared.generated === 'steward').declared.id;
+    const steward = mock.rosters.get('c0').find((row) => row.declared.name === 'steward').declared.id;
     expect(() => mock.setMemberEntry('c0', { member: steward, params: { model: 'x' } })).toThrow(expect.objectContaining({ code: 'reserved' }));
     expect(() => mock.createMemberEntry('c0', { name: 'helper', body: { class: 'codex' } })).toThrow(expect.objectContaining({ code: 'reserved' }));
     expect(() => mock.setChannel('c0', { description: 'x' })).toThrow(expect.objectContaining({ code: 'reserved' }));
-    expect(() => mock.channelDescription('c0')).toThrow(expect.objectContaining({ code: 'reserved' }));
-    expect(() => mock.setMemberConfig('c0', { member: steward, values: { effort: 'high' } })).toThrow(expect.objectContaining({ code: 'bad_payload' }));
-    expect(mock.memberInfo('c0', steward)).toMatchObject({ actor_id: steward, generated: 'steward' });
+    expect(mock.channelDescription('c0').body).toMatchObject({ readonly: true });
+    expect(mock.setMemberConfig('c0', { member: steward, values: { agent: 'claude' } })).toMatchObject({ values: { agent: 'claude', config: {} } });
+    expect(mock.memberInfo('c0', steward).generated).toBeUndefined();
   });
 
   it('changes a channel description only from that channel, or from c0 through its peer, like the registrar', () => {

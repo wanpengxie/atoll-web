@@ -342,12 +342,8 @@ function createSessionAccess({ principalId }) {
           next.existence = profile.status === 'retired' ? 'retired' : 'present';
           next.runtime = profile.open === false ? 'closed' : profile.open === true ? 'open' : 'unknown';
           next.unavailable = profile.open === true ? false : next.unavailable;
-          if (profile.id === ROOT_CHANNEL_ID && profile.owner_principal === principalId) {
-            next.relationship = 'member';
-            next.freshness = connected ? 'fresh' : 'stale';
-            next.unavailable = false;
-          }
-          else if (next.relationship === 'unknown') next.relationship = 'discoverable';
+          // 是不是成员只看后端的成员关系（c0 的描述里本来就有 root），不按 owner 推。
+          if (next.relationship === 'unknown') next.relationship = 'discoverable';
         });
       }
       if (complete) for (const state of states.values()) if (state.profile && !seen.has(state.channelId)) changeAuthority(state, (next) => {
@@ -375,8 +371,7 @@ function createSessionAccess({ principalId }) {
             next.unavailable = false;
             if (row.actor_id) next.selfActorId = row.actor_id;
           });
-        } else if (row.status === 'revoked'
-          && !(state.channelId === ROOT_CHANNEL_ID && state.profile?.owner_principal === principalId)) {
+        } else if (row.status === 'revoked') {
           changeAuthority(state, (next) => {
             next.relationship = 'denied';
             next.freshness = 'fresh';
@@ -386,7 +381,7 @@ function createSessionAccess({ principalId }) {
         }
       }
       if (complete) for (const state of states.values()) {
-        if (state.relationship === 'member' && !active.has(state.channelId) && !(state.channelId === ROOT_CHANNEL_ID && state.profile?.owner_principal === principalId)) {
+        if (state.relationship === 'member' && !active.has(state.channelId)) {
           changeAuthority(state, (next) => {
             next.relationship = 'denied';
             next.freshness = 'fresh';

@@ -65,9 +65,10 @@ describe('actor-config mock', () => {
     const row = (name) => rows.find((entry) => entry.declared.kind !== 'human' && entry.declared.name === name);
     const bound = (entry) => entry.actual.measures.find((measure) => measure.name === 'bound').value;
     expect(row('deepseek').declared).toMatchObject({ kind: 'agent', body: 'actor d-deepseek@1' });
-    // 描述里的成员带配置 id；运行时自己的成员带生成键。
+    // 描述里的成员带配置 id；svcactor 也是描述里的成员（运行时推导的只剩把手）。
     expect(row('deepseek').declared.config_id).toBeTruthy();
-    expect(rows.find((entry) => entry.declared.id === 'svcactor').declared.generated).toBe('service-door');
+    expect(rows.find((entry) => entry.declared.id === 'svcactor').declared.config_id).toBeTruthy();
+    expect(rows.find((entry) => entry.declared.id === 'svcactor').declared.generated).toBeUndefined();
     // 起不来的成员对外只是"没建好"：没有两层、没有卡住或重试中。
     expect(bound(row('deepseek'))).toBe(false);
     expect(bound(row('search-tool'))).toBe(false);
@@ -76,8 +77,8 @@ describe('actor-config mock', () => {
     for (const entry of rows) expect(entry.actual.measures.map((measure) => measure.name)).not.toEqual(expect.arrayContaining(['business']));
     // writer 还有占位没填：构建失败，不在名册上。
     expect(row('writer')).toBeUndefined();
-    // 运行时生成的成员 body 是 generated。
-    expect(rows.find((entry) => entry.declared.id === 'svcactor').declared.body).toBe('generated');
+    // svcactor 的 body 是它的条目：内核的 svcactor actor 描述。
+    expect(rows.find((entry) => entry.declared.id === 'svcactor').declared.body).toBe('actor svcactor@1');
 
     const list = await project(h, 'system.member.list', {});
     const deepseek = list.actors.find((entry) => entry.name === 'deepseek');
@@ -85,7 +86,8 @@ describe('actor-config mock', () => {
     expect(deepseek).not.toHaveProperty('standard');
     expect(deepseek).not.toHaveProperty('business');
     expect(list.actors.find((entry) => entry.name === 'project-agent')).toMatchObject({ present: true, body: 'class codex' });
-    expect(list.actors.find((entry) => entry.id === 'svcactor')).toMatchObject({ body: 'generated', generated: 'service-door' });
+    expect(list.actors.find((entry) => entry.id === 'svcactor')).toMatchObject({ body: 'actor svcactor@1', config_id: expect.any(String), entry_id: expect.any(String) });
+    expect(list.actors.find((entry) => entry.id === 'svcactor').generated).toBeUndefined();
     // 没建起来的 writer 只有配置 id，没有 actor id。
     const writerRow = list.actors.find((entry) => entry.name === 'writer');
     expect(writerRow).toMatchObject({ present: false, body: 'actor d-writer@1' });
@@ -120,8 +122,10 @@ describe('actor-config mock', () => {
     });
     expect(writer.build.reason).toContain('service.api_key is a placeholder still unfilled');
 
-    // 运行时生成的成员没有描述条目，带它的生成键。
-    expect(await project(h, 'system.member.get', { member: 'svcactor' })).toMatchObject({ status: 'completed', generated: 'service-door' });
+    // svcactor 是描述里的条目：member.get 给它的配置和条目，没有生成键。
+    const door = await project(h, 'system.member.get', { member: 'svcactor' });
+    expect(door).toMatchObject({ status: 'completed', config_id: expect.any(String), entry_id: expect.any(String) });
+    expect(door.generated).toBeUndefined();
     // 名字不是成员的地址。
     expect(await project(h, 'system.member.get', { member: 'writer' })).toMatchObject({ status: 'failed' });
     h.wire.close();
@@ -141,8 +145,8 @@ describe('actor-config mock', () => {
     expect(badBody).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
     expect(badBody.detail).toContain('id@version');
 
-    // 运行时自己的成员不在频道描述里，没有条目可改；名字也不是成员的地址。
-    expect(await project(h, 'system.member.set', { member: 'svcactor', params: {} })).toMatchObject({ status: 'failed', error_code: 'reserved' });
+    // svcactor 是描述里的条目，和别的成员一样有条目可读；名字不是成员的地址。
+    expect((await project(h, 'system.member.get', { member: 'svcactor' })).body).toEqual({ actor: 'svcactor' });
     expect(await project(h, 'system.member.set', { member: 'search-tool', params: {} })).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
 
     // 旧的 class/config 形状被拒绝。
@@ -162,17 +166,21 @@ describe('actor-config mock', () => {
     h.wire.close();
   });
 
-  it('refuses member.set and member.config.set on c0\'s steward, which the platform derives', async () => {
+  it('keeps c0\'s read-only description as it is, and writes the steward\'s own configuration', async () => {
     const h = await harness();
-    // c0 的 steward 是平台推导出来的成员（生成键 steward）：没有描述条目，也没有配置。
+    // c0 的描述是内核写的、只读：条目改不了、加不了；steward 是它的一个条目，它这一台的配置
+    // （跑哪个 agent）照常能改。
     const list = await system(h, 'system.member.list', {});
-    const steward = list.actors.find((entry) => entry.generated === 'steward');
+    const steward = list.actors.find((entry) => entry.name === 'steward');
     expect(steward).toBeTruthy();
+    expect(steward.generated).toBeUndefined();
     expect(await system(h, 'system.member.set', { member: steward.id, params: { model: 'x' } })).toMatchObject({ status: 'failed', error_code: 'reserved' });
     const created = await system(h, 'system.member.create', { name: 'helper', body: { class: 'codex' } });
     expect(created).toMatchObject({ status: 'failed', error_code: 'reserved' });
-    expect(await system(h, 'system.member.config.set', { member: steward.id, values: { effort: 'high' } })).toMatchObject({ status: 'failed', error_code: 'bad_payload' });
-    expect(await system(h, 'system.member.get', { member: steward.id })).toMatchObject({ actor_id: steward.id, generated: 'steward' });
+    expect(await system(h, 'system.member.config.set', { member: steward.id, values: { agent: 'claude' } })).toMatchObject({ status: 'completed' });
+    const got = await system(h, 'system.member.get', { member: steward.id });
+    expect(got.actor_id).toBe(steward.id);
+    expect(got.generated).toBeUndefined();
     h.wire.close();
   });
 

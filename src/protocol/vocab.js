@@ -56,7 +56,6 @@ export const TYPES = Object.freeze({
     memberDeleted: 'system.member.deleted',
     channelInbound: 'system.channel.inbound',
     memberUpdated: 'system.member.updated',
-    serviceUpdated: 'system.service.updated',
     // 构建记录：运行时把写下的描述和配置变成在跑的东西，每次尝试两条事件。
     buildStarted: 'system.build.started',
     buildFinished: 'system.build.finished',
@@ -71,12 +70,14 @@ export const TYPES = Object.freeze({
     remove: 'system.member.delete',
     restart: 'system.member.restart',
     // 改一个成员在频道描述里的条目：body（class 或 名字@版本）、params（RFC 7396
-    // 合并补丁）、requires。system actor 把它（和 create、delete、service.set）
-    // 转交 c0 的 registrar，由它写描述。
+    // 合并补丁）、requires。system actor 把它（和 create、delete）转交 c0 的
+    // registrar，由它写描述。
     set: 'system.member.set',
     // 这一台的配置（本频道库里）：desired_host 和 values（合并补丁）。
     configGet: 'system.member.config.get',
     configSet: 'system.member.config.set',
+    // 整份写这一台的配置，带"基于第几版"；坏了的配置这样修，旧版原样写回就是退回。
+    configWrite: 'system.member.config.write',
     // 破窗恢复：给频道内所有干活的成员（agent/tool）换一届任期。不删任何东西。
     restartAll: 'system.member.restart_all',
   }),
@@ -91,9 +92,10 @@ export const TYPES = Object.freeze({
     remove: 'system.channel.delete',
   }),
   channelDevice: Object.freeze({ list: 'system.channel.device.list' }),
-  // 频道描述（c0 里的那份文档）：成员条目、服务、说明、外挂设备。频道内的
-  // member.create/set/delete 和 channel.set、device.attach/detach 都是在改它。
-  channelDescription: Object.freeze({ get: 'system.channel.description.get' }),
+  // 频道描述（c0 里的那份文档）：成员条目、说明、外挂设备，一修订一行。频道内的
+  // member.create/set/delete 和 channel.set、device.attach/detach 都是在改它；
+  // write 整份写（带"基于第几个修订"）。对外的词是 svcactor 条目的配置，不在这里。
+  channelDescription: Object.freeze({ get: 'system.channel.description.get', write: 'system.channel.description.write' }),
   // Actor 描述：不可变的 名字@版本。新建同名 = 下一个版本；退役只让它不能再被新
   // 成员引用，已经引用它的成员照旧。
   actorDescription: Object.freeze({
@@ -138,23 +140,22 @@ export const DECISIONS = Object.freeze({ approve: 'approve', reject: 'reject' })
 // c0 的 registrar，所以客户端只需要认识这一个收件人。
 export const SYSTEM_ACTOR_ID = 'system';
 
-// 平台自己建的频道（platform/channelspec/wellknown.go）：空间根 c0、登录用的大厅，
-// 以及放所有人 home 频道的 c0.home。它们没有频道描述，所以不能被复制
-// （lagoon.SystemChannel）。
+// 系统保留的三个频道 id（platform/channelspec/wellknown.go）：空间根 c0、登录用的
+// 大厅、放所有人 home 频道的 c0.home。它们的描述由内核写、只读——性质从描述读
+// （readonly），这里的 id 只用来认它们（排序、导航里不列大厅和 c0.home）。
 export const ROOT_CHANNEL_ID = 'c0';
 export const LOBBY_CHANNEL_ID = 'c0.lobby';
 export const HOME_PARENT_CHANNEL_ID = 'c0.home';
 
-export function isPlatformChannel(id) {
-  return id === ROOT_CHANNEL_ID || id === LOBBY_CHANNEL_ID || id === HOME_PARENT_CHANNEL_ID;
-}
+// agent 类：配置里的 agent 说它跑哪个 agent 类（c0 的 steward 就是它）。
+export const AGENT_CLASS = 'agent';
 
 // 节点自己的设备：除大厅外每个频道都有它，文件和成员默认都在它上面，不需要
 // 任何设置。
 export const LOCAL_DEVICE_ID = 'local-device';
 
-// member.list / OBS 名册里 body 的这个值说：成员是运行时自己生成的（服务门、
-// peer、handle），没有描述条目。
+// member.list / OBS 名册里 body 的这个值说：成员是运行时自己生成的——只有把手
+// （另一个频道的座位的另一头），没有描述条目。
 export const GENERATED_BODY = 'generated';
 
 // 叙事的判据是 visibility，不是词的前缀：system.* 里既有 visibility=system 的
