@@ -726,6 +726,7 @@ export class MockDomain {
   // system.member.set {member}：member 是 actor id 或配置 id，频道门沿链换成条目 id。
   // body 整个换、params 合并补丁、requires 整个换（null 清空）。
   setMemberEntry(channelId, { member, body, params, requires } = {}) {
+    if (this.memberRow(channelId, member)?.declared.generated) throw operationError('reserved', 'the runtime keeps this member itself; it is not in the channel description');
     const target = this.entryOfMember(channelId, member);
     if (!target) throw operationError('invalid_args', `${JSON.stringify(member)} is neither an actor id nor a configuration id of a member the channel description lists; the members the runtime keeps itself (the service door, peers, handles) are not in it`);
     let result = null;
@@ -743,7 +744,7 @@ export class MockDomain {
   // system.member.delete {member}：人就是请出去；其余是条目离开描述，这一台的配置一起删。
   deleteMember(channelId, member) {
     const row = this.memberRow(channelId, member);
-    if (row?.declared.generated || row?.declared.body === GENERATED_BODY) throw operationError('protected_actor', 'the runtime keeps this member itself; it is not in the channel description');
+    if (row?.declared.generated || row?.declared.body === GENERATED_BODY) throw operationError('reserved', 'the runtime keeps this member itself; it is not in the channel description');
     const target = this.entryOfMember(channelId, member);
     if (!target) throw operationError('invalid_args', `${JSON.stringify(member)} is neither an actor id nor a configuration id of a member the channel description lists`);
     const channel = this.channel(channelId);
@@ -754,25 +755,34 @@ export class MockDomain {
     return { written: true, description_revision: revision };
   }
 
-  memberConfig(channelId, member) {
+  // 生成的成员没有配置；不是本频道成员 id 的东西（包括名字）找不到。
+  configTarget(channelId, member) {
+    if (this.memberRow(channelId, member)?.declared.generated) throw operationError('bad_payload', 'this member is one the runtime generates; it has no configuration');
     const entry = this.entryOfMember(channelId, member);
-    if (!entry) throw operationError('invalid_args', `${JSON.stringify(member)} has no configuration in this channel: the runtime keeps it itself, or it is not a member`);
+    if (!entry) throw operationError('not_found', `${JSON.stringify(member)} is neither an actor id nor a configuration id of this channel; see system.member.list`);
+    return entry;
+  }
+
+  memberConfig(channelId, member) {
+    const entry = this.configTarget(channelId, member);
     const config = this.ensureConfig(channelId, entry.id);
-    return { config_id: config.config_id, entry_id: entry.id, desired_host: config.desired_host || '', values: structuredClone(config.values || {}), revision: config.revision || 0 };
+    const row = (this.rosters.get(channelId) || []).find((candidate) => candidate.declared.config_id === config.config_id);
+    return { config_id: config.config_id, entry_id: entry.id, ...(row ? { member: row.declared.id } : {}), desired_host: config.desired_host || '', values: structuredClone(config.values || {}), revision: config.revision || 0 };
   }
 
   // system.member.config.set {member}：这一台的设备和 values 的合并补丁。值本身不检查，
   // 构建会说它行不行。
   setMemberConfig(channelId, { member, desired_host: desiredHost, values } = {}) {
-    const entry = this.entryOfMember(channelId, member);
-    if (!entry) throw operationError('invalid_args', `${JSON.stringify(member)} has no configuration in this channel: the runtime keeps it itself, or it is not a member; see system.member.list`);
+    const entry = this.configTarget(channelId, member);
+    if (entry.body?.human === true) throw operationError('bad_payload', 'a person has no configuration to set');
     if (values != null && !plainObject(values)) throw operationError('invalid_args', 'values must be a JSON object (a merge patch)');
     const current = this.ensureConfig(channelId, entry.id);
     current.desired_host = desiredHost === undefined ? current.desired_host : String(desiredHost || '').trim();
     current.values = values ? applyMergePatch(current.values, values) : structuredClone(current.values);
     current.revision += 1;
     this.queueBuild(channelId, entry.id);
-    return { config_id: current.config_id, entry_id: entry.id, desired_host: current.desired_host, values: structuredClone(current.values), revision: current.revision };
+    const row = (this.rosters.get(channelId) || []).find((candidate) => candidate.declared.config_id === current.config_id);
+    return { config_id: current.config_id, entry_id: entry.id, ...(row ? { member: row.declared.id } : {}), desired_host: current.desired_host, values: structuredClone(current.values), revision: current.revision, written: true };
   }
 
   now() {
@@ -931,7 +941,15 @@ export class MockDomain {
 
   restartActor(channelId, actorId) {
     const row = (this.rosters.get(channelId) || []).find((entry) => entry.declared.id === actorId);
-    if (!row) throw new TypeError('actor does not exist');
+    if (!row) {
+      // 还没有在场 actor 的成员按配置 id 重启 = 再建一次。
+      const config = this.memberConfigs.get(String(actorId || ''));
+      if (config?.channel_id === channelId) {
+        this.queueBuild(channelId, config.entry_id);
+        return { config_id: config.config_id, building: true };
+      }
+      throw new TypeError('actor does not exist');
+    }
     if (row.declared.body === GENERATED_BODY) {
       const error = new TypeError('protected system actor cannot be restarted');
       error.code = 'protected_actor';

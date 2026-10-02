@@ -142,7 +142,7 @@ describe('actor-config mock', () => {
     expect(badBody.detail).toContain('id@version');
 
     // 运行时自己的成员不在频道描述里，没有条目可改；名字也不是成员的地址。
-    expect(await project(h, 'system.member.set', { member: 'svcactor', params: {} })).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
+    expect(await project(h, 'system.member.set', { member: 'svcactor', params: {} })).toMatchObject({ status: 'failed', error_code: 'reserved' });
     expect(await project(h, 'system.member.set', { member: 'search-tool', params: {} })).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
 
     // 旧的 class/config 形状被拒绝。
@@ -168,10 +168,10 @@ describe('actor-config mock', () => {
     const list = await system(h, 'system.member.list', {});
     const steward = list.actors.find((entry) => entry.generated === 'steward');
     expect(steward).toBeTruthy();
-    expect(await system(h, 'system.member.set', { member: steward.id, params: { model: 'x' } })).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
+    expect(await system(h, 'system.member.set', { member: steward.id, params: { model: 'x' } })).toMatchObject({ status: 'failed', error_code: 'reserved' });
     const created = await system(h, 'system.member.create', { name: 'helper', body: { class: 'codex' } });
     expect(created).toMatchObject({ status: 'failed', error_code: 'reserved' });
-    expect(await system(h, 'system.member.config.set', { member: steward.id, values: { effort: 'high' } })).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
+    expect(await system(h, 'system.member.config.set', { member: steward.id, values: { effort: 'high' } })).toMatchObject({ status: 'failed', error_code: 'bad_payload' });
     expect(await system(h, 'system.member.get', { member: steward.id })).toMatchObject({ actor_id: steward.id, generated: 'steward' });
     h.wire.close();
   });
@@ -212,8 +212,8 @@ describe('actor-config mock', () => {
     expect(moved.build.reason).toContain('desired_host device-x');
 
     // 不是成员 id 的东西（包括名字）没有配置可写。
-    expect(await project(h, 'system.member.config.set', { member: 'nobody', values: { a: 1 } })).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
-    expect(await project(h, 'system.member.config.set', { member: 'writer', values: { a: 1 } })).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
+    expect(await project(h, 'system.member.config.set', { member: 'nobody', values: { a: 1 } })).toMatchObject({ status: 'failed', error_code: 'not_found' });
+    expect(await project(h, 'system.member.config.set', { member: 'writer', values: { a: 1 } })).toMatchObject({ status: 'failed', error_code: 'not_found' });
     h.wire.close();
   });
 

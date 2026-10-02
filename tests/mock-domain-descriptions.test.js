@@ -86,11 +86,11 @@ describe('mock domain: descriptions, member config and builds', () => {
     const mock = domain();
     // c0 的 steward 是平台推导出来的成员（生成键），不在任何描述里，也没有配置。
     const steward = mock.rosters.get('c0').find((row) => row.declared.generated === 'steward').declared.id;
-    expect(() => mock.setMemberEntry('c0', { member: steward, params: { model: 'x' } })).toThrow(expect.objectContaining({ code: 'invalid_args' }));
+    expect(() => mock.setMemberEntry('c0', { member: steward, params: { model: 'x' } })).toThrow(expect.objectContaining({ code: 'reserved' }));
     expect(() => mock.createMemberEntry('c0', { name: 'helper', body: { class: 'codex' } })).toThrow(expect.objectContaining({ code: 'reserved' }));
     expect(() => mock.setChannel('c0', { description: 'x' })).toThrow(expect.objectContaining({ code: 'reserved' }));
     expect(() => mock.channelDescription('c0')).toThrow(expect.objectContaining({ code: 'reserved' }));
-    expect(() => mock.setMemberConfig('c0', { member: steward, values: { effort: 'high' } })).toThrow(expect.objectContaining({ code: 'invalid_args' }));
+    expect(() => mock.setMemberConfig('c0', { member: steward, values: { effort: 'high' } })).toThrow(expect.objectContaining({ code: 'bad_payload' }));
     expect(mock.memberInfo('c0', steward)).toMatchObject({ actor_id: steward, generated: 'steward' });
   });
 
