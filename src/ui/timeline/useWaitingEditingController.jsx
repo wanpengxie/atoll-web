@@ -6,6 +6,7 @@ import { isControlOnlyBody } from '../../model/conversation-visibility.js';
 import { LIFECYCLE, memberRestarts, requestLifecycle } from '../../model/request-lifecycle.js';
 import { textOf } from './TimelineRowRenderer.jsx';
 import { newId } from '../../util/id.js';
+import { runningBackgroundTasks } from '../../model/background-tasks.js';
 
 const WAITING_MESSAGE_TYPES = new Set([TYPES.agentAsk, TYPES.agentQueue]);
 const AGENT_CONTENT_TYPES = new Set([
@@ -357,6 +358,19 @@ function latestStage(turn) {
   if (status === 'processing') return 'processing';
   if (['received', 'queued', 'deferred'].includes(status)) return 'queued';
   return '';
+}
+
+// Background work an agent set off and that has not reported its end. Editing
+// a message the agent is working on interrupts that turn, and an interrupted
+// Claude session stops every one of these with it.
+export { runningBackgroundTasks };
+
+function backgroundTaskWarning(tasks) {
+  const agents = tasks.filter((task) => task.kind === 'agent').length;
+  const commands = tasks.length - agents;
+  const parts = [agents && `${agents} 个子 Agent`, commands && `${commands} 个后台命令`].filter(Boolean).join('、');
+  const names = tasks.slice(0, 3).map((task) => `· ${task.title || '（未命名任务）'}`).join('\n');
+  return `这个 Agent 还有 ${parts} 在后台运行：\n${names}${tasks.length > 3 ? '\n…' : ''}\n\n编辑会打断它正在处理的这一轮，后台的这些任务也会一起被停掉。确定要编辑吗？`;
 }
 
 function timelineTurn(state, requestId) {
@@ -887,6 +901,11 @@ export function useWaitingEditingController({
     if (!exactMessageText(turn)) {
       setEditNotice('这条消息没有可编辑的正文');
       return;
+    }
+    // Only editing a turn in progress interrupts; a queued message is not running yet.
+    if (latestStage(turn) === 'processing') {
+      const running = runningBackgroundTasks(state, id);
+      if (running.length && typeof globalThis.confirm === 'function' && !globalThis.confirm(backgroundTaskWarning(running))) return;
     }
     const draft = {
       sessionId: newId(),

@@ -200,4 +200,8 @@
 .reading-history-edge-tab:hover, .reading-history-edge-tab:focus-visible, .reading-history-edge-tab.active { background: var(--surface-muted); color: var(--text); }
 .starred-edge-tab { position: absolute; z-index: 45; right: 0; top: calc(50% + 50px); display: grid; min-height: 64px; place-content: center; padding: 8px 5px; border: 1px solid var(--line-control); border-right: 0; border-radius: 8px 0 0 8px; background: var(--raised); box-shadow: var(--shadow-popover); color: var(--text-muted); cursor: pointer; font-size: 10px; letter-spacing: .08em; writing-mode: vertical-rl; }
 .starred-edge-tab:hover, .starred-edge-tab:focus-visible { background: var(--surface-muted); color: var(--text); }
+.running-edge-tab { position: absolute; z-index: 45; right: 0; top: calc(50% + 124px); display: flex; min-height: 72px; flex-direction: row; align-items: center; justify-content: center; gap: 3px; padding: 8px 5px; border: 1px solid var(--line-control); border-right: 0; border-radius: 8px 0 0 8px; background: var(--raised); box-shadow: var(--shadow-popover); color: var(--text-muted); cursor: pointer; font-size: 10px; letter-spacing: .08em; writing-mode: vertical-rl; }
+.running-edge-tab:hover, .running-edge-tab:focus-visible { background: var(--surface-muted); color: var(--text); }
+/* The count reads on under the label, in the same narrow column. */
+.running-edge-tab b { color: var(--warning); font-size: 9px; font-weight: 700; letter-spacing: 0; text-orientation: upright; }
 body:has(.pane-resizer.is-dragging) { cursor: col-resize; user-select: none; }

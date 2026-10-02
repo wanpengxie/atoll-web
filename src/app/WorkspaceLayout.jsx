@@ -387,6 +387,8 @@ export function WorkspaceLayout({
   const readingHistoryAvailable = typeof navigation.openReadingHistory === 'function'
     && canReadChannel(channel);
   const starredAvailable = typeof navigation.openStarred === 'function' && canReadChannel(channel);
+  const runningAvailable = typeof navigation.openRunning === 'function' && canReadChannel(channel);
+  const runningCount = Number(navigation.runningCount || 0);
   const mobileChannelToggleRef = useRef(null);
   const mobileRailRef = useRef(null);
   const inactiveMobileDialogRef = useRef(null);
@@ -739,6 +741,7 @@ export function WorkspaceLayout({
               <button type="button" role="menuitem" className="mobile-channel-menu-action" onClick={() => runChannelMenuAction(toggleFiles)}>{filesOpen ? '关闭文件' : '打开文件'}</button>
               {readingHistoryAvailable && <button type="button" role="menuitem" className="mobile-channel-menu-action" onClick={() => runChannelMenuAction(navigation.openReadingHistory)}>最近阅读</button>}
               {starredAvailable && <button type="button" role="menuitem" className="mobile-channel-menu-action" onClick={() => runChannelMenuAction(navigation.openStarred)}>星标消息</button>}
+              {runningAvailable && <button type="button" role="menuitem" className="mobile-channel-menu-action" onClick={() => runChannelMenuAction(navigation.openRunning)}>后台任务{runningCount ? `（${runningCount}）` : ''}</button>}
               {navigation.openTerminal && <button type="button" role="menuitem" className="mobile-channel-menu-action" disabled={!channel || terminalTransitionPending} onClick={() => runChannelMenuAction(toggleTerminal)}>{navigation.terminalVisible ? '关闭终端' : '打开终端'}</button>}
               {navigation.channelRestart && <button
                 type="button"
@@ -786,6 +789,13 @@ export function WorkspaceLayout({
             title="星标"
             onClick={navigation.openStarred}
           >★ 星标</button>}
+          {runningAvailable && <button
+            type="button"
+            className={`running-edge-tab${runningCount ? ' has-running' : ''}`}
+            aria-label={runningCount ? `打开运行中的后台任务，${runningCount} 个` : '打开运行中的后台任务'}
+            title="运行中的子 Agent 和后台命令"
+            onClick={navigation.openRunning}
+          >运行中{runningCount ? <b>{runningCount}</b> : null}</button>}
         </div>
         {features}
         {preview && <div className="preview-view">{preview}</div>}

@@ -32,6 +32,7 @@ export const WORKSPACE_FEATURE_PANEL = Object.freeze({
   activity: 'activity',
   readingHistory: 'reading-history',
   starred: 'starred',
+  running: 'running',
   resources: 'resources',
 });
 
@@ -283,6 +284,45 @@ function StarredFeature({ channel = null, actorNames = null, onClose }) {
   </SidePanel>;
 }
 
+function runningFor(startedAt) {
+  if (!startedAt) return '';
+  const minutes = Math.max(0, Math.floor((Date.now() - Number(startedAt)) / 60_000));
+  if (minutes < 1) return '刚开始';
+  if (minutes < 60) return `已运行 ${minutes} 分钟`;
+  return `已运行 ${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分钟`;
+}
+
+// Sub agents and background commands that have not reported their end, newest
+// first. A click goes back to the message the work was set off for.
+function RunningFeature({ channel = null, tasks = [], actorNames = null, onClose }) {
+  const channelId = String(channel?.id || '');
+  const [missing, setMissing] = useState('');
+  const open = (task) => {
+    if (!task.requestId || !requestMessageJump(channelId, task.requestId)) {
+      setMissing(task.key);
+      return;
+    }
+    setMissing('');
+    if (isMobileProfile()) onClose?.();
+  };
+  return <SidePanel
+    className="recent-files-context running-context"
+    ariaLabel="运行中的后台任务"
+    title={`运行中${tasks.length ? ` · ${tasks.length}` : ''}`}
+    closeLabel="关闭运行中的后台任务"
+    onClose={onClose}
+  >
+    {tasks.length === 0
+      ? <div className="recent-files-empty"><Clock3 size={24} /><strong>没有正在运行的后台任务</strong><p>Agent 派出的子 Agent 和后台命令在运行时会出现在这里，点一下回到派出它的消息。</p></div>
+      : <div className="starred-list">{tasks.map((task) => <button type="button" className="starred-open running-item" key={task.key} onClick={() => open(task)}>
+        <span className="starred-meta"><strong>{task.kind === 'agent' ? '子 Agent' : task.kind === 'shell' ? '后台命令' : '后台任务'}</strong><small>{starSender(task.sender, actorNames)} · {runningFor(task.startedAt)}</small></span>
+        <span className="running-title">{task.title || '（未命名任务）'}</span>
+        {task.lastText && <span className="starred-text">{task.lastText}</span>}
+        {missing === task.key && <span className="starred-missing" role="status">{task.requestId ? '派出它的消息还没加载到页面上，往上翻到它附近后再点。' : '这个任务没有记下是哪条消息派出的。'}</span>}
+      </button>)}</div>}
+  </SidePanel>;
+}
+
 const RESOURCE_TABS = Object.freeze([
   { id: 'files', label: '文件' },
   { id: 'kv', label: 'KV' },
@@ -470,7 +510,7 @@ function ContextHost({ type, focusKey, onClose, paneLayout = null, returnFocusRe
   </div>;
 }
 
-export function WorkspaceRightPanel({ panel, actorNames = null, channel, files = {}, tasks = {}, roster = {}, governance = {}, automation = {}, activity = {}, turn = null, onClose, layout = null, returnFocusRef = null }) {
+export function WorkspaceRightPanel({ panel, actorNames = null, running = [], channel, files = {}, tasks = {}, roster = {}, governance = {}, automation = {}, activity = {}, turn = null, onClose, layout = null, returnFocusRef = null }) {
   const kind = typeof panel === 'string' ? panel : panel?.kind || panel?.value || '';
   let content = null;
   let dismiss = onClose;
@@ -509,6 +549,7 @@ export function WorkspaceRightPanel({ panel, actorNames = null, channel, files =
   else if (kind === WORKSPACE_FEATURE_PANEL.activity) content = <ActivityFeature port={activity} onClose={onClose} />;
   else if (kind === WORKSPACE_FEATURE_PANEL.readingHistory) content = <ReadingHistoryFeature files={files} onClose={onClose} />;
   else if (kind === WORKSPACE_FEATURE_PANEL.starred) content = <StarredFeature channel={channel} actorNames={actorNames} onClose={onClose} />;
+  else if (kind === WORKSPACE_FEATURE_PANEL.running) content = <RunningFeature channel={channel} tasks={running} actorNames={actorNames} onClose={onClose} />;
   else if (kind === WORKSPACE_FEATURE_PANEL.resources) content = <ChannelResourcesFeature channel={channel} files={files} onClose={onClose} />;
   if (!content) return null;
   // A new-channel request is an app-level modal, not a context side panel.

@@ -20,6 +20,7 @@ import { useAttachmentTransactions } from './hooks/useAttachmentTransactions.js'
 import { useUiWords } from './hooks/useUiWords.js';
 import { perfText, registerPerfContextProvider } from '../model/perf-trace.js';
 import { setStarPrincipal } from '../model/starred-messages.js';
+import { runningBackgroundTasks } from '../model/background-tasks.js';
 import { createChannelFeedRuntime } from '../model/channel-feed-runtime.js';
 import { createViewSessionStore } from '../model/view-session.js';
 import { HISTORY_INTENT } from '../model/history-demand.js';
@@ -578,6 +579,16 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const channelRoster = memberVisible
     ? roster.rosters.get(navigation.activeChannelId) || EMPTY_ARRAY
     : EMPTY_ARRAY;
+  // Sub agents and background commands still running in this channel, for
+  // the right-edge running drawer. Background work lives in its agent's
+  // process: a restart gives the agent a new actor id and takes that work with
+  // it, so only tasks of the members live now are running.
+  const runningTasks = useMemo(() => {
+    if (!contentVisible) return EMPTY_ARRAY;
+    const live = new Set(channelRoster.map((row) => row.id));
+    return runningBackgroundTasks(feed.stateFor(navigation.activeChannelId))
+      .filter((task) => live.has(task.sender));
+  }, [channelRoster, contentVisible, feed, navigation.activeChannelId]);
   const selfId = memberVisible ? navigation.selfFor(navigation.activeChannelId) : '';
   const filterFallbackActorId = filterAgentSelection.channelId === navigation.activeChannelId
     && filterAgentSelection.actorId
@@ -1965,6 +1976,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const rightPanel = panel && (panelKind !== 'task' || selectedTaskItem) ? <WorkspaceRightPanel
     panel={panel}
     actorNames={actorNames}
+    running={runningTasks}
     channel={navigation.activeChannel}
     files={filesPort}
     tasks={typeof panel === 'object' && panel.kind === 'task'
@@ -2086,6 +2098,8 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       update: wire.update,
       openReadingHistory: contentVisible ? () => setPanel('reading-history') : undefined,
       openStarred: contentVisible ? () => setPanel('starred') : undefined,
+      openRunning: contentVisible ? () => setPanel('running') : undefined,
+      runningCount: runningTasks.length,
       openResources,
       channelRestart: {
         available: false,
