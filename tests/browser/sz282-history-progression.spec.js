@@ -38,14 +38,15 @@ test('SZ-282 history progression keeps pending feedback and stable unique visibl
   expect(initialRows.length).toBeGreaterThan(0);
   await page.evaluate(() => window.__ATOLL_DIAGNOSTICS__.clear());
   await viewport.hover();
-  await page.mouse.wheel(0, -5_000);
 
-  // The delayed page keeps the public demand in pending while the existing
-  // tail remains readable. The selector is a UI contract, not a scheduler
-  // event or private history field.
-  await expect.poll(() => page.locator('.timeline-history-demand[data-phase="pending"]').count(), {
-    timeout: 10_000,
-  }).toBeGreaterThan(0);
+  // Older history is fetched ahead of the reader without a word; the pending
+  // feedback appears once the reader has scrolled to the top and is waiting
+  // on the delayed page. The existing tail stays readable meanwhile. The
+  // selector is a UI contract, not a scheduler event or private history field.
+  await expect.poll(async () => {
+    await page.mouse.wheel(0, -5_000);
+    return page.locator('.timeline-history-demand[data-phase="pending"]').count();
+  }, { timeout: 20_000 }).toBeGreaterThan(0);
   const pendingRows = await visibleRows(page);
   expect(pendingRows.length).toBeGreaterThan(0);
 

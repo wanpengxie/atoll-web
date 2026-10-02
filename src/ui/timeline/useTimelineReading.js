@@ -48,6 +48,7 @@ const IDLE_DEMAND = Object.freeze({ phase: 'idle', error: '' });
 const SEEN_SETTLE_MS = 200;
 // The list's own "at the bottom" tolerance (TimelineList atBottomThreshold).
 export const AT_BOTTOM_THRESHOLD_PX = 24;
+const AT_TOP_THRESHOLD_PX = 8;
 // A reopened browsing position has landed well within this.
 const RESTORE_SETTLE_MS = 1_000;
 
@@ -160,6 +161,11 @@ export function useTimelineReading({
   const [demand, setDemandState] = useState(IDLE_DEMAND);
   const [documentVisible, setDocumentVisible] = useState(pageVisible);
   const [farFromBottom, setFarFromBottomState] = useState(false);
+  // The reader is at the top of what the list holds. Older history is fetched
+  // well before that, in the background; only a reader who has run out of rows
+  // and is waiting at the top is told it is loading.
+  const [atTop, setAtTopState] = useState(false);
+  const atTopRef = useRef(false);
   const farRef = useRef(false);
   const modeRef = useRef(READING_MODE.following);
   const atBottomRef = useRef(true);
@@ -365,6 +371,13 @@ export function useTimelineReading({
         scrollerCleanupRef.current = null;
         if (!node) return;
         lastTopRef.current = node.scrollTop;
+        const noteTop = (top) => {
+          const next = top <= AT_TOP_THRESHOLD_PX;
+          if (next === atTopRef.current) return;
+          atTopRef.current = next;
+          setAtTopState(next);
+        };
+        noteTop(node.scrollTop);
         const onScroll = () => {
           const top = node.scrollTop;
           if (top < lastTopRef.current - 1 && Date.now() - inputAtRef.current < INPUT_WINDOW_MS) {
@@ -377,6 +390,7 @@ export function useTimelineReading({
             }
           }
           lastTopRef.current = top;
+          noteTop(top);
           // Browsing remembers the row at the top, once per frame.
           if (modeRef.current === READING_MODE.browsing && !anchorFrameRef.current) {
             anchorFrameRef.current = globalThis.requestAnimationFrame(() => {
@@ -575,6 +589,8 @@ export function useTimelineReading({
       : null;
     farRef.current = false;
     setFarFromBottomState(false);
+    atTopRef.current = false;
+    setAtTopState(false);
     rangeRef.current = { known: false, start: 0, end: 0 };
     const opened = rowsRef.current;
     followedTailRef.current = opened.length ? String(opened[opened.length - 1]?.id || '') : '';
@@ -729,6 +745,7 @@ export function useTimelineReading({
     mode,
     session: Object.freeze({ mode }),
     atBottom,
+    atTop,
     unseen,
     unseenNotice: unseen,
     // New arrivals take the slot first; otherwise a reader far up the
@@ -749,7 +766,7 @@ export function useTimelineReading({
     retryHistoryDemand,
     historyBoundary,
   }), [
-    activationID, atBottom, availability, demand, farFromBottom, historyBoundary, historyStatus.error,
+    activationID, atBottom, atTop, availability, demand, farFromBottom, historyBoundary, historyStatus.error,
     holdPointed, jumpToLatest, jumpToRow, list, mode, opening, retryHistoryDemand, toLatest, unseen,
   ]);
 }
