@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { actorDisplayName } from '../../../model/actor-display.js';
-import { actorDescriptionRef, actorMemberName, isVisibleActor } from '../../../model/actor-visibility.js';
+import { actorDescriptionRef, isVisibleActor } from '../../../model/actor-visibility.js';
 import { isPlatformChannel, LOCAL_DEVICE_ID, ROOT_CHANNEL_ID } from '../../../protocol/vocab.js';
 import { TERMINAL_RESULT_UNAVAILABLE } from '../../../model/terminal-result.js';
 import { rosterBodyLabel } from '../../../model/member-config.js';
@@ -246,7 +246,7 @@ function ChannelMembers({ channel, port }) {
   const submittedMemberPresent = Boolean(submittedMember && roster.some((row) => (
     row.id === submittedMember.id
       || (submittedMember.kind === 'principal' && row.principal === submittedMember.id)
-      || (submittedMember.kind !== 'principal' && actorMemberName(row.id) === submittedMember.name)
+      || (submittedMember.kind !== 'principal' && Boolean(submittedMember.configId) && row.configId === submittedMember.configId)
   )));
   const memberReady = Boolean(
     submittedMember
@@ -260,7 +260,7 @@ function ChannelMembers({ channel, port }) {
     .map((row) => ({ value: `principal:${row.id}`, label: `${row.display_name || row.email || row.id} · 用户`, row, kind: 'principal', participantKind: 'human' }))
     .sort(compareParticipantCandidates);
   const descriptionCandidates = (port.actorDescriptions || [])
-    .map((row) => ({ value: `description:${actorDescriptionRef(row)}`, label: `${actorDescriptionRef(row)} · Actor 描述（class ${row.class || '?'}）`, row: { ...row, id: actorDescriptionRef(row) }, kind: 'description', participantKind: 'actor' }))
+    .map((row) => ({ value: `description:${actorDescriptionRef(row)}`, label: `${row.name || row.id} @${row.version || '?'} · Actor 描述（class ${row.class || '?'}）`, row: { ...row, ref: actorDescriptionRef(row) }, kind: 'description', participantKind: 'actor' }))
     .sort(compareParticipantCandidates);
   const candidates = [
     ...principalCandidates,
@@ -268,12 +268,10 @@ function ChannelMembers({ channel, port }) {
     { value: 'class:', label: '直接按 Class 新建…', row: { id: '' }, kind: 'class', participantKind: 'actor' },
   ];
   const selected = candidates.find((row) => row.value === candidate);
+  // 名字只是显示，可以留空、可以和别的成员重名；成员靠配置 id 认。
   const needsName = selected && selected.kind !== 'principal';
   const trimmedName = memberName.trim();
-  const nameError = needsName && trimmedName && !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(trimmedName)
-    ? '成员名须为 1–63 位小写字母、数字或连字符' : '';
-  const ready = selected && (!needsName || (trimmedName && !nameError))
-    && (selected.kind !== 'class' || className.trim());
+  const ready = selected && (selected.kind !== 'class' || className.trim());
   const restartCommand = commandPort.restartActor || commandPort.restart;
   const bindCommand = commandPort.bindActor || commandPort.bind;
   const unbindCommand = commandPort.unbindActor || commandPort.unbind;
@@ -295,7 +293,7 @@ function ChannelMembers({ channel, port }) {
     if (next?.kind === 'description') setMemberName(String(next.row.name || ''));
     else if (next?.kind === 'class') setMemberName('');
   };
-  const introduce = (event) => {
+  const introduce = async (event) => {
     event.preventDefault();
     if (!ready) return;
     if (selected.kind === 'principal') {
@@ -303,13 +301,15 @@ function ChannelMembers({ channel, port }) {
       action.submit('introduce_actor', { channelId: channel?.id, candidateType: 'principal', candidateId: selected.row.id });
       return;
     }
-    setSubmittedMember({ name: trimmedName, kind: selected.kind });
-    action.submit('introduce_actor', {
+    setSubmittedMember({ kind: selected.kind, configId: '' });
+    const reply = await action.submit('introduce_actor', {
       channelId: channel?.id,
       candidateType: selected.kind,
-      candidateId: selected.kind === 'class' ? className.trim() : selected.row.id,
+      candidateId: selected.kind === 'class' ? className.trim() : selected.row.ref,
       name: trimmedName,
     }, { submitted: '成员条目已写进频道描述；成员构建好后出现在名册里，构建结果在成员详情和时间线上。' });
+    const configId = String(reply?.config_id || '');
+    setSubmittedMember((current) => current && current.kind === selected.kind ? { ...current, configId } : current);
   };
   const confirmActor = () => {
     if (!confirm) return;
@@ -347,12 +347,11 @@ function ChannelMembers({ channel, port }) {
       {!hasLifecycleCommands && <p className="protected-note">当前治理端口未提供绑定或重启命令；这里仅展示目录事实、查看与已有移除入口。</p>}
     </PanelCard>
     <PanelCard as="form" className="governance-form" title="添加参与者" onSubmit={introduce}>
-      <p>人直接邀请进来；Agent 和工具是在频道描述里写一个成员条目：从一个 Actor 描述（名字@版本）或直接从一个 Class 造。</p>
+      <p>人直接邀请进来；Agent 和工具是在频道描述里写一个成员条目：从一个 Actor 描述（某一版）或直接从一个 Class 造。成员名只是显示，可以留空，也可以和别的成员重名。</p>
       <label>参与者<SelectMenu ariaLabel="选择参与者" placeholder="搜索用户或 Actor 描述" value={candidate} options={candidates} onChange={choose} /></label>
-      {selected && selected.kind !== 'class' && <div className="participant-selection" role="status" data-participant-id={selected.row.id} data-participant-kind={selected.participantKind}><span>{selected.kind === 'principal' ? '用户' : 'Actor 描述'}</span><strong>{selected.row.display_name || selected.row.email || selected.row.id}</strong><small>{selected.kind === 'principal' ? selected.row.id : `class ${selected.row.class || '?'}${selected.row.description ? ` · ${selected.row.description}` : ''}`}</small></div>}
+      {selected && selected.kind !== 'class' && <div className="participant-selection" role="status" data-participant-id={selected.kind === 'description' ? selected.row.ref : selected.row.id} data-participant-kind={selected.participantKind}><span>{selected.kind === 'principal' ? '用户' : 'Actor 描述'}</span><strong>{selected.row.display_name || selected.row.email || (selected.kind === 'description' ? `${selected.row.name || selected.row.id} @${selected.row.version || '?'}` : selected.row.id)}</strong><small>{selected.kind === 'principal' ? selected.row.id : `class ${selected.row.class || '?'}${selected.row.description ? ` · ${selected.row.description}` : ''}`}</small></div>}
       {selected?.kind === 'class' && <label>Class<input aria-label="成员 Class" value={className} onChange={(event) => setClassName(event.target.value)} placeholder="例如 claude、codex" /></label>}
-      {needsName && <label>成员名<input aria-label="成员名" value={memberName} onChange={(event) => setMemberName(event.target.value)} placeholder="在这个频道里叫什么" /></label>}
-      {nameError && <small className="field-error">{nameError}</small>}
+      {needsName && <label>成员名（只显示，可留空）<input aria-label="成员名" value={memberName} onChange={(event) => setMemberName(event.target.value)} placeholder="在这个频道里显示成什么" /></label>}
       <button className="primary-button" type="submit" disabled={port.disabled || action.busy || !ready}>添加到频道</button>
     </PanelCard>
     {confirm && <InlineConfirmation title={`确认${confirm.kind === 'restart' ? '重启' : '移除'} ${actorDisplayName(confirm.row)}？`} description={confirm.kind === 'restart' ? '重启结果以账本和 presence 收敛为准；当前页面不会猜测成功。' : '成员条目会从频道描述里删掉，它这一台的配置一起删；该操作通过频道治理命令提交，最终状态以频道事实为准。'} tone="danger" onCancel={() => setConfirm(null)} onConfirm={confirmActor} />}
@@ -395,13 +394,10 @@ function isMemberChannel(row) {
   return true;
 }
 
-function createdChildFor(channel, children, name) {
-  const expectedId = `${channel?.id || ''}.${name}`;
-  return (children || []).find((row) => (
-    row?.id === expectedId
-      || row?.qualified_name === expectedId
-      || (row?.parent_id === channel?.id && row?.name === name)
-  )) || null;
+// 新建的子频道只按创建回复里的 channel_id 认，不按名字猜。
+function createdChildFor(children, channelId) {
+  if (!channelId) return null;
+  return (children || []).find((row) => row?.id === channelId) || null;
 }
 
 // The Shell must provide one read-only, typed creation projection for the
@@ -421,7 +417,7 @@ function creationConvergence(channel, children, request, creation = null) {
   if (!request) return null;
   const facts = creation?.requestId === request.id ? creation : null;
   const child = facts?.observable === true
-    ? (facts.channel || createdChildFor(channel, children, request.name))
+    ? (facts.channel || createdChildFor(children, facts.targetId))
     : null;
   const accepted = facts?.accepted === true;
   const ledger = facts?.ledger === true;
@@ -459,7 +455,7 @@ export function ChannelCreateModal({ channel, port = {}, onClose, returnFocusRef
   const [entries, setEntries] = useState(null);
   const [entriesError, setEntriesError] = useState('');
   const [readingEntries, setReadingEntries] = useState(false);
-  const [pickedNames, setPickedNames] = useState([]);
+  const [pickedIds, setPickedIds] = useState([]);
   const [humanIds, setHumanIds] = useState([]);
   const [createRequest, setCreateRequest] = useState(null);
   const [submitting, setSubmitting] = useState(false);
@@ -480,7 +476,9 @@ export function ChannelCreateModal({ channel, port = {}, onClose, returnFocusRef
     .map((entry) => entry?.declared || entry)
     .filter(eligiblePrincipal);
   const selectedHumans = humanIds.filter((id) => humans.some((row) => row.id === id));
-  const picked = (entries || []).filter((entry) => pickedNames.includes(entry.name));
+  // 挑中的条目抄进新频道的描述：条目 id 由 registrar 给新频道重新铸，这里不带。
+  const picked = (entries || []).filter((entry) => pickedIds.includes(entry.id))
+    .map(({ id, ...entry }) => entry);
   const startReady = start === 'blank' || (start === 'copy' && copyFrom) || (start === 'pick' && picked.length > 0);
 
   function retryCreate() {
@@ -508,7 +506,7 @@ export function ChannelCreateModal({ channel, port = {}, onClose, returnFocusRef
       const value = await commands.readDescription(channel?.id);
       const members = Array.isArray(value?.body?.members) ? value.body.members : [];
       // 人的条目不在这里抄：带谁进新频道在下面"带进来的人"里选。
-      setEntries(members.filter((entry) => entry?.name && entry.body?.human !== true));
+      setEntries(members.filter((entry) => entry?.id && entry.body?.human !== true));
     } catch (failure) {
       setEntriesError(errorMessage(failure));
     } finally {
@@ -608,17 +606,17 @@ export function ChannelCreateModal({ channel, port = {}, onClose, returnFocusRef
           <header><strong id="channel-create-entries-title">成员条目</strong><button type="button" className="text-button" disabled={locked || readingEntries} onClick={readEntries}>{readingEntries ? '读取中…' : entries ? '重新读取' : `读取 ${parentName} 的成员条目`}</button></header>
           {entriesError && <p className="governance-error" role="alert">{entriesError}</p>}
           {entries && !entries.length && <small className="field-hint">本频道的描述里还没有成员条目。</small>}
-          {(entries || []).map((entry) => <label className="channel-create-member" key={entry.name}>
+          {(entries || []).map((entry) => <label className="channel-create-member" key={entry.id}>
             <input
               type="checkbox"
-              aria-label={`抄成员条目 ${entry.name}`}
-              checked={pickedNames.includes(entry.name)}
+              aria-label={`抄成员条目 ${entry.name || entry.id}`}
+              checked={pickedIds.includes(entry.id)}
               disabled={locked}
-              onChange={(event) => setPickedNames((current) => (
-                event.target.checked ? [...new Set([...current, entry.name])] : current.filter((value) => value !== entry.name)
+              onChange={(event) => setPickedIds((current) => (
+                event.target.checked ? [...new Set([...current, entry.id])] : current.filter((value) => value !== entry.id)
               ))}
             />
-            <div><strong>{entry.name}</strong><small>{entry.body?.actor ? `actor ${entry.body.actor}` : `class ${entry.body?.class || '?'}`}</small></div>
+            <div><strong>{entry.name || entry.id}</strong><small>{entry.body?.actor ? `actor ${entry.body.actor}` : `class ${entry.body?.class || '?'}`}</small></div>
           </label>)}
           <small className="field-hint">抄的是条目（从什么造、参数）；这些成员在新频道里各自的配置从空开始。</small>
         </section>}
@@ -776,53 +774,79 @@ function parseParams(text) {
   return value;
 }
 
-// Actor 描述：不可变的 名字@版本。新建同名的就是下一个版本；退役只让它不能再被
-// 新成员引用，已经引用它的成员照旧。
+// Actor 描述：每条有自己的 id，版本挂在 id 下，每一版不可改。出新版本是对同一个
+// id 再建一次；名字只是显示，两条描述可以同名。退役只让这一版不能再被新成员引用，
+// 已经引用它的成员照旧。
 function SpaceActorDescriptions({ port }) {
   const action = useCommand(port.commands, 'space');
+  const [baseId, setBaseId] = useState('');
   const [name, setName] = useState('');
   const [klass, setKlass] = useState('');
   const [description, setDescription] = useState('');
   const [paramsText, setParamsText] = useState('{}');
+  const [configurable, setConfigurable] = useState(true);
   const [formError, setFormError] = useState('');
   const [confirm, setConfirm] = useState(null);
   const rows = Array.isArray(port.actorDescriptions) ? port.actorDescriptions : [];
   const groups = new Map();
   for (const row of rows) {
-    if (!row?.name) continue;
-    if (!groups.has(row.name)) groups.set(row.name, []);
-    groups.get(row.name).push(row);
+    if (!row?.id) continue;
+    if (!groups.has(row.id)) groups.set(row.id, []);
+    groups.get(row.id).push(row);
   }
-  const names = [...groups.keys()].sort((left, right) => left.localeCompare(right, 'zh-CN'));
-  const nextVersion = (groups.get(name.trim()) || []).reduce((highest, row) => Math.max(highest, Number(row.version || 0)), 0) + 1;
+  const latestOf = (id) => [...(groups.get(id) || [])].sort((left, right) => Number(right.version) - Number(left.version))[0] || null;
+  const ids = [...groups.keys()].sort((left, right) => (
+    String(latestOf(left)?.name || left).localeCompare(String(latestOf(right)?.name || right), 'zh-CN') || left.localeCompare(right)
+  ));
+  const base = baseId ? latestOf(baseId) : null;
+  const nextVersion = base ? Number(base.version || 0) + 1 : 1;
   const refresh = typeof port.commands?.refresh === 'function' ? () => port.commands.refresh() : undefined;
+  const chooseBase = (id) => {
+    setBaseId(id);
+    const row = id ? latestOf(id) : null;
+    if (row) {
+      setName(String(row.name || ''));
+      setKlass(String(row.class || ''));
+      setDescription(String(row.description || ''));
+      setParamsText(JSON.stringify(row.params || {}, null, 2));
+      setConfigurable(row.configurable !== false);
+    }
+  };
   const create = async (event) => {
     event.preventDefault();
     setFormError('');
     let params;
     try { params = parseParams(paramsText); }
     catch (failure) { setFormError(errorMessage(failure)); return; }
-    const reply = await action.submit('actor_description_create', { name: name.trim(), class: klass.trim(), description, params }, { submitted: 'Actor 描述已新建。' });
+    const reply = await action.submit('actor_description_create', {
+      ...(baseId ? { id: baseId } : {}),
+      name: name.trim(), class: klass.trim(), description, params, configurable,
+    }, { submitted: baseId ? 'Actor 描述的新版本已建好。' : 'Actor 描述已新建。' });
     if (reply) { setDescription(''); setParamsText('{}'); }
   };
   const retire = async () => {
     const row = confirm;
     setConfirm(null);
-    if (row) await action.submit('actor_description_retire', { name: row.name, version: row.version }, { submitted: `${actorDescriptionRef(row)} 已退役。` });
+    if (row) await action.submit('actor_description_retire', { id: row.id, version: row.version }, { submitted: `${row.name || row.id} @${row.version} 已退役。` });
   };
+  const baseOptions = [
+    { value: '', label: '新的一条 Actor 描述' },
+    ...ids.map((id) => ({ value: id, label: `${latestOf(id)?.name || id} 的新版本（现为 @${latestOf(id)?.version || '?'}）` })),
+  ];
   return <>
     {action.error && <p className="governance-error" role="alert">{action.error}</p>}
     <OperationState operation={action.operation} />
-    <PanelCard title="Actor 描述" titleMeta={String(rows.length)} action={refresh && <button type="button" className="text-button" disabled={action.busy} onClick={refresh}>刷新</button>}>
+    <PanelCard title="Actor 描述" titleMeta={String(ids.length)} action={refresh && <button type="button" className="text-button" disabled={action.busy} onClick={refresh}>刷新</button>}>
       {port.actorDescriptionsUnavailable && <p className="governance-error" role="status">Actor 描述目录当前不可用。</p>}
-      {names.map((entryName) => {
-        const versions = [...groups.get(entryName)].sort((left, right) => Number(right.version) - Number(left.version));
-        return <section className="actor-description" key={entryName} aria-label={`Actor 描述 ${entryName}`}>
-          <header><strong>{entryName}</strong><small>{versions.length} 个版本</small></header>
+      {ids.map((id) => {
+        const versions = [...groups.get(id)].sort((left, right) => Number(right.version) - Number(left.version));
+        const title = versions[0]?.name || id;
+        return <section className="actor-description" key={id} data-description-id={id} aria-label={`Actor 描述 ${title}`}>
+          <header><strong>{title}</strong><small title={id}>{versions.length} 个版本 · {id}</small></header>
           {versions.map((row) => <div className={`actor-description-version status-${row.status || 'present'}`} key={actorDescriptionRef(row)} data-ref={actorDescriptionRef(row)}>
             <div>
-              <strong>{actorDescriptionRef(row)}</strong>
-              <small>class {row.class || '?'} · {row.status === 'retired' ? '已退役' : '可用'}{row.owner ? ` · ${row.owner}` : ''}</small>
+              <strong>{row.name || id} @{row.version}</strong>
+              <small>class {row.class || '?'} · {row.status === 'retired' ? '已退役' : '可用'}{row.configurable === false ? ' · 不可配置' : ''}{row.owner ? ` · ${row.owner}` : ''}</small>
               {row.description && <p>{row.description}</p>}
               {row.params && Object.keys(row.params).length > 0 && <details><summary>参数</summary><pre>{JSON.stringify(row.params, null, 2)}</pre></details>}
             </div>
@@ -830,20 +854,22 @@ function SpaceActorDescriptions({ port }) {
           </div>)}
         </section>;
       })}
-      {!names.length && <p className="governance-empty">还没有 Actor 描述。</p>}
+      {!ids.length && <p className="governance-empty">还没有 Actor 描述。</p>}
     </PanelCard>
     <PanelCard as="form" className="governance-form" title="新建 Actor 描述" onSubmit={create}>
-      <p>同名再建就是它的下一个版本；已有版本不会被改。</p>
+      <p>可以新建一条，也可以给已有的一条出新版本；已有版本不会被改。名字只是显示，可以和别的描述重名。</p>
+      <label>建什么<SelectMenu ariaLabel="新建还是出新版本" value={baseId} options={baseOptions} onChange={chooseBase} /></label>
+      {base && <small className="field-hint">将建成 {base.name || baseId} @{nextVersion}</small>}
       <label>名字<input aria-label="Actor 描述名字" value={name} onChange={(event) => setName(event.target.value)} placeholder="例如 research-claude" /></label>
-      {name.trim() && <small className="field-hint">将建成 {name.trim()}@{nextVersion}</small>}
       <label>Class<input aria-label="Actor 描述 Class" value={klass} onChange={(event) => setKlass(event.target.value)} placeholder="例如 claude" /></label>
       <label>说明<input aria-label="Actor 描述说明" value={description} onChange={(event) => setDescription(event.target.value)} /></label>
       <label>参数 JSON<textarea aria-label="Actor 描述参数 JSON" rows="6" spellCheck={false} value={paramsText} onChange={(event) => setParamsText(event.target.value)} /></label>
+      <label className="checkbox-row"><input type="checkbox" aria-label="可被配置" checked={configurable} onChange={(event) => setConfigurable(event.target.checked)} />可被配置（关掉后，引用它的成员条目和成员配置都不能改它给的参数）</label>
       <small className="field-hint">值写 <code>"$required:说明"</code> 表示要由用到它的成员在自己的配置里填；写 <code>"$global.名称"</code> 引用全局 key。</small>
       {formError && <p className="field-error" role="alert">{formError}</p>}
-      <button type="submit" className="primary-button" disabled={port.disabled || action.busy || !name.trim() || !klass.trim()}>新建</button>
+      <button type="submit" className="primary-button" disabled={port.disabled || action.busy || !name.trim() || !klass.trim()}>{baseId ? '出新版本' : '新建'}</button>
     </PanelCard>
-    {confirm && <InlineConfirmation title={`退役 ${actorDescriptionRef(confirm)}？`} description="退役后新成员不能再引用这个版本；已经引用它的成员照旧运行。" tone="danger" onCancel={() => setConfirm(null)} onConfirm={retire} />}
+    {confirm && <InlineConfirmation title={`退役 ${confirm.name || confirm.id} @${confirm.version}？`} description="退役后新成员不能再引用这个版本；已经引用它的成员照旧运行。" tone="danger" onCancel={() => setConfirm(null)} onConfirm={retire} />}
   </>;
 }
 

@@ -1111,10 +1111,15 @@ export function createMockServer({
                 const row = entry.declared;
                 return {
                   id: row.id, kind: row.kind, ...(row.name ? { name: row.name } : {}),
+                  ...(row.config_id ? { config_id: row.config_id } : {}),
+                  ...(row.generated ? { generated: row.generated } : {}),
+                  ...(row.principal ? { principal: row.principal } : {}),
                   body: domain.memberSummary(channelId, row),
                   present: row.kind === 'human' ? true : rowBuilt(entry),
                 };
               });
+            // 描述里有、但没有在场 actor 的成员（构建失败、还没建）：只有配置 id，没有 actor id。
+            actors.push(...domain.unbuiltMembers(channelId));
             completeFlat({ actors });
             return;
           }
@@ -1219,21 +1224,22 @@ export function createMockServer({
             later(80, () => domain.retireChannel(targetChannelId));
             return;
           }
+          // Actor 描述按 id（版本挂在 id 下）；名字只显示。
           case 'system.actor.description.list':
-            assertClosedPayload(body, ['name']);
-            complete([...domain.actorDescriptions.values()].filter((row) => !body.name || row.name === body.name).map((row) => structuredClone(row)));
+            assertClosedPayload(body, ['id']);
+            complete([...domain.actorDescriptions.values()].filter((row) => !body.id || row.id === body.id).map((row) => structuredClone(row)));
             return;
           case 'system.actor.description.get':
-            assertClosedPayload(body, ['name', 'version']);
-            complete(domain.actorDescription(body.name, body.version));
+            assertClosedPayload(body, ['id', 'version']);
+            complete(domain.actorDescription(body.id, body.version));
             return;
           case 'system.actor.description.create':
-            assertClosedPayload(body, ['name', 'class', 'params', 'description', 'visibility']);
+            assertClosedPayload(body, ['id', 'name', 'class', 'params', 'description', 'visibility', 'configurable']);
             complete(domain.putActorDescription(body));
             return;
           case 'system.actor.description.retire':
-            assertClosedPayload(body, ['name', 'version']);
-            complete(domain.retireActorDescription(body.name, body.version));
+            assertClosedPayload(body, ['id', 'version']);
+            complete(domain.retireActorDescription(body.id, body.version));
             return;
           case 'system.device.create':
             assertClosedPayload(body, ['name']);

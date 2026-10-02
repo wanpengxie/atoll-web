@@ -122,8 +122,9 @@ function channelLabel(channel, fallback = '') {
   return fallback;
 }
 
-function actorShortName(actorId) {
-  return String(actorId || '').split(':')[1] || String(actorId || 'agent');
+// 显示名只来自名册；查不到就显示 Agent（完整 id 在 title 里）。
+function actorLabel(actorId, names) {
+  return names?.get?.(String(actorId || '')) || 'Agent';
 }
 
 function accessLabel(access) {
@@ -295,7 +296,7 @@ function WorkspaceRail({ session, navigation, onClose, onCollapse, collapsed = f
         <span className="channel-main">
           <span className="channel-name">{channelLabel(channel)}</span>
           {active.length > 0 && <span className="channel-agent-activity" aria-label={`${active.length} 项 Agent 正在运行`}>
-            {active.slice(0, 2).map((entry) => <span className="channel-agent-timer" key={entry.requestId}><i /><b>{actorShortName(entry.agentId)}</b><time>{activityDuration(entry.startedAt, now)}</time></span>)}
+            {active.slice(0, 2).map((entry) => <span className="channel-agent-timer" key={entry.requestId}><i /><b title={entry.agentId}>{actorLabel(entry.agentId, navigation.actorNames)}</b><time>{activityDuration(entry.startedAt, now)}</time></span>)}
             {active.length > 2 && <span className="channel-agent-more" title={`另有 ${active.length - 2} 项正在运行`}>+{active.length - 2}</span>}
           </span>}
         </span>

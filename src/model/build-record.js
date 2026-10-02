@@ -21,7 +21,18 @@ export function buildRecord(value) {
   if (!kind) return null;
   const attempt = Number(raw.attempt);
   return Object.freeze({
-    object: Object.freeze({ kind, channel: text(raw.object.channel), name: text(raw.object.name) }),
+    // 成员按条目 id、配置 id 或生成键认，有了 actor 之后还带 actor id；
+    // 名字和频道名只是显示。
+    object: Object.freeze({
+      kind,
+      channel: text(raw.object.channel),
+      channelName: text(raw.object.channel_name),
+      entryId: text(raw.object.entry_id),
+      configId: text(raw.object.config_id),
+      generated: text(raw.object.generated),
+      actorId: text(raw.object.actor_id),
+      name: text(raw.object.name),
+    }),
     channelRevision: Number(raw.description?.channel_revision || 0),
     actor: text(raw.description?.actor),
     configRevision: plainObject(raw.config) ? Number(raw.config.revision || 0) : null,
@@ -37,8 +48,8 @@ export function buildRecord(value) {
 
 export function buildObjectLabel(record) {
   const object = record?.object || {};
-  if (object.kind === 'member') return `成员 ${object.name || '?'}`;
-  if (object.kind === 'channel') return `频道 ${object.channel || ''}`.trim();
+  if (object.kind === 'member') return `成员 ${object.name || object.actorId || object.configId || object.generated || '?'}`;
+  if (object.kind === 'channel') return `频道 ${object.channelName || object.channel || ''}`.trim();
   return object.kind || '对象';
 }
 

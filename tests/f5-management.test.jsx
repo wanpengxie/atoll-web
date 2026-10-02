@@ -50,7 +50,7 @@ describe('F5 成员与全局表面', () => {
       port={{
         roster: [{ id: 'system', kind: 'system' }],
         principals: [{ id: 'alice', display_name: 'Alice' }],
-        actorDescriptions: [{ name: 'analyst', version: 2, class: 'codex-agent', description: '分析资料' }],
+        actorDescriptions: [{ id: 'd-analyst', name: 'analyst', version: 2, class: 'codex-agent', description: '分析资料' }],
         commands: { submit },
       }}
       onClose={vi.fn()}
@@ -58,32 +58,31 @@ describe('F5 成员与全局表面', () => {
     // Baseline action: the member admission selector is available immediately.
     expect(screen.getByRole('tab', { name: '成员' }).getAttribute('aria-selected')).toBe('true');
     await user.click(screen.getByRole('combobox', { name: '选择参与者' }));
-    await user.click(screen.getByRole('option', { name: 'analyst@2 · Actor 描述（class codex-agent）' }));
+    await user.click(screen.getByRole('option', { name: 'analyst @2 · Actor 描述（class codex-agent）' }));
     const selection = screen.getByRole('status');
-    expect(selection.getAttribute('data-participant-id')).toBe('analyst@2');
+    // 引用 Actor 描述用 描述id@版本。
+    expect(selection.getAttribute('data-participant-id')).toBe('d-analyst@2');
     expect(selection.textContent).toContain('class codex-agent · 分析资料');
-    // 成员名默认取描述的名字，可以改。
-    const name = screen.getByLabelText('成员名');
+    // 成员名默认取描述的名字；它只是显示，任何写法都行，也可以和别人重名。
+    const name = screen.getByLabelText('成员名（只显示，可留空）');
     expect(name.value).toBe('analyst');
     await user.clear(name);
-    await user.type(name, 'Bad Name');
-    expect(screen.getByText('成员名须为 1–63 位小写字母、数字或连字符')).toBeTruthy();
-    expect(screen.getByRole('button', { name: '添加到频道' }).disabled).toBe(true);
-    await user.clear(name);
-    await user.type(name, 'analyst-2');
+    await user.type(name, 'Analyst 2');
+    expect(screen.getByRole('button', { name: '添加到频道' }).disabled).toBe(false);
     await user.click(screen.getByRole('button', { name: '添加到频道' }));
     expect(submit).toHaveBeenLastCalledWith({
       scope: 'channel', action: 'introduce_actor',
-      payload: { channelId: 'c0.project', candidateType: 'description', candidateId: 'analyst@2', name: 'analyst-2' },
+      payload: { channelId: 'c0.project', candidateType: 'description', candidateId: 'd-analyst@2', name: 'Analyst 2' },
     });
 
-    // 直接按 Class：要填 Class 和成员名。
+    // 直接按 Class：要填 Class；成员名可留空。
     await user.click(screen.getByRole('combobox', { name: '选择参与者' }));
     await user.click(screen.getByRole('option', { name: '直接按 Class 新建…' }));
-    expect(screen.getByLabelText('成员名').value).toBe('');
-    await user.type(screen.getByLabelText('成员 Class'), 'codex');
+    expect(screen.getByLabelText('成员名（只显示，可留空）').value).toBe('');
     expect(screen.getByRole('button', { name: '添加到频道' }).disabled).toBe(true);
-    await user.type(screen.getByLabelText('成员名'), 'helper');
+    await user.type(screen.getByLabelText('成员 Class'), 'codex');
+    expect(screen.getByRole('button', { name: '添加到频道' }).disabled).toBe(false);
+    await user.type(screen.getByLabelText('成员名（只显示，可留空）'), 'helper');
     await user.click(screen.getByRole('button', { name: '添加到频道' }));
     expect(submit).toHaveBeenLastCalledWith({
       scope: 'channel', action: 'introduce_actor',
@@ -93,7 +92,7 @@ describe('F5 成员与全局表面', () => {
     // 人：不要成员名，发 principal。
     await user.click(screen.getByRole('combobox', { name: '选择参与者' }));
     await user.click(screen.getByRole('option', { name: 'Alice · 用户' }));
-    expect(screen.queryByLabelText('成员名')).toBeNull();
+    expect(screen.queryByLabelText('成员名（只显示，可留空）')).toBeNull();
     await user.click(screen.getByRole('button', { name: '添加到频道' }));
     expect(submit).toHaveBeenLastCalledWith({
       scope: 'channel', action: 'introduce_actor',
@@ -111,9 +110,10 @@ describe('F5 成员与全局表面', () => {
           { id: 'alice', display_name: 'Alice' },
           { id: 'principal-a', display_name: 'Same' },
         ],
+        // 两条同名的 Actor 描述：名字只显示，按描述 id 打破同名。
         actorDescriptions: [
-          { name: 'same', version: 2, class: 'mcp-tool' },
-          { name: 'same', version: 1, class: 'mcp-tool' },
+          { id: 'd-z', name: 'same', version: 2, class: 'mcp-tool' },
+          { id: 'd-a', name: 'same', version: 1, class: 'mcp-tool' },
         ],
         commands: {},
       }}
@@ -128,15 +128,15 @@ describe('F5 成员与全局表面', () => {
       'Alice · 用户',
       'Same · 用户',
       'Same · 用户',
-      'same@1 · Actor 描述（class mcp-tool）',
-      'same@2 · Actor 描述（class mcp-tool）',
+      'same @1 · Actor 描述（class mcp-tool）',
+      'same @2 · Actor 描述（class mcp-tool）',
       '直接按 Class 新建…',
     ]);
     await user.click(options[2]);
     expect(screen.getByRole('status').getAttribute('data-participant-id')).toBe('principal-a');
     await user.click(select);
     await user.click(screen.getAllByRole('option')[4]);
-    expect(screen.getByRole('status').getAttribute('data-participant-id')).toBe('same@1');
+    expect(screen.getByRole('status').getAttribute('data-participant-id')).toBe('d-a@1');
   });
 
 });

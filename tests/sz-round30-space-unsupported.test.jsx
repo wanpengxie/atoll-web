@@ -14,7 +14,7 @@ function renderUnsupportedSpace() {
     port={{
       disabled: true,
       unsupported,
-      actorDescriptions: [{ name: 'writer', version: 1, ref: 'writer@1', class: 'claude', status: 'present' }],
+      actorDescriptions: [{ id: 'd-writer', name: 'writer', version: 1, ref: 'd-writer@1', class: 'claude', status: 'present' }],
       devices: [{ id: 'mac-id', name: 'Mac', online: true }],
       commands: { submit },
     }}

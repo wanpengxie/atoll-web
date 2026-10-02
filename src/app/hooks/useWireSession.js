@@ -440,8 +440,9 @@ function createSessionAccess({ principalId }) {
 function emptySpaceDirectory() {
   return Object.freeze({
     principals: Object.freeze([]),
-    // Actor 描述：每个版本一行（名字@版本），present 与 retired 都在——空间管理
-    // 要看全部版本；挑成员时只取 present 的。
+    // Actor 描述：每个版本一行（id 是描述 id，同一条描述的各版本共用；ref 是
+    // 描述id@版本），present 与 retired 都在——空间管理要看全部版本；挑成员时
+    // 只取 present 的。
     actorDescriptions: Object.freeze([]),
     devices: Object.freeze([]),
     support: Object.freeze({ principals: false, actorDescriptions: false, devices: false }),

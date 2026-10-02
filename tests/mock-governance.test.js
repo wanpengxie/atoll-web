@@ -78,27 +78,35 @@ describe('mock system actor governance', () => {
     expect(peerList.payload.body.status).toBe('completed');
 
     // c0 是平台搭的频道，没有频道描述：成员固定，加成员被拒绝。
-    const fixed = await call('c0', 'system.member.create', { name: 'analyst', body: { actor: 'analyst@1' } });
+    const fixed = await call('c0', 'system.member.create', { name: 'analyst', body: { actor: 'd-analyst@1' } });
     expect(fixed.payload.body).toMatchObject({ status: 'failed', error_code: 'reserved' });
     // 旧的 decl_id 形状不再被接受。
     const legacy = await call('c0.project', 'system.member.create', { decl_id: 'mock:analyst' });
     expect(legacy.payload.body).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
 
     // 加成员 = 在频道描述里写一个条目；构建好后出现在名册上。
-    const created = await call('c0.project', 'system.member.create', { name: 'analyst', body: { actor: 'analyst@1' } });
-    // 描述由 c0 的 registrar 写，回复原样转回：{value}。
-    expect(created.payload.body).toMatchObject({ status: 'completed', value: { written: true, entry: { name: 'analyst', body: { actor: 'analyst@1' } } } });
+    const created = await call('c0.project', 'system.member.create', { name: 'analyst', body: { actor: 'd-analyst@1' } });
+    // 描述由 c0 的 registrar 写（铸条目 id），频道门再建配置：回复带条目和配置 id。
+    expect(created.payload.body).toMatchObject({ status: 'completed', value: { written: true, entry: { name: 'analyst', body: { actor: 'd-analyst@1' } } } });
+    const configId = created.payload.body.value.config_id;
+    expect(configId).toBeTruthy();
+    const built = await waitFor(() => envelopes.find((entry) => entry.channel_id === 'c0.project' && entry.type === 'system.build.finished' && entry.payload?.body?.object?.config_id === configId));
+    expect(built.payload.body).toMatchObject({ result: 'ok', state: 'ready', description: { actor: 'd-analyst@1' } });
     const roster = await fetchWithSession('/obs/channel/c0.project/actors').then((response) => response.json());
-    const analyst = roster.items.find((entry) => /^agent:analyst:/.test(entry.declared.id));
-    expect(analyst.declared).toMatchObject({ kind: 'agent', body: 'actor analyst@1' });
+    const analyst = roster.items.find((entry) => entry.declared.config_id === configId);
+    expect(analyst.declared).toMatchObject({ kind: 'agent', name: 'analyst', body: 'actor d-analyst@1' });
     const memberId = analyst.declared.id;
     // 运行时生成的成员标着 generated，不是描述里的条目。
     expect(roster.items.find((entry) => entry.declared.id === 'svcactor').declared.body).toBe('generated');
-    const built = await waitFor(() => envelopes.find((entry) => entry.channel_id === 'c0.project' && entry.type === 'system.build.finished' && entry.payload?.body?.object?.name === 'analyst'));
-    expect(built.payload.body).toMatchObject({ result: 'ok', state: 'ready', description: { actor: 'analyst@1' } });
 
-    const duplicate = await call('c0.project', 'system.member.create', { name: 'analyst', body: { class: 'codex' } });
-    expect(duplicate.payload.body).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
+    // 同名再加一个：名字只显示，两个成员并存，各有各的配置和 actor id。
+    const twin = await call('c0.project', 'system.member.create', { name: 'analyst', body: { class: 'codex' } });
+    expect(twin.payload.body).toMatchObject({ status: 'completed', value: { written: true, entry: { name: 'analyst' } } });
+    const twinConfig = twin.payload.body.value.config_id;
+    expect(twinConfig).not.toBe(configId);
+    await waitFor(() => envelopes.find((entry) => entry.channel_id === 'c0.project' && entry.type === 'system.build.finished' && entry.payload?.body?.object?.config_id === twinConfig));
+    const both = await fetchWithSession('/obs/channel/c0.project/actors').then((response) => response.json());
+    expect(both.items.filter((entry) => entry.declared.name === 'analyst').map((entry) => entry.declared.config_id).sort()).toEqual([configId, twinConfig].sort());
 
     const restarted = await call('c0.project', 'system.member.restart', { member: memberId });
     expect(restarted.payload.body.member).toBe(memberId);

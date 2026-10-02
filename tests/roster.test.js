@@ -18,11 +18,11 @@ afterEach(() => {
 const actors = [
   {
     id: 'human:root', kind: 'human', name: 'Root', body: '', description: '',
-    principal: 'principal-root', bound: false, deviceOnline: false,
+    principal: 'principal-root', configId: '', generated: '', bound: false, deviceOnline: false,
   },
   {
     id: 'agent:demo:1', kind: 'agent', name: 'Demo', body: 'class codex', description: '',
-    principal: '', bound: false, deviceOnline: false,
+    principal: '', configId: '', generated: '', bound: false, deviceOnline: false,
   },
 ];
 
@@ -137,7 +137,7 @@ describe('public channel roster owner', () => {
       ...actors,
       {
         id: 'agent:new:1', kind: 'agent', name: 'New', body: '', description: '',
-        principal: '', bound: false, deviceOnline: false,
+        principal: '', configId: '', generated: '', bound: false, deviceOnline: false,
       },
     ]));
     await act(async () => { await result.current.refresh('c0', true); });
@@ -145,7 +145,7 @@ describe('public channel roster owner', () => {
       ...actors,
       {
         id: 'agent:new:1', kind: 'agent', name: 'New', body: '', description: '',
-        principal: '', bound: false, deviceOnline: false,
+        principal: '', configId: '', generated: '', bound: false, deviceOnline: false,
       },
     ]);
     expect(result.current.authorities.get('c0')?.current).toBe(true);
@@ -174,7 +174,7 @@ describe('public channel roster owner', () => {
       ...actors,
       {
         id: 'agent:new-owner:1', kind: 'agent', name: 'New owner', body: '', description: '',
-        principal: '', bound: false, deviceOnline: false,
+        principal: '', configId: '', generated: '', bound: false, deviceOnline: false,
       },
     ];
     obsRef.current.channelActors.mockResolvedValueOnce(observation(replacement));
@@ -195,7 +195,7 @@ describe('public channel roster owner', () => {
       ...actors,
       {
         id: 'agent:new-generation:1', kind: 'agent', name: 'New generation', body: '', description: '',
-        principal: '', bound: false, deviceOnline: false,
+        principal: '', configId: '', generated: '', bound: false, deviceOnline: false,
       },
     ];
     obsRef.current.channelActors.mockResolvedValueOnce(observation(replacement));
@@ -226,7 +226,7 @@ describe('public channel roster owner', () => {
       ...actors,
       {
         id: 'agent:governed:1', kind: 'agent', name: 'Governed', body: '', description: '',
-        principal: '', bound: false, deviceOnline: false,
+        principal: '', configId: '', generated: '', bound: false, deviceOnline: false,
       },
     ];
     obsRef.current.channelActors.mockResolvedValueOnce(observation(refreshedRows));

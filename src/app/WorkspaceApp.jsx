@@ -785,13 +785,6 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
           finishFailure(Object.assign(new TypeError('频道创建终态缺少 channel_id'), { code: 'channel_create_target_missing' }));
           continue;
         }
-        const returnedParent = String(value?.parent_id || value?.parentId || '').trim();
-        const returnedName = String(value?.name || '').trim();
-        if ((returnedParent && returnedParent !== String(record.parentId || record.channelId))
-          || (returnedName && returnedName !== String(record.name || ''))) {
-          finishFailure(Object.assign(new TypeError('频道创建终态与原始父频道或名称不匹配'), { code: 'channel_create_target_mismatch' }));
-          continue;
-        }
         governanceRequestsRef.current.delete(requestId);
         setChannelCreationRequest((current) => current?.requestId === requestId
           ? { ...current, ledger: true, targetId, error: '', failed: false }
@@ -1589,20 +1582,25 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     globalKeys: globalKeysPort,
     // 这个频道能用的设备（local-device 和描述里外挂的），给成员选 desired_host。
     devices: attachments.devices,
+    // 成员条目改成从某条 Actor 描述造时，从这里挑（id 或 id@版本）。
+    actorDescriptions: directory.support?.actorDescriptions
+      ? latestActorDescriptions(directory.actorDescriptions)
+      : EMPTY_ARRAY,
     commands: {
       // 成员的各层（描述条目、这一台的配置、合成值和来源、占位、最近一次构建）
       // 与两层状态：按需读，一次真人点击发一条 member.get。
-      readMember: (actor) => requestSystemReply(selectedActorChannelId, TYPES.member.get, { member: String(actor?.id || '') }),
+      // 成员按 actor id 认；还没建起来（没有 actor id）的成员按配置 id 认。
+      readMember: (actor) => requestSystemReply(selectedActorChannelId, TYPES.member.get, { member: String(actor?.id || actor?.configId || '') }),
       // 描述条目：body 整个替换，params 是合并补丁，requires 整个替换（null 清空）。
       setMember: ({ actor, body = null, params = null, requires }) => requestSystemReply(selectedActorChannelId, TYPES.member.set, {
-        member: String(actor?.id || ''),
+        member: String(actor?.id || actor?.configId || ''),
         ...(body ? { body } : {}),
         ...(params && Object.keys(params).length ? { params } : {}),
         ...(requires !== undefined ? { requires } : {}),
       }),
       // 这一台的配置：desired_host 给了才改（'' 回到 local-device），values 是合并补丁。
       setMemberConfig: ({ actor, desiredHost, values = null }) => requestSystemReply(selectedActorChannelId, TYPES.member.configSet, {
-        member: String(actor?.id || ''),
+        member: String(actor?.id || actor?.configId || ''),
         ...(desiredHost !== undefined ? { desired_host: String(desiredHost || '') } : {}),
         ...(values && Object.keys(values).length ? { values } : {}),
       }),
@@ -1639,15 +1637,14 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     if (!request) return null;
     const targetId = String(request.targetId || '');
     const channel = targetId
-      ? navigation.channels.find((row) => String(row?.id || '') === targetId
-        && String(row?.parent_id || row?.parentId || '') === String(request.parentId || '')
-        && String(row?.name || '').trim() === String(request.name || '').trim()) || null
+      ? navigation.channels.find((row) => String(row?.id || '') === targetId) || null
       : null;
     const accessState = targetId ? wire.accessRef.current?.state?.(targetId) : null;
     return Object.freeze({
       requestId: request.requestId,
       parentId: request.parentId,
       name: request.name,
+      targetId,
       accepted: request.accepted === true,
       ledger: request.ledger === true,
       observable: Boolean(channel),
@@ -1701,7 +1698,8 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
       const body = payload.candidateType === 'class'
         ? { class: String(payload.candidateId || '').trim() }
         : { actor: String(payload.candidateId || '').trim() };
-      return sendGovernanceCommand(channelId, TYPES.member.create, { name, body });
+      // 等回复：回复里有新成员的配置 id，治理面板据它认出名册里出现的新成员。
+      return requestSystemReply(channelId, TYPES.member.create, { ...(name ? { name } : {}), body });
     }
     if (action === 'attach_device' || action === 'detach_device') {
       // 挂载/卸载的终态回来后重读本频道分到的设备，治理页的列表才跟上。
@@ -1723,12 +1721,15 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     const channelId = String(navigation.activeChannelId || '');
     const spaceWords = {
       actor_description_create: [TYPES.actorDescription.create, () => ({
+        // 带 id 是给这条描述出新版本；不带是新建一条。
+        ...(String(payload.id || '').trim() ? { id: String(payload.id).trim() } : {}),
         name: String(payload.name || '').trim(),
         class: String(payload.class || '').trim(),
         ...(payload.params && Object.keys(payload.params).length ? { params: payload.params } : {}),
         ...(String(payload.description || '').trim() ? { description: String(payload.description).trim() } : {}),
+        ...(payload.configurable === false ? { configurable: false } : {}),
       })],
-      actor_description_retire: [TYPES.actorDescription.retire, () => ({ name: String(payload.name || ''), version: Number(payload.version) })],
+      actor_description_retire: [TYPES.actorDescription.retire, () => ({ id: String(payload.id || ''), version: Number(payload.version) })],
       create_device: [TYPES.device.create, () => ({ name: String(payload.name || '').trim() })],
       retire_device: [TYPES.device.remove, () => ({ device_id: String(payload.deviceId || '') })],
     };
@@ -1952,8 +1953,18 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const selectedTurn = panelKind === 'turn'
     ? timelineTurnForRequest(feed.stateFor(panel.channelId || navigation.activeChannelId), panel.requestId || panel.key)
     : null;
+  // 成员显示名只来自名册：把已加载的各频道名册并成一张 id → 名字的表，
+  // 频道栏的 agent 计时、星标列表都查它；查不到就显示通用称呼，从不拆 id。
+  const actorNames = useMemo(() => {
+    const names = new Map();
+    for (const rows of roster.rosters.values()) {
+      for (const row of rows || []) if (row?.id && row?.name) names.set(row.id, row.name);
+    }
+    return names;
+  }, [roster.rosters]);
   const rightPanel = panel && (panelKind !== 'task' || selectedTaskItem) ? <WorkspaceRightPanel
     panel={panel}
+    actorNames={actorNames}
     channel={navigation.activeChannel}
     files={filesPort}
     tasks={typeof panel === 'object' && panel.kind === 'task'
@@ -2046,6 +2057,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
           : { count: 0, pending: false, unknown: false },
       ])),
       agentActivity: visibleAgentActivity,
+      actorNames,
       select: navigation.select,
       setActiveView: navigation.setActiveView,
       openTerminal: () => {

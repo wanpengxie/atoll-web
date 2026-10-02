@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
   actorDescriptionRef,
-  actorMemberName,
   isGeneratedMember,
   isVisibleActor,
   latestActorDescriptions,
@@ -37,33 +36,35 @@ describe('current management actor ownership', () => {
     expect(isGeneratedMember({ id: 'custom', kind: 'agent', body: GENERATED_BODY })).toBe(true);
     expect(isGeneratedMember({ id: 'human:registrar:1', kind: 'human', body: 'human' })).toBe(false);
     expect(isVisibleActor(AGENT)).toBe(true);
-    expect(actorMemberName('agent:c0-a:b:9')).toBe('c0-a:b');
-    expect(actorMemberName('steward')).toBe('steward');
     // 名册行里人的 body 显示成"人"，其余照原话。
     expect(rosterBodyLabel('human')).toBe('人');
     expect(rosterBodyLabel('class codex')).toBe('class codex');
   });
 
   it('offers only the latest present version of each actor description when adding members', () => {
+    // 按描述 id 分组；名字只显示，两条同名描述各算各的。
     const rows = [
-      { name: 'writer', version: 1, class: 'claude', status: 'present' },
-      { declared: { name: 'writer', version: 3, class: 'claude', status: 'retired' } },
-      { name: 'writer', version: 2, class: 'claude', status: 'present' },
-      { name: 'analyst', version: 1, class: 'codex-agent' },
-      { name: '', version: 1 },
+      { id: 'd-w', name: 'writer', version: 1, class: 'claude', status: 'present' },
+      { declared: { id: 'd-w', name: 'writer', version: 3, class: 'claude', status: 'retired' } },
+      { id: 'd-w', name: 'writer', version: 2, class: 'claude', status: 'present' },
+      { id: 'd-a', name: 'analyst', version: 1, class: 'codex-agent' },
+      { id: 'd-w2', name: 'writer', version: 1, class: 'codex' },
+      { id: '', name: 'orphan', version: 1 },
     ];
-    expect(latestActorDescriptions(rows).map(actorDescriptionRef)).toEqual(['analyst@1', 'writer@2']);
+    expect(latestActorDescriptions(rows).map(actorDescriptionRef)).toEqual(['d-a@1', 'd-w@2', 'd-w2@1']);
     expect(latestActorDescriptions()).toEqual([]);
-    expect(actorDescriptionRef({ ref: 'x@7', name: 'x', version: 1 })).toBe('x@7');
-    expect(actorDescriptionRef({ name: 'x' })).toBe('');
+    expect(actorDescriptionRef({ ref: 'x@7', id: 'x', version: 1 })).toBe('x@7');
+    expect(actorDescriptionRef({ id: 'x' })).toBe('');
   });
 
   it('parses /introduce into a member entry built from a class or an actor description', () => {
-    expect(parseComposerCommand('/introduce writer writer@2')).toMatchObject({
+    expect(parseComposerCommand('/introduce actor:d-writer@2 writer')).toMatchObject({
       type: TYPES.member.create,
-      payload: { name: 'writer', body: { actor: 'writer@2' } },
+      payload: { name: 'writer', body: { actor: 'd-writer@2' } },
     });
-    expect(parseComposerCommand('/introduce helper codex')).toMatchObject({
+    // 不带版本号就是最新版；名字可省。
+    expect(parseComposerCommand('/introduce actor:d-writer').payload).toEqual({ body: { actor: 'd-writer' } });
+    expect(parseComposerCommand('/introduce codex helper')).toMatchObject({
       type: TYPES.member.create,
       payload: { name: 'helper', body: { class: 'codex' } },
     });

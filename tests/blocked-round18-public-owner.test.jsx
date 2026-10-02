@@ -238,7 +238,7 @@ describe('A-D round 18 public owner evidence: create failure and governance', ()
         { id: 'registrar', kind: 'system', name: 'Registrar', body: 'generated' },
       ],
       actorDescriptions: [
-        { name: 'worker-desc', version: 1, class: 'codex', status: 'present' },
+        { id: 'd-worker-desc', name: 'worker-desc', version: 1, class: 'codex', status: 'present' },
       ],
     });
     fireEvent.click(screen.getByRole('tab', { name: '成员' }));
@@ -247,7 +247,7 @@ describe('A-D round 18 public owner evidence: create failure and governance', ()
     expect(screen.queryByText('System')).toBeNull();
     expect(screen.queryByText('Registrar')).toBeNull();
     fireEvent.click(screen.getByRole('combobox', { name: '选择参与者' }));
-    expect(screen.getByRole('option', { name: /worker-desc@1/ })).toBeTruthy();
+    expect(screen.getByRole('option', { name: /worker-desc @1/ })).toBeTruthy();
     expect(screen.queryByRole('option', { name: /Registrar|registrar/ })).toBeNull();
   });
 

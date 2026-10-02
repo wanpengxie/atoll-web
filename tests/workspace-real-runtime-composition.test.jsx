@@ -365,17 +365,27 @@ describe('真实 Workspace owner composition', () => {
       await governance.commands.submit({ scope: 'channel', action, payload: { channelId: mocks.channelId, ...payload } });
     });
 
-    await run('introduce_actor', { candidateType: 'description', candidateId: 'writer@2', name: ' writer ' });
-    await run('introduce_actor', { candidateType: 'class', candidateId: 'codex', name: 'helper' });
+    // 加成员等回复：回复里有新成员的配置 id，治理面板靠它认出名册里出现的新成员。
+    let seq = 10;
+    const introduce = async (payload, value) => {
+      const before = submitted(TYPES.member.create).length;
+      const pending = governance.commands.submit({ scope: 'channel', action: 'introduce_actor', payload: { channelId: mocks.channelId, ...payload } });
+      await waitFor(() => expect(submitted(TYPES.member.create).length).toBe(before + 1));
+      await answer(submitted(TYPES.member.create).at(-1), { status: 'completed', value }, seq);
+      seq += 2;
+      await expect(pending).resolves.toMatchObject({ config_id: value.config_id });
+    };
+    await introduce({ candidateType: 'description', candidateId: 'd-writer@2', name: ' writer ' }, { written: true, config_id: 'cfg-1' });
+    // 名字只是显示、可以不给。
+    await introduce({ candidateType: 'class', candidateId: 'codex', name: '' }, { written: true, config_id: 'cfg-2' });
     expect(submitted(TYPES.member.create).map((frame) => frame.payload)).toEqual([
-      { name: 'writer', body: { actor: 'writer@2' } },
-      { name: 'helper', body: { class: 'codex' } },
+      { name: 'writer', body: { actor: 'd-writer@2' } },
+      { body: { class: 'codex' } },
     ]);
     await run('introduce_actor', { candidateType: 'principal', candidateId: 'alice' });
     expect(submitted(TYPES.member.admit).at(-1).payload).toEqual({ principal: 'alice' });
 
     // 频道设置和设备：以写成的回复为准——等终态回来才算完成。
-    let seq = 10;
     const settle = async (action, payload, msgType) => {
       const pending = governance.commands.submit({ scope: 'channel', action, payload: { channelId: mocks.channelId, ...payload } });
       const before = submitted(msgType).length;
@@ -425,15 +435,18 @@ describe('真实 Workspace owner composition', () => {
 
     const others = [
       space.commands.submit({ scope: 'space', action: 'actor_description_create', payload: { name: 'r2', class: 'claude', description: '审稿', params: { a: 1 } } }),
-      space.commands.submit({ scope: 'space', action: 'actor_description_retire', payload: { name: 'reviewer', version: '1' } }),
+      space.commands.submit({ scope: 'space', action: 'actor_description_create', payload: { id: 'd-reviewer', name: 'reviewer', class: 'claude', configurable: false } }),
+      space.commands.submit({ scope: 'space', action: 'actor_description_retire', payload: { id: 'd-reviewer', version: '1' } }),
       space.commands.submit({ scope: 'space', action: 'create_device', payload: { name: ' laptop ' } }),
       space.commands.submit({ scope: 'space', action: 'retire_device', payload: { deviceId: 'device-9' } }),
     ];
     // 这几条不等终态；卸载时被拒，接住。
     for (const promise of others) promise.catch(() => {});
     await waitFor(() => expect(submitted(TYPES.device.remove)).toHaveLength(1));
-    expect(submitted(TYPES.actorDescription.create).at(-1).payload).toEqual({ name: 'r2', class: 'claude', params: { a: 1 }, description: '审稿' });
-    expect(submitted(TYPES.actorDescription.retire)[0].payload).toEqual({ name: 'reviewer', version: 1 });
+    expect(submitted(TYPES.actorDescription.create).at(-2).payload).toEqual({ name: 'r2', class: 'claude', params: { a: 1 }, description: '审稿' });
+    // 带 id 是给这条描述出新版本；退役按 id 和版本。
+    expect(submitted(TYPES.actorDescription.create).at(-1).payload).toEqual({ id: 'd-reviewer', name: 'reviewer', class: 'claude', configurable: false });
+    expect(submitted(TYPES.actorDescription.retire)[0].payload).toEqual({ id: 'd-reviewer', version: 1 });
     expect(submitted(TYPES.device.create)[0].payload).toEqual({ name: 'laptop' });
     expect(submitted(TYPES.device.remove)[0].payload).toEqual({ device_id: 'device-9' });
     await expect(space.commands.submit({ scope: 'space', action: 'channel_template_create', payload: {} })).rejects.toMatchObject({ code: 'owner_unavailable' });
@@ -527,7 +540,8 @@ describe('真实 Workspace owner composition', () => {
     await waitFor(() => expect(mocks.layoutProps.rightPanel.props.governance.channel.creation).toBeNull());
   });
 
-  it('does not bind a create result to a child with a different parent', async () => {
+  it('binds a create result to the channel_id the reply names, never by name or parent', async () => {
+    // 10-02 实体身份：新建的子频道只按回复里的 channel_id 认；名字、父频道不当判据。
     const previousChannels = mocks.navigation.channels;
     mocks.navigation.channels = [...previousChannels, {
       id: 'c0.other', name: 'requested', qualified_name: 'c0.other.requested',
@@ -576,7 +590,8 @@ describe('真实 Workspace owner composition', () => {
       });
       await waitFor(() => expect(mocks.layoutProps.rightPanel.props.governance.channel.creation).toMatchObject({
         ledger: true,
-        observable: false,
+        observable: true,
+        targetId: 'c0.other',
         parentId: mocks.channelId,
         name: 'requested',
       }));

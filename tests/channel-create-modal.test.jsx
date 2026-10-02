@@ -78,8 +78,8 @@ describe('创建子频道（GovernanceFeature public owner）', () => {
 
   it('[AD-152] reads this channel\'s description on demand and submits only the picked member entries', async () => {
     const entries = [
-      { name: 'writer', body: { actor: 'writer@1' }, params: { temperature: 0.3 } },
-      { name: 'helper', body: { class: 'codex' } },
+      { id: 'e-writer', name: 'writer', body: { actor: 'd-writer@1' }, params: { temperature: 0.3 } },
+      { id: 'e-helper', name: 'helper', body: { class: 'codex' } },
     ];
     const readDescription = vi.fn()
       .mockRejectedValueOnce(new Error('this channel is built by the platform and has no description'))
@@ -104,14 +104,14 @@ describe('创建子频道（GovernanceFeature public owner）', () => {
     fireEvent.click(screen.getByRole('button', { name: '读取 c0.project 的成员条目' }));
     await screen.findByLabelText('抄成员条目 writer');
     expect(readDescription).toHaveBeenCalledWith('c0.project');
-    expect(screen.getByText('actor writer@1')).toBeTruthy();
+    expect(screen.getByText('actor d-writer@1')).toBeTruthy();
     expect(screen.getByText('class codex')).toBeTruthy();
 
     fireEvent.click(screen.getByLabelText('抄成员条目 writer'));
     fireEvent.click(screen.getByRole('button', { name: '创建频道' }));
     await waitFor(() => expect(submit).toHaveBeenCalledWith({
       scope: 'channel', action: 'create_child',
-      payload: { name: 'picked', parentId: 'c0.project', humans: [], purpose: '挑几个成员', members: [entries[0]] },
+      payload: { name: 'picked', parentId: 'c0.project', humans: [], purpose: '挑几个成员', members: [{ name: 'writer', body: { actor: 'd-writer@1' }, params: { temperature: 0.3 } }] },
     }));
   });
 

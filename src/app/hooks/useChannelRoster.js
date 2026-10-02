@@ -12,7 +12,10 @@ function projectActor(item) {
   return {
     id,
     kind: declared.kind || '',
-    name: actorDisplayName({ id, name: declared.name }),
+    name: actorDisplayName({ id, name: declared.name, body: declared.body }),
+    // 描述里的成员带配置 id，运行时自己的成员带生成键；人带 principal。
+    configId: declared.config_id || '',
+    generated: declared.generated || '',
     // 成员是从什么造出来的，一句话："class kimi"、"actor 小研@2"，运行时
     // 自己生成的是 "generated"。
     body: declared.body || '',

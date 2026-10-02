@@ -36,24 +36,30 @@ afterEach(async () => Promise.all([...servers].map(close)));
 describe('phase E stateful mock', () => {
   it('supports versioned actor descriptions: create, list, get the latest, retire', async () => {
     const h = await harness();
+    // 不带 id 是新的一条：registrar 铸描述 id，版本 1。
     const first = await submitTerminal(h, 'system.actor.description.create', { name: 'assistant', class: 'codex', params: { model: 'mock' }, description: '助手' });
-    expect(first.payload.body.value).toMatchObject({ name: 'assistant', version: 1, ref: 'assistant@1', class: 'codex', params: { model: 'mock' }, status: 'present' });
-    // 同名再建就是下一个版本；已有版本不变。
-    const second = await submitTerminal(h, 'system.actor.description.create', { name: 'assistant', class: 'codex', params: { model: 'mock-2' } });
-    expect(second.payload.body.value).toMatchObject({ ref: 'assistant@2', version: 2 });
-    const list = await submitTerminal(h, 'system.actor.description.list', { name: 'assistant' });
-    expect(list.payload.body.value.map((row) => [row.ref, row.params.model])).toEqual([['assistant@1', 'mock'], ['assistant@2', 'mock-2']]);
+    const id = first.payload.body.value.id;
+    expect(first.payload.body.value).toMatchObject({ name: 'assistant', version: 1, ref: `${id}@1`, class: 'codex', params: { model: 'mock' }, configurable: true, status: 'present' });
+    // 带 id 再建是它的下一个版本；已有版本不变。
+    const second = await submitTerminal(h, 'system.actor.description.create', { id, name: 'assistant', class: 'codex', params: { model: 'mock-2' } });
+    expect(second.payload.body.value).toMatchObject({ id, ref: `${id}@2`, version: 2 });
+    // 同名但不带 id：另一条描述，互不相干。
+    const twin = await submitTerminal(h, 'system.actor.description.create', { name: 'assistant', class: 'claude' });
+    expect(twin.payload.body.value.id).not.toBe(id);
+    expect(twin.payload.body.value.version).toBe(1);
+    const list = await submitTerminal(h, 'system.actor.description.list', { id });
+    expect(list.payload.body.value.map((row) => [row.ref, row.params.model])).toEqual([[`${id}@1`, 'mock'], [`${id}@2`, 'mock-2']]);
 
-    const retired = await submitTerminal(h, 'system.actor.description.retire', { name: 'assistant', version: 2 });
-    expect(retired.payload.body.value).toMatchObject({ ref: 'assistant@2', status: 'retired' });
+    const retired = await submitTerminal(h, 'system.actor.description.retire', { id, version: 2 });
+    expect(retired.payload.body.value).toMatchObject({ ref: `${id}@2`, status: 'retired' });
     // 不给版本时 get 答最新的 present 版本。
-    expect((await submitTerminal(h, 'system.actor.description.get', { name: 'assistant' })).payload.body.value).toMatchObject({ ref: 'assistant@1' });
-    expect((await submitTerminal(h, 'system.actor.description.get', { name: 'assistant', version: 2 })).payload.body.value).toMatchObject({ status: 'retired' });
+    expect((await submitTerminal(h, 'system.actor.description.get', { id })).payload.body.value).toMatchObject({ ref: `${id}@1` });
+    expect((await submitTerminal(h, 'system.actor.description.get', { id, version: 2 })).payload.body.value).toMatchObject({ status: 'retired' });
 
     // OBS 目录里 present 与 retired 的版本都在。
     const obs = await h.fetchSession('/obs/space/actor-descriptions').then((response) => response.json());
-    const rows = obs.items.filter((row) => row.declared.name === 'assistant');
-    expect(rows.map((row) => [row.key, row.declared.status])).toEqual([['assistant@1', 'present'], ['assistant@2', 'retired']]);
+    const rows = obs.items.filter((row) => row.declared.id === id);
+    expect(rows.map((row) => [row.key, row.declared.status])).toEqual([[`${id}@1`, 'present'], [`${id}@2`, 'retired']]);
 
     const unknownClass = await submitTerminal(h, 'system.actor.description.create', { name: 'bad', class: 'no-such-class' });
     expect(unknownClass.payload.body).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
@@ -73,7 +79,7 @@ describe('phase E stateful mock', () => {
     const view = await submitTerminal(h, 'system.channel.get', { channel_id: 'c0.project' });
     expect(view.payload.body.value).toMatchObject({
       id: 'c0.project',
-      description: { revision: 2, body: { description: 'Configured', serving: 1, members: [{ name: 'project-agent', body: { class: 'codex' } }, { name: 'root', body: { human: true }, principal: 'root' }] } },
+      description: { revision: 2, body: { description: 'Configured', serving: 1, members: [{ name: 'project-agent', body: { class: 'codex' } }, { name: 'root', body: { human: true }, principal: 'root' }].map((entry) => expect.objectContaining({ ...entry, id: expect.any(String) })) } },
     });
     // channel.get 只答注册库里的事实：没有健康，没有构建。
     for (const gone of ['health', 'health_reason', 'build', 'members']) expect(view.payload.body.value).not.toHaveProperty(gone);
@@ -81,7 +87,8 @@ describe('phase E stateful mock', () => {
     expect((await submitTerminal(h, 'system.channel.get', { channel_id: 'c0' })).payload.body.value).not.toHaveProperty('description');
 
     // 源频道成员这一台的配置不跟着复制。
-    await submitTerminal(h, 'system.member.config.set', { member: 'project-agent', values: { effort: 'high' } }, ['system'], 'c0.project');
+    const agentConfig = (await submitTerminal(h, 'system.member.list', {}, ['system'], 'c0.project')).payload.body.actors.find((row) => row.name === 'project-agent').config_id;
+    await submitTerminal(h, 'system.member.config.set', { member: agentConfig, values: { effort: 'high' } }, ['system'], 'c0.project');
     const copied = await createChannel(h, { name: 'copy', parent: 'c0', humans: ['root'], copy_from: 'c0.project' });
     expect(copied.payload.body.value).toEqual({ channel_id: 'c0.copy', revision: 1 });
     const description = await submitTerminal(h, 'system.channel.description.get', { channel: 'c0.copy' });
@@ -94,8 +101,11 @@ describe('phase E stateful mock', () => {
       state = await h.fetchSession('/mock/control/state').then((response) => response.json());
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
-    expect(state.member_configs.filter((row) => row.member === 'project-agent').map((row) => row.channel_id)).toEqual(['c0.project']);
-    expect(state.builds).toEqual(expect.arrayContaining([expect.objectContaining({ object: { kind: 'member', channel: 'c0.copy', name: 'project-agent' }, result: 'ok' })]));
+    // 配置没跟过来：新频道给同一个条目建了一份新的、空的配置。
+    const entryId = description.payload.body.value.body.members.find((row) => row.name === 'project-agent').id;
+    const configs = state.member_configs.filter((row) => row.entry_id === entryId);
+    expect(configs.map((row) => [row.channel_id, row.values])).toEqual(expect.arrayContaining([['c0.project', { effort: 'high' }], ['c0.copy', {}]]));
+    expect(state.builds).toEqual(expect.arrayContaining([expect.objectContaining({ object: expect.objectContaining({ kind: 'member', channel: 'c0.copy', entry_id: entryId, name: 'project-agent' }), result: 'ok' })]));
 
     // description 和 copy_from 最多给一个；平台频道没有描述可复制。
     const both = await createChannel(h, { name: 'both', parent: 'c0', humans: [], description: {}, copy_from: 'c0.project' });
@@ -104,10 +114,11 @@ describe('phase E stateful mock', () => {
     expect(fromPlatform.payload.body).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
 
     // 从本频道挑成员：新频道的描述里只有挑出来的条目。
-    const picked = await createChannel(h, { name: 'picked', parent: 'c0', humans: ['root'], description: { description: '挑的', members: [{ name: 'helper', body: { actor: 'analyst@1' }, params: { effort: 'low' } }] } });
+    const picked = await createChannel(h, { name: 'picked', parent: 'c0', humans: ['root'], description: { description: '挑的', members: [{ name: 'helper', body: { actor: 'd-analyst@1' }, params: { effort: 'low' } }] } });
     expect(picked.payload.body.value).toEqual({ channel_id: 'c0.picked', revision: 1 });
     const pickedDescription = await submitTerminal(h, 'system.channel.description.get', { channel: 'c0.picked' });
-    expect(pickedDescription.payload.body.value.body).toMatchObject({ description: '挑的', serving: 0, members: [{ name: 'helper', body: { actor: 'analyst@1' }, params: { effort: 'low' } }, { name: 'root', body: { human: true }, principal: 'root' }] });
+    expect(pickedDescription.payload.body.value.body).toMatchObject({ description: '挑的', serving: 0, members: [{ name: 'helper', body: { actor: 'd-analyst@1' }, params: { effort: 'low' } }, { name: 'root', body: { human: true }, principal: 'root' }] });
+    expect(pickedDescription.payload.body.value.body.members.every((row) => row.id)).toBe(true);
     h.wire.close(); await close(h.server);
   });
 

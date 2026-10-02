@@ -22,7 +22,7 @@ export const COMPOSER_SLASH_COMMANDS = Object.freeze([
   Object.freeze({ command: 'fork', type: TYPES.agentFork, scope: 'agent', menu: false, label: '分叉对话', description: '从当前上下文分叉', usage: '/fork', minArgs: 0, maxArgs: 0 }),
   Object.freeze({ command: 'context', type: TYPES.agentContext, scope: 'agent', menu: false, label: '查看上下文', description: '请求目标 Agent 的上下文状态', usage: '/context', minArgs: 0, maxArgs: 0 }),
   Object.freeze({ command: 'status', type: TYPES.describe, scope: 'agent', menu: false, label: '查看状态', description: '读取目标 Agent 的当前状态', usage: '/status', minArgs: 0, maxArgs: 0 }),
-  Object.freeze({ command: 'introduce', type: TYPES.member.create, scope: 'system', menu: false, label: '创建成员', description: '在频道描述里加一个成员条目：从 Class 或 Actor 描述（名字@版本）造', usage: '/introduce <成员名> <class 或 名字@版本>', minArgs: 2, maxArgs: 2 }),
+  Object.freeze({ command: 'introduce', type: TYPES.member.create, scope: 'system', menu: false, label: '创建成员', description: '在频道描述里加一个成员条目：从 Class 或 Actor 描述造；名字只显示、可省', usage: '/introduce <class 或 actor:描述id[@版本]> [显示名]', minArgs: 1, maxArgs: 2 }),
   Object.freeze({ command: 'admit', type: TYPES.member.admit, scope: 'system', menu: false, label: '准入用户', description: '将 principal 准入当前频道', usage: '/admit <principal>', minArgs: 1, maxArgs: 1 }),
   Object.freeze({ command: 'members', type: TYPES.member.list, scope: 'system', menu: false, label: '成员列表', description: '查看当前频道成员', usage: '/members', minArgs: 0, maxArgs: 0 }),
   Object.freeze({ command: 'channels', type: TYPES.channel.list, scope: 'system', menu: false, label: '频道列表', description: '查看子频道', usage: '/channels [parent_id]', minArgs: 0, maxArgs: 1 }),
@@ -366,7 +366,10 @@ export function parseComposerCommand(value, definitions = COMPOSER_SLASH_COMMAND
   }
   let payload = {};
   if (command === 'model') payload = { ...(args[0] ? { model: args[0] } : {}), ...(args[1] ? { effort: args[1] } : {}) };
-  else if (command === 'introduce') payload = { name: args[0], body: args[1].includes('@') ? { actor: args[1] } : { class: args[1] } };
+  else if (command === 'introduce') {
+    const body = args[0].startsWith('actor:') ? { actor: args[0].slice('actor:'.length) } : { class: args[0] };
+    payload = { ...(args[1] ? { name: args[1] } : {}), body };
+  }
   else if (command === 'admit') payload = { principal: args[0] };
   else if (command === 'channels' && args[0]) payload = { parent_id: args[0] };
   return Object.freeze({ kind: 'command', ...definition, payload: Object.freeze(payload) });

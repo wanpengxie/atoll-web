@@ -12,9 +12,9 @@ import {
 // system.build.finished 的 payload 形状（见 CONFIG_REALIGN_BUILD_SPEC 附录 A）。
 function finished(overrides = {}) {
   return {
-    object: { kind: 'member', channel: 'c0.project', name: 'writer' },
-    description: { channel_revision: 3, actor: 'writer@1' },
-    config: { revision: 2 },
+    object: { kind: 'member', channel: 'ch-project', channel_name: 'c0.project', entry_id: 'e-1', config_id: 'cfg-1', actor_id: 'agent:writer:9', name: 'writer' },
+    description: { channel_revision: 3, actor: 'd-writer@1' },
+    config: { config_id: 'cfg-1', revision: 2 },
     attempt: 2,
     cause: 'config',
     result: 'failed',
@@ -30,9 +30,9 @@ describe('build record model', () => {
   it('reads a record into a fixed shape, from an object or its JSON text', () => {
     const record = buildRecord(finished());
     expect(record).toEqual({
-      object: { kind: 'member', channel: 'c0.project', name: 'writer' },
+      object: { kind: 'member', channel: 'ch-project', channelName: 'c0.project', entryId: 'e-1', configId: 'cfg-1', generated: '', actorId: 'agent:writer:9', name: 'writer' },
       channelRevision: 3,
-      actor: 'writer@1',
+      actor: 'd-writer@1',
       configRevision: 2,
       attempt: 2,
       cause: 'config',

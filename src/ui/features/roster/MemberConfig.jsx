@@ -83,9 +83,24 @@ function EditorActions({ busy, locked, ready, onCancel, saveLabel }) {
   </div>;
 }
 
-// 描述条目：成员从什么造（class 或 名字@版本）、这个频道给它的 params、它
-// 声明要有的 requires。写在 c0 的频道描述里，发 system.member.set。
-function MemberEntryEditor({ actor, info, commands, disabled, onSaved, onCancel }) {
+// 描述条目：成员从什么造（class，或一条 Actor 描述：描述id@版本 钉死那一版、
+// 不带版本号就是最新版——频道打开时解析）、这个频道给它的 params、它声明要有的
+// requires。写在 c0 的频道描述里，发 system.member.set。
+function actorRefOptions(descriptions = [], current = '') {
+  const options = [];
+  for (const row of descriptions || []) {
+    if (!row?.id) continue;
+    const label = row.name || row.id;
+    options.push({ value: row.id, label: `${label} · 最新版（频道打开时解析）` });
+    for (let version = Number(row.version || 0); version >= 1; version -= 1) {
+      options.push({ value: `${row.id}@${version}`, label: `${label} · 钉死 @${version}` });
+    }
+  }
+  if (current && !options.some((option) => option.value === current)) options.unshift({ value: current, label: current });
+  return options;
+}
+
+function MemberEntryEditor({ actor, info, commands, descriptions = [], disabled, onSaved, onCancel }) {
   const body = plainObject(info?.body) ? info.body : {};
   const [mode, setMode] = useState(body.actor ? 'actor' : 'class');
   const [ref, setRef] = useState(String(body.actor || body.class || ''));
@@ -123,9 +138,14 @@ function MemberEntryEditor({ actor, info, commands, disabled, onSaved, onCancel 
     <fieldset className="member-body-mode" disabled={locked}>
       <legend>从什么造</legend>
       <label><input type="radio" name="member-body-mode" checked={mode === 'class'} onChange={() => setMode('class')} /> Class</label>
-      <label><input type="radio" name="member-body-mode" checked={mode === 'actor'} onChange={() => setMode('actor')} /> Actor 描述（名字@版本）</label>
+      <label><input type="radio" name="member-body-mode" checked={mode === 'actor'} onChange={() => setMode('actor')} /> Actor 描述</label>
     </fieldset>
-    <label>{mode === 'actor' ? 'Actor 描述' : 'Class'}<input aria-label={mode === 'actor' ? '成员 Actor 描述' : '成员 Class'} value={ref} disabled={locked} placeholder={mode === 'actor' ? '例如 research-claude@2' : '例如 claude'} onChange={(event) => setRef(event.target.value)} /></label>
+    {mode === 'actor'
+      ? <label>Actor 描述<select aria-label="成员 Actor 描述" value={ref} disabled={locked} onChange={(event) => setRef(event.target.value)}>
+        <option value="">选择一条 Actor 描述</option>
+        {actorRefOptions(descriptions, body.actor ? String(body.actor) : '').map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </select></label>
+      : <label>Class<input aria-label="成员 Class" value={ref} disabled={locked} placeholder="例如 claude" onChange={(event) => setRef(event.target.value)} /></label>}
     <label>params JSON<textarea aria-label="成员 params JSON" rows="8" spellCheck={false} value={text} disabled={locked} aria-invalid={parsed.error ? true : undefined} onChange={(event) => setText(event.target.value)} /></label>
     {parsed.error && <p className="field-error" role="alert">{parsed.error}</p>}
     <label>requires<input aria-label="成员 requires" value={requiresText} disabled={locked} placeholder="逗号分隔的词" onChange={(event) => setRequiresText(event.target.value)} /></label>
@@ -305,7 +325,7 @@ export function MemberConfigSection({ actor, port = {} }) {
         {editing !== 'entry' && <pre className="member-config-json" aria-label="当前 params">{JSON.stringify(info.params ?? {}, null, 2)}</pre>}
         {editing !== 'entry' && Array.isArray(info.requires) && info.requires.length > 0 && <p className="field-hint">requires：{info.requires.join('、')}</p>}
         {!editing && editable && <button type="button" className="secondary-button" disabled={port.disabled || typeof commands.setMember !== 'function'} onClick={() => { setNotice(''); setEditing('entry'); }}>编辑条目</button>}
-        {editing === 'entry' && <MemberEntryEditor actor={actor} info={info} commands={commands} disabled={port.disabled} onCancel={() => setEditing('')} onSaved={saved} />}
+        {editing === 'entry' && <MemberEntryEditor actor={actor} info={info} commands={commands} descriptions={port.actorDescriptions} disabled={port.disabled} onCancel={() => setEditing('')} onSaved={saved} />}
       </section>}
       {described && <section className="member-block" aria-label="这一台的配置">
         <h4>这一台的配置 <small>本频道的库里，只属于这个成员</small></h4>

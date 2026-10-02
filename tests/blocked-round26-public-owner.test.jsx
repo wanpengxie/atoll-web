@@ -239,7 +239,8 @@ describe('A-D round 26 public-owner evidence', () => {
     // 用户能力：创建时带上当前频道的 Agent——抄它在频道描述里的成员条目。
     // 不变量：条目只能来自本频道描述的一次按需读取；公开 owner：GovernanceFeature.ChannelCreateModal。
     const submit = vi.fn().mockResolvedValue('request-ad150');
-    const entry = { name: 'worker', body: { class: 'codex' } };
+    // 条目带 id；抄进新频道时不带 id（新频道的条目 id 由 registrar 重新铸）。
+    const entry = { id: 'e-worker', name: 'worker', body: { class: 'codex' } };
     const readDescription = vi.fn().mockResolvedValue({ body: { members: [entry] }, revision: 1 });
     createChannelModal({ commands: { submit, readDescription } });
     fireEvent.change(screen.getByLabelText('新频道名称'), { target: { value: 'agent-room' } });
@@ -250,7 +251,7 @@ describe('A-D round 26 public-owner evidence', () => {
     await waitFor(() => expect(submit).toHaveBeenCalledWith(expect.objectContaining({
       scope: 'channel', action: 'create_child',
       payload: expect.objectContaining({
-        name: 'agent-room', parentId: 'c0', members: [entry],
+        name: 'agent-room', parentId: 'c0', members: [{ name: 'worker', body: { class: 'codex' } }],
       }),
     })));
   });
@@ -519,23 +520,23 @@ describe('A-D round 26 public-owner evidence', () => {
   it('[AD-194] keeps member ledger terminal and roster convergence as separate facts', async () => {
     // 用户能力：成员操作只有账本和 roster 都收敛才 ready。
     // 不变量：terminal receipt 不能伪造 roster；公开 owner：ChannelAdministrationPanel → ChannelMembers（GovernanceFeature）。
-    const submit = vi.fn().mockResolvedValue('member-request');
+    const submit = vi.fn().mockResolvedValue({ written: true, config_id: 'cfg-worker' });
     const refresh = vi.fn();
-    const worker = { id: 'agent:worker:1', kind: 'agent', status: 'present', name: 'Worker' };
+    const worker = { id: 'agent:worker:1', kind: 'agent', status: 'present', name: 'Worker', configId: 'cfg-worker' };
     const view = governance({
       commands: { submit, refresh },
-      actorDescriptions: [{ name: 'worker', version: 1, class: 'codex', status: 'present' }],
+      actorDescriptions: [{ id: 'd-worker', name: 'worker', version: 1, class: 'codex', status: 'present' }],
       roster: [],
       rosterAuthority: { principalId: 'human:root:1', channelId: 'c0', generation: 1, current: false },
     });
     fireEvent.click(screen.getByRole('tab', { name: '成员' }));
     fireEvent.click(screen.getByRole('combobox', { name: '选择参与者' }));
-    fireEvent.click(screen.getByRole('option', { name: 'worker@1 · Actor 描述（class codex）' }));
+    fireEvent.click(screen.getByRole('option', { name: 'worker @1 · Actor 描述（class codex）' }));
     fireEvent.click(screen.getByRole('button', { name: '添加到频道' }));
     await waitFor(() => expect(submit).toHaveBeenCalledWith({
       scope: 'channel',
       action: 'introduce_actor',
-      payload: { channelId: 'c0', candidateType: 'description', candidateId: 'worker@1', name: 'worker' },
+      payload: { channelId: 'c0', candidateType: 'description', candidateId: 'd-worker@1', name: 'worker' },
     }));
     expect(screen.getByText('成员条目已写进频道描述；成员构建好后出现在名册里，构建结果在成员详情和时间线上。')).toBeTruthy();
     expect(screen.queryByText('成员已就绪')).toBeNull();
@@ -546,7 +547,7 @@ describe('A-D round 26 public-owner evidence', () => {
       port={{
         commands: { submit, refresh },
         children: [],
-        actorDescriptions: [{ name: 'worker', version: 1, class: 'codex', status: 'present' }],
+        actorDescriptions: [{ id: 'd-worker', name: 'worker', version: 1, class: 'codex', status: 'present' }],
         roster: [worker],
         rosterAuthority: { principalId: 'human:root:1', channelId: 'c0', generation: 1, current: true },
       }}

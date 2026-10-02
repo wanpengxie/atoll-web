@@ -12,7 +12,7 @@ import {
 export function BuildLine({ record, label = '' }) {
   const build = buildRecord(record);
   if (!build) return null;
-  return <div className={`build-line build-${buildTone(build)}`} data-build-object={build.object.kind} data-build-name={build.object.name || undefined}>
+  return <div className={`build-line build-${buildTone(build)}`} data-build-object={build.object.kind} data-build-name={build.object.name || undefined} data-build-config={build.object.configId || undefined} data-build-generated={build.object.generated || undefined}>
     <strong>{label || buildObjectLabel(build)}</strong>
     <span>{buildResultLabel(build)}{build.state ? ` · ${buildStateLabel(build)}` : ''}</span>
     <small>{buildAttemptLabel(build)} · 描述第 {build.channelRevision} 版{build.actor ? ` · ${build.actor}` : ''}{build.configRevision != null ? ` · 配置第 ${build.configRevision} 版` : ''}</small>

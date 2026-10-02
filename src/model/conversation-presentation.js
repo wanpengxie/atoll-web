@@ -598,16 +598,9 @@ export function entryEnvelopes(entry) {
   return envelopes.filter(Boolean);
 }
 
-function humanPrincipal(actorID) {
-  const parts = String(actorID || '').split(String(actorID || '').includes('::') ? '::' : ':');
-  return parts[0] === 'human' && parts.length >= 3 && parts[1] && parts[2] ? parts[1] : '';
-}
-
+// 是不是"我"：只比完整 actor id，从不拆开它。
 function samePerson(left, right) {
-  if (!left || !right) return false;
-  if (left === right) return true;
-  const principal = humanPrincipal(left);
-  return Boolean(principal && principal === humanPrincipal(right));
+  return Boolean(left && right && left === right);
 }
 
 function selfOperation(envelope) {

@@ -198,27 +198,27 @@ describe('the roster and member config', () => {
     return {
       actor_id: 'agent:writer:9', member: true, present: true, name: 'writer',
       class: 'claude', desired_host: 'local-device',
-      body: { actor: 'writer@1' },
+      body: { actor: 'd-writer@1' },
       params: { temperature: 0.3 },
       requires: ['web'],
       own_config: { values: { model: 'claude-opus' }, revision: 2 },
       effective: { model: 'claude-opus', service: { api_key: '$required:写作服务的 API key', region: 'cn' }, temperature: 0.3 },
       sources: { model: 'config', 'service.api_key': 'actor', 'service.region': 'actor', temperature: 'member' },
-      build: { object: { kind: 'member', channel: 'c0.project', name: 'writer' }, description: { channel_revision: 3, actor: 'writer@1' }, config: { revision: 2 }, attempt: 4, result: 'failed', state: 'stopped', reason: 'service.api_key is a placeholder still unfilled' },
+      build: { object: { kind: 'member', channel: 'c0.project', name: 'writer' }, description: { channel_revision: 3, actor: 'd-writer@1' }, config: { revision: 2 }, attempt: 4, result: 'failed', state: 'stopped', reason: 'service.api_key is a placeholder still unfilled' },
       ...overrides,
     };
   }
   const WRITER = { id: 'agent:writer:9', kind: 'agent' };
 
   it('reads on demand and shows the entry, own config, sources, missing placeholders and the last build', async () => {
-    const readMember = vi.fn().mockResolvedValue(writerDetail({ missing: [{ key: 'service.api_key', hint: '写作服务的 API key' }], note: 'a newer version of its actor description exists: writer@2' }));
+    const readMember = vi.fn().mockResolvedValue(writerDetail({ missing: [{ key: 'service.api_key', hint: '写作服务的 API key' }], note: 'a newer version of its actor description exists: d-writer@2' }));
     render(<MemberConfigSection actor={WRITER} port={{ commands: { readMember, setMember: vi.fn(), setMemberConfig: vi.fn() } }} />);
     // 手动挡：不点就不发 member.get。
     expect(readMember).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: '读取配置' }));
-    await screen.findByText('Actor 描述 writer@1');
+    await screen.findByText('Actor 描述 d-writer@1');
     expect(readMember).toHaveBeenCalledWith(WRITER);
-    expect(screen.getByText('a newer version of its actor description exists: writer@2')).toBeTruthy();
+    expect(screen.getByText('a newer version of its actor description exists: d-writer@2')).toBeTruthy();
     // 两块：描述条目（params、requires）和这一台的配置（values、版本）。
     expect(screen.getByLabelText('当前 params').textContent).toContain('"temperature": 0.3');
     expect(screen.getByText('requires：web')).toBeTruthy();
@@ -239,29 +239,32 @@ describe('the roster and member config', () => {
     expect(missing.textContent).toContain('写作服务的 API key');
     const build = screen.getByLabelText('最近一次构建');
     expect(build.textContent).toContain('失败 · 已停止：改描述或配置、或重启后才会再构建');
-    expect(build.textContent).toContain('第 4 次尝试 · 描述第 3 版 · writer@1 · 配置第 2 版');
+    expect(build.textContent).toContain('第 4 次尝试 · 描述第 3 版 · d-writer@1 · 配置第 2 版');
     expect(build.textContent).toContain('service.api_key is a placeholder still unfilled');
   });
 
   it('edits the member entry and sends body and a params merge patch through setMember', async () => {
     const readMember = vi.fn().mockResolvedValue(writerDetail());
     const setMember = vi.fn()
-      .mockRejectedValueOnce(Object.assign(new Error('bad'), { code: 'invalid_args', detail: 'member writer: actor "writer@9" does not exist' }))
+      .mockRejectedValueOnce(Object.assign(new Error('bad'), { code: 'invalid_args', detail: 'member writer: actor description d-writer@2 is retired' }))
       .mockResolvedValueOnce({ written: true, description_revision: 4 });
-    render(<MemberConfigSection actor={WRITER} port={{ commands: { readMember, setMember, setMemberConfig: vi.fn() } }} />);
+    // 挑 Actor 描述：按描述 id；带版本号钉死那一版，不带就是最新版。
+    const actorDescriptions = [{ id: 'd-writer', name: 'writer', version: 2, ref: 'd-writer@2' }];
+    render(<MemberConfigSection actor={WRITER} port={{ actorDescriptions, commands: { readMember, setMember, setMemberConfig: vi.fn() } }} />);
     fireEvent.click(screen.getByRole('button', { name: '读取配置' }));
-    await screen.findByText('Actor 描述 writer@1');
+    await screen.findByText('Actor 描述 d-writer@1');
     fireEvent.click(screen.getByRole('button', { name: '编辑条目' }));
     const editor = screen.getByRole('form', { name: '编辑成员条目' });
     // 从 actor 描述造的成员：编辑器打开时就在 Actor 描述那一档。
     const ref = within(editor).getByLabelText('成员 Actor 描述');
-    expect(ref.value).toBe('writer@1');
-    fireEvent.change(ref, { target: { value: 'writer@2' } });
+    expect(ref.value).toBe('d-writer@1');
+    expect([...ref.querySelectorAll('option')].map((option) => option.value)).toEqual(['', 'd-writer', 'd-writer@2', 'd-writer@1']);
+    fireEvent.change(ref, { target: { value: 'd-writer@2' } });
     fireEvent.change(within(editor).getByLabelText('成员 params JSON'), { target: { value: '{"effort":"high"}' } });
     fireEvent.change(within(editor).getByLabelText('成员 requires'), { target: { value: '' } });
     // 将提交的变更：body 整个换、params 合并补丁（删掉的键给 null）、requires 清空给 null。
     expect(JSON.parse(within(editor).getByText(/"body"/).textContent)).toEqual({
-      body: { actor: 'writer@2' },
+      body: { actor: 'd-writer@2' },
       params: { effort: 'high', temperature: null },
       requires: null,
     });
@@ -269,14 +272,14 @@ describe('the roster and member config', () => {
     expect(within(editor).queryByRole('button', { name: '检查变更' })).toBeNull();
     expect(within(editor).getAllByRole('button').map((button) => button.textContent)).toEqual(['取消', '保存条目']);
 
-    fireEvent.change(within(editor).getByLabelText('成员 Actor 描述'), { target: { value: 'writer@9' } });
     fireEvent.click(within(editor).getByRole('button', { name: '保存条目' }));
-    await within(editor).findByText('invalid_args：member writer: actor "writer@9" does not exist');
+    await within(editor).findByText('invalid_args：member writer: actor description d-writer@2 is retired');
 
-    fireEvent.change(within(editor).getByLabelText('成员 Actor 描述'), { target: { value: 'writer@2' } });
+    // 改成不带版本号：跟最新版。
+    fireEvent.change(within(editor).getByLabelText('成员 Actor 描述'), { target: { value: 'd-writer' } });
     fireEvent.click(within(editor).getByRole('button', { name: '保存条目' }));
     await screen.findByText(/成员条目已写进频道描述（第 4 版）/);
-    expect(setMember).toHaveBeenLastCalledWith({ actor: WRITER, body: { actor: 'writer@2' }, params: { effort: 'high', temperature: null }, requires: null });
+    expect(setMember).toHaveBeenLastCalledWith({ actor: WRITER, body: { actor: 'd-writer' }, params: { effort: 'high', temperature: null }, requires: null });
     // 保存后重新读一次。
     expect(readMember).toHaveBeenCalledTimes(2);
   });
@@ -286,7 +289,7 @@ describe('the roster and member config', () => {
     const setMember = vi.fn().mockResolvedValue({ written: true, description_revision: 4 });
     render(<MemberConfigSection actor={WRITER} port={{ commands: { readMember, setMember, setMemberConfig: vi.fn() } }} />);
     fireEvent.click(screen.getByRole('button', { name: '读取配置' }));
-    await screen.findByText('Actor 描述 writer@1');
+    await screen.findByText('Actor 描述 d-writer@1');
     fireEvent.click(screen.getByRole('button', { name: '编辑条目' }));
     const editor = screen.getByRole('form', { name: '编辑成员条目' });
     // 没改任何东西：保存不可点。
@@ -305,7 +308,7 @@ describe('the roster and member config', () => {
     const devices = [{ id: 'local-device', name: 'local-device' }, { id: 'laptop', name: 'Laptop' }];
     render(<MemberConfigSection actor={WRITER} port={{ devices, commands: { readMember, setMember: vi.fn(), setMemberConfig }, globalKeys: { available: true, commands: { list } } }} />);
     fireEvent.click(screen.getByRole('button', { name: '读取配置' }));
-    await screen.findByText('Actor 描述 writer@1');
+    await screen.findByText('Actor 描述 d-writer@1');
     // 全局 key 名单只在打开编辑器时读。
     expect(list).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: '编辑配置' }));

@@ -758,11 +758,6 @@ function foldRow(state, seq, envelope) {
   });
 }
 
-function humanPrincipal(id) {
-  const [kind, principal] = String(id || '').split(':');
-  return kind === 'human' ? principal : '';
-}
-
 function createState(channelId) {
   const state = {
     channelId, rows: new Map(), timeline: [], narration: [], lastSeq: 0,

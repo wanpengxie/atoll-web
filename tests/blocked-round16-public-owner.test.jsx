@@ -272,12 +272,12 @@ describe('Round 16 public-owner evidence: Dynamic presentation', () => {
     expect(view.container.querySelectorAll('[tabindex="0"]')).toHaveLength(2);
   });
 
-  it('[AD-336] an unknown sender displays the actor id middle segment without leaking the full id', () => {
-    // 能力：用户仍能识别未知发送者；不变量：完整 actor id 不进入可见文案；公开 owner：useTimelineRowRenderer/actor-display。
+  it('[AD-336] an unknown sender shows a generic label without parsing or leaking the actor id', () => {
+    // 能力：未知发送者也有可读称呼；不变量：actor id 从不拆开取名字（10-02 实体身份），完整 id 不进入可见文案；公开 owner：useTimelineRowRenderer/actor-display。
     const sender = { id: 'human:root:1787128257816', kind: 'human' };
     const note = envelope({ id: 'unknown-sender', kind: 'event', type: 'human.note', sender, body: { text: '名称降级测试' } });
     const { view } = renderStandaloneRows([{ id: note.id, body: { kind: 'standalone', envelope: note }, continuation: false }]);
-    expect(view.container.textContent).toContain('root');
+    expect(view.container.textContent).toContain('未知成员');
     expect(view.container.textContent).not.toContain(sender.id);
   });
 
