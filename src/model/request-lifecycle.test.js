@@ -66,19 +66,30 @@ describe('request lifecycle from ledger rows', () => {
 });
 
 describe('a queue is taken in order', () => {
-  it('a queued request is passed once a later request to the same agent started', () => {
-    const earlier = ask(10, [frame(11, 'queued')]);
-    const later = ask(20, [frame(21, 'queued'), frame(40, 'processing')]);
-    const other = { ...ask(5, [frame(6, 'queued')]), request: { id: 'r5', type: 'agent.ask', audience: ['agent:codex:1'] } };
-    const passed = passedInQueue([earlier, later, other]);
+  const human = (turn) => ({ ...turn, request: { ...turn.request, sender: { id: 'human:root:1', kind: 'human' } } });
+  const startedAfter = (from, count, extra = {}) => Array.from({ length: count }, (_, index) => human({
+    ...ask(from + index * 10, [frame(from + index * 10 + 1, 'processing')]), ...extra,
+  }));
+
+  it('a queued request is passed once ten later user messages to the same agent started', () => {
+    const earlier = human(ask(10, [frame(11, 'queued')]));
+    const other = { ...human(ask(5, [frame(6, 'queued')])), request: { id: 'r5', type: 'agent.ask', audience: ['agent:codex:1'], sender: { kind: 'human' } } };
+    const later = startedAfter(100, 10);
+    const passed = passedInQueue([earlier, other, ...later]);
     expect(passed(earlier)).toBe(true);
-    expect(passed(later)).toBe(false);
+    expect(passed(later[0])).toBe(false);
     expect(passed(other)).toBe(false);
   });
 
-  it('a later request that is only queued passes nothing', () => {
-    const earlier = ask(10, [frame(11, 'queued')]);
-    const later = ask(20, [frame(21, 'queued')]);
-    expect(passedInQueue([earlier, later])(earlier)).toBe(false);
+  it('fewer than ten later starts pass nothing', () => {
+    const earlier = human(ask(10, [frame(11, 'queued')]));
+    expect(passedInQueue([earlier, ...startedAfter(100, 9)])(earlier)).toBe(false);
+  });
+
+  it('only user messages count, and only started ones', () => {
+    const earlier = human(ask(10, [frame(11, 'queued')]));
+    const fromAgents = startedAfter(100, 10).map((turn) => ({ ...turn, request: { ...turn.request, sender: { kind: 'agent' } } }));
+    const onlyQueued = Array.from({ length: 10 }, (_, index) => human(ask(300 + index * 10, [frame(301 + index * 10, 'queued')])));
+    expect(passedInQueue([earlier, ...fromAgents, ...onlyQueued])(earlier)).toBe(false);
   });
 });

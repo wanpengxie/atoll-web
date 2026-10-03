@@ -104,19 +104,27 @@ export function lostReason(turn, restarts = new Map(), now = Date.now()) {
 }
 
 // An agent takes its queue strictly in order: requests are appended to its
-// buffer and taken from the front. So once a later request to the same agent
-// has started, an earlier one has started, been merged or ended too — even
-// when this page never got the frame that says so. The returned predicate
-// says whether a turn has been passed that way.
+// buffer and taken from the front. So once later requests to the same agent
+// have started, an earlier one has started, been merged or ended too — even
+// when this page never got the frame that says so. One later start is not
+// taken as proof; QUEUE_PASSED_AFTER later user messages started are. The
+// returned predicate says whether a turn has been passed that way.
+export const QUEUE_PASSED_AFTER = 10;
+
 export function passedInQueue(turns) {
-  const startedUpTo = new Map();
+  const starts = new Map(); // receiver -> request seqs of started user messages
   for (const turn of turns || []) {
-    const started = (turn?.provisional || [])
+    if (turn?.request?.sender?.kind !== 'human') continue;
+    const started = (turn.provisional || [])
       .some((item) => String(argsOf(item?.envelope)?.status || item?.status || '') === 'processing');
     if (!started) continue;
     const receiver = String(turn.request?.audience?.[0] || '');
-    startedUpTo.set(receiver, Math.max(startedUpTo.get(receiver) || 0, Number(turn.requestSeq || 0)));
+    if (!starts.has(receiver)) starts.set(receiver, []);
+    starts.get(receiver).push(Number(turn.requestSeq || 0));
   }
-  return (turn) => Number(turn?.requestSeq || 0)
-    < (startedUpTo.get(String(turn?.request?.audience?.[0] || '')) || 0);
+  return (turn) => {
+    const seq = Number(turn?.requestSeq || 0);
+    const later = (starts.get(String(turn?.request?.audience?.[0] || '')) || []).filter((value) => value > seq);
+    return later.length >= QUEUE_PASSED_AFTER;
+  };
 }
