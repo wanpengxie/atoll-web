@@ -94,7 +94,8 @@ export const TYPES = Object.freeze({
   channelDevice: Object.freeze({ list: 'system.channel.device.list' }),
   // 频道描述（c0 里的那份文档）：成员条目、说明、外挂设备，一修订一行。频道内的
   // member.create/set/delete 和 channel.set、device.attach/detach 都是在改它；
-  // write 整份写（带"基于第几个修订"）。对外的词是 svcactor 条目的配置，不在这里。
+  // write 整份写（带"基于第几个修订"）。对外的词也在这里：svcactor 条目的 params
+  // （words、agent），用 member.set 改。
   channelDescription: Object.freeze({ get: 'system.channel.description.get', write: 'system.channel.description.write' }),
   // Actor 描述：不可变的 名字@版本。新建同名 = 下一个版本；退役只让它不能再被新
   // 成员引用，已经引用它的成员照旧。
