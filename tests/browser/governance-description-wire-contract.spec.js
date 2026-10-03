@@ -160,10 +160,10 @@ test('复制频道: copy_from creates a channel whose member entries match the s
   await expect(modal.getByLabel('频道用途')).toHaveCount(0);
   await expect(modal.getByRole('button', { name: '创建频道', exact: true })).toBeDisabled();
   await modal.getByRole('combobox', { name: '复制的频道' }).click();
-  // 只能复制自己是成员的频道：c0 的描述只读也能复制（抄出来可写）；c0.public（不是成员）不在里面。
+  // 只能复制自己是成员的频道；内核频道 c0 不复制，c0.public（不是成员）也不在里面。
   const options = modal.getByRole('listbox', { name: '复制的频道选项' });
   await expect(options.getByRole('option', { name: 'c0.project', exact: true })).toBeVisible();
-  await expect(options.getByRole('option', { name: 'c0', exact: true })).toBeVisible();
+  await expect(options.getByRole('option', { name: 'c0', exact: true })).toHaveCount(0);
   await expect(options.getByRole('option', { name: 'c0.public', exact: true })).toHaveCount(0);
   await options.getByRole('option', { name: 'c0.project', exact: true }).click();
   await modal.getByRole('button', { name: '创建频道', exact: true }).click();

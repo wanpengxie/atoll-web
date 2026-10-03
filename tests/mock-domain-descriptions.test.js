@@ -40,7 +40,7 @@ describe('mock domain: descriptions, member config and builds', () => {
     expect(mock.activeMembership('root', 'c0.copy')).toMatchObject({ role: 'owner' });
   });
 
-  it('refuses create payloads that name both a description and copy_from; copies a read-only description as a writable one', () => {
+  it('refuses create payloads that name both a description and copy_from; and never copy a kernel channel', () => {
     const mock = domain();
     expect(() => mock.createChannel('c0', { name: 'x', description: {}, copy_from: 'c0.project' })).toThrow(expect.objectContaining({ code: 'invalid_args' }));
     expect(() => mock.createChannel('c0', { name: 'z', copy_from: 'c0.nope' })).toThrow(expect.objectContaining({ code: 'not_found' }));
@@ -49,11 +49,9 @@ describe('mock domain: descriptions, member config and builds', () => {
     // 新频道的条目 id 由 registrar 铸：带了 id 就拒。
     expect(() => mock.createChannel('c0', { name: 'u', description: { members: [{ id: 'e-forged', name: 'a', body: { class: 'codex' } }] } })).toThrow(expect.objectContaining({ code: 'invalid_args' }));
     expect(mock.channel('c0.x')).toBeNull();
-    // c0 的描述（只读）能复制：新频道的描述是它自己的，可写。
-    mock.createChannel('c0', { name: 'y', copy_from: 'c0' });
-    expect(mock.channelDescription('c0.y').body.readonly).toBeUndefined();
-    expect(mock.channelDescription('c0.y').body.members.some((entry) => entry.body?.actor === 'steward')).toBe(true);
-    expect(() => mock.setChannel('c0.y', { description: 'mine' })).not.toThrow();
+    // 内核频道（c0、大厅）的描述不复制。
+    expect(() => mock.createChannel('c0', { name: 'y', copy_from: 'c0' })).toThrow(expect.objectContaining({ code: 'reserved' }));
+    expect(() => mock.createChannel('c0', { name: 'y', copy_from: 'c0.lobby' })).toThrow(expect.objectContaining({ code: 'reserved' }));
   });
 
   it('turns a failed build ok when member.config.set fills the placeholder', () => {

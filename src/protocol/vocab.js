@@ -147,6 +147,11 @@ export const ROOT_CHANNEL_ID = 'c0';
 export const LOBBY_CHANNEL_ID = 'c0.lobby';
 export const HOME_PARENT_CHANNEL_ID = 'c0.home';
 
+// 内核频道：id 是系统字面量，描述由内核写，不能被复制（owner 10-03"系统内c0为啥能被复制？？"）。
+export function isKernelChannel(id) {
+  return id === ROOT_CHANNEL_ID || id === LOBBY_CHANNEL_ID || id === HOME_PARENT_CHANNEL_ID;
+}
+
 // agent 类：配置里的 agent 说它跑哪个 agent 类（c0 的 steward 就是它）。
 export const AGENT_CLASS = 'agent';
 

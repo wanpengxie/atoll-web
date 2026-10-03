@@ -107,11 +107,11 @@ describe('phase E stateful mock', () => {
     expect(configs.map((row) => [row.channel_id, row.values])).toEqual(expect.arrayContaining([['c0.project', { effort: 'high' }], ['c0.copy', {}]]));
     expect(state.builds).toEqual(expect.arrayContaining([expect.objectContaining({ object: expect.objectContaining({ kind: 'member', channel: 'c0.copy', entry_id: entryId, name: 'project-agent' }), result: 'ok' })]));
 
-    // description 和 copy_from 最多给一个；只读的描述（c0 的）也能复制。
+    // description 和 copy_from 最多给一个；内核频道（c0）的描述不复制。
     const both = await createChannel(h, { name: 'both', parent: 'c0', humans: [], description: {}, copy_from: 'c0.project' });
     expect(both.payload.body).toMatchObject({ status: 'failed', error_code: 'invalid_args' });
     const fromKernel = await createChannel(h, { name: 'plat', parent: 'c0', humans: [], copy_from: 'c0' });
-    expect(fromKernel.payload.body).toMatchObject({ status: 'completed' });
+    expect(fromKernel.payload.body).toMatchObject({ status: 'failed', error_code: 'reserved' });
 
     // 从本频道挑成员：新频道的描述里是挑出来的条目，加上每个频道都有的 svcactor 和放进来的人。
     const picked = await createChannel(h, { name: 'picked', parent: 'c0', humans: ['root'], description: { description: '挑的', members: [{ name: 'helper', body: { actor: 'd-analyst@1' }, params: { effort: 'low' } }] } });

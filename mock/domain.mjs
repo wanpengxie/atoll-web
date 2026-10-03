@@ -1017,9 +1017,9 @@ export class MockDomain {
       if (!source || source.status !== 'present') throw operationError('not_found', `channel to copy ${copyFrom} does not exist; see system.channel.list`);
       const copied = this.descriptions.get(source.id);
       if (!copied) throw operationError('not_found', `${source.qualified_name} has no description to copy`);
-      // 只读的（内核写的）也能复制：复制出来的是新频道自己的描述，可写。
+      // 内核频道的描述是内核的，不复制（和真节点 registrar 一样，按 id 认）。
+      if (source.id === C0_CHANNEL_ID || source.internal || source.id === 'c0.home') throw operationError('reserved', `${source.qualified_name} is a kernel channel: its description is the kernel's and is not copied; start from a blank description, or pick members`);
       body = structuredClone(copied.body);
-      delete body.readonly;
     }
     // 每个频道都有 svcactor：描述里没有就写上。
     let svcEntry = body.members.find((entry) => String(entry.body?.actor || '').replace(/@\d+$/, '') === 'svcactor' || entry.body?.class === 'svcactor');

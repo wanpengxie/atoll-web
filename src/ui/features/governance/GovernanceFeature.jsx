@@ -441,7 +441,7 @@ function creationConvergence(channel, children, request, creation = null) {
 
 const CREATE_STARTS = Object.freeze([
   ['blank', '空白', '从一份空描述开始，之后再加成员'],
-  ['copy', '复制一个频道', '照抄另一个频道的描述（成员条目、说明、设备；只读的也能抄，抄出来的可写）；被复制频道的成员配置不跟过来'],
+  ['copy', '复制一个频道', '照抄另一个频道的描述（成员条目、说明、设备）；内核频道不能抄；被复制频道的成员配置不跟过来'],
   ['pick', '从本频道挑成员', '把本频道描述里的几个成员条目抄进新频道'],
 ]);
 
