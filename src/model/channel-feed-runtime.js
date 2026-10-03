@@ -2060,8 +2060,15 @@ export function createChannelFeedRuntime(options = {}) {
   // and that head, and nothing else will ever fetch them — older-history
   // paging walks down from the oldest row. This fills that stretch newest
   // first with a cursor of its own; the older-history frontier is untouched.
+  //
+  // A refill cut short (the phone went back to the background, the node
+  // restarted) has filled the top of the stretch only. The rows it did fill
+  // now sit above the hole, so the next refill must not start its floor from
+  // them: refillOwed keeps, per channel, the floor a refill still owes until
+  // one reaches it.
   const TAIL_REFILL_MAX_PAGES = 16;
   const tailRefills = new Map();
+  const refillOwed = new Map();
   async function refillTail(channelId) {
     const status = histories.get(channelId);
     const head = historyNumeric(grants.get(channelId)?.head_seq);
@@ -2069,10 +2076,12 @@ export function createChannelFeedRuntime(options = {}) {
     // the newest row this page held at or below the head.
     let floor = 0;
     for (const seq of replica.state(channelId)?.rows?.keys() || []) if (seq <= head && seq > floor) floor = seq;
+    if (floor && refillOwed.has(channelId)) floor = Math.min(floor, refillOwed.get(channelId));
     // Nothing held: the ordinary cold path already reads from the head.
     if (!status?.attached || status.generation !== generation || !floor || head <= floor) return false;
     if (tailRefills.get(channelId) === attachEpoch) return false;
     tailRefills.set(channelId, attachEpoch);
+    refillOwed.set(channelId, floor);
     const authority = Object.freeze({ principalEpoch, worldEpoch, generation, attachEpoch });
     let beforeSeq = head + 1;
     let lowest = 0;
@@ -2098,14 +2107,20 @@ export function createChannelFeedRuntime(options = {}) {
         refreshControlCurrent(channelId, status);
         publish({ index: true });
         const next = historyNumeric(outcome.result?.next_before_seq ?? outcome.result?.nextBeforeSeq);
-        if (outcome.result?.exhausted || !next || next >= beforeSeq) return true;
+        if (outcome.result?.exhausted || !next || next >= beforeSeq) {
+          refillOwed.delete(channelId);
+          return true;
+        }
         beforeSeq = next;
       }
+      refillOwed.delete(channelId);
       if (beforeSeq <= floor + 1 || !lowest) return true;
       // Too far behind to join up: keep the fresh window and let older-history
       // paging continue from its bottom, rather than leave a hole under it.
+      // A turn below the hole is cut too: its end may lie in the hole, and
+      // kept, it would read as open forever.
       const keep = [...(replica.state(channelId)?.rows?.keys() || [])].filter((seq) => seq >= lowest).length;
-      replica.trim(channelId, keep);
+      replica.trim(channelId, keep, { keepOpenTurns: false });
       status.beforeSeq = replica.visibleOldest(channelId) || lowest;
       status.hasOlder = true;
       status.coverage = replica.record(channelId)?.materializedCoverage || [];
@@ -2159,7 +2174,7 @@ export function createChannelFeedRuntime(options = {}) {
     if (principal && principal !== selectedPrincipal) {
       for (const channelId of histories.keys()) admission.reset(channelId);
       clearDeferredHistoryRequests();
-      histories.clear(); grants.clear(); replica.reset(); cursors.clearReadAuthority();
+      histories.clear(); grants.clear(); replica.reset(); refillOwed.clear(); cursors.clearReadAuthority();
      
       activityEntries.clear(); timerEvents.splice(0);
       activityConnected = false; activityRevision += 1;
@@ -2272,7 +2287,7 @@ export function createChannelFeedRuntime(options = {}) {
       lifecycleEpoch += 1;
       for (const channelId of histories.keys()) admission.reset(channelId);
       clearDeferredHistoryRequests();
-      histories.clear(); grants.clear(); replica.reset(); cursors.clearReadAuthority();
+      histories.clear(); grants.clear(); replica.reset(); refillOwed.clear(); cursors.clearReadAuthority();
      
       activityEntries.clear();
       timerEvents.splice(0);

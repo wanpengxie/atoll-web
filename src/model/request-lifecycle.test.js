@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { LIFECYCLE, lostReason, memberRestarts, requestLifecycle } from './request-lifecycle.js';
+import { LIFECYCLE, lostReason, memberRestarts, passedInQueue, requestLifecycle } from './request-lifecycle.js';
 
 const AGENT = 'agent:claude:1';
 const frame = (seq, status) => ({ seq, envelope: { payload: { body: { status } } } });
@@ -62,5 +62,23 @@ describe('request lifecycle from ledger rows', () => {
     expired.request.expires_at = 1_000;
     expect(requestLifecycle(expired, new Map(), 2_000)).toBe(LIFECYCLE.lost);
     expect(lostReason(expired, new Map(), 2_000)).toBe('expired');
+  });
+});
+
+describe('a queue is taken in order', () => {
+  it('a queued request is passed once a later request to the same agent started', () => {
+    const earlier = ask(10, [frame(11, 'queued')]);
+    const later = ask(20, [frame(21, 'queued'), frame(40, 'processing')]);
+    const other = { ...ask(5, [frame(6, 'queued')]), request: { id: 'r5', type: 'agent.ask', audience: ['agent:codex:1'] } };
+    const passed = passedInQueue([earlier, later, other]);
+    expect(passed(earlier)).toBe(true);
+    expect(passed(later)).toBe(false);
+    expect(passed(other)).toBe(false);
+  });
+
+  it('a later request that is only queued passes nothing', () => {
+    const earlier = ask(10, [frame(11, 'queued')]);
+    const later = ask(20, [frame(21, 'queued')]);
+    expect(passedInQueue([earlier, later])(earlier)).toBe(false);
   });
 });

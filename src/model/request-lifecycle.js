@@ -102,3 +102,21 @@ export function lostReason(turn, restarts = new Map(), now = Date.now()) {
   const receiver = String(turn.request?.audience?.[0] || '');
   return (restarts.get(receiver) || 0) > lastFrameSeq(turn) ? 'restart' : 'expired';
 }
+
+// An agent takes its queue strictly in order: requests are appended to its
+// buffer and taken from the front. So once a later request to the same agent
+// has started, an earlier one has started, been merged or ended too — even
+// when this page never got the frame that says so. The returned predicate
+// says whether a turn has been passed that way.
+export function passedInQueue(turns) {
+  const startedUpTo = new Map();
+  for (const turn of turns || []) {
+    const started = (turn?.provisional || [])
+      .some((item) => String(argsOf(item?.envelope)?.status || item?.status || '') === 'processing');
+    if (!started) continue;
+    const receiver = String(turn.request?.audience?.[0] || '');
+    startedUpTo.set(receiver, Math.max(startedUpTo.get(receiver) || 0, Number(turn.requestSeq || 0)));
+  }
+  return (turn) => Number(turn?.requestSeq || 0)
+    < (startedUpTo.get(String(turn?.request?.audience?.[0] || '')) || 0);
+}

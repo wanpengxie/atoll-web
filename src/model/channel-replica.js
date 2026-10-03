@@ -833,13 +833,16 @@ export function createChannelReplicaStore() {
     return record;
   }
 
-  function trim(channelId, maximumRows) {
+  // keepOpenTurns false cuts at the row count even through an open turn: for
+  // a window that is not contiguous with what lies below it, where an "open"
+  // turn below is only one whose later frames were never fetched.
+  function trim(channelId, maximumRows, { keepOpenTurns = true } = {}) {
     const record = records.get(channelId);
     const limit = numeric(maximumRows);
     if (!record || !limit || record.state.rows.size <= limit) return 0;
     const seqs = [...record.state.rows.keys()].sort((a, b) => a - b);
     const ordinaryCut = seqs[record.state.rows.size - limit];
-    const floor = openTurnFloor(record.state);
+    const floor = keepOpenTurns ? openTurnFloor(record.state) : Number.POSITIVE_INFINITY;
     const cut = Number.isFinite(floor) && floor > 0
       ? Math.min(ordinaryCut, floor)
       : ordinaryCut;

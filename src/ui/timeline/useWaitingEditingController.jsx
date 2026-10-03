@@ -3,7 +3,7 @@ import { actorNameFromMap } from '../../model/actor-display.js';
 import { argsOf, PROVISIONAL } from '../../protocol/envelope.js';
 import { TYPES } from '../../protocol/vocab.js';
 import { isControlOnlyBody } from '../../model/conversation-visibility.js';
-import { LIFECYCLE, memberRestarts, requestLifecycle } from '../../model/request-lifecycle.js';
+import { LIFECYCLE, memberRestarts, passedInQueue, requestLifecycle } from '../../model/request-lifecycle.js';
 import { textOf } from './TimelineRowRenderer.jsx';
 import { newId } from '../../util/id.js';
 import { runningBackgroundTasks } from '../../model/background-tasks.js';
@@ -470,10 +470,13 @@ function useWaitingMembership(state, pending, awaiting, editingTargetId) {
     const lifecycleOf = (turn) => requestLifecycle(turn, restarts, now);
     const ledger = [];
     const busy = new Set();
-    for (const turn of allTimelineTurns(state)) {
+    const ledgerTurns = allTimelineTurns(state);
+    const passed = passedInQueue(ledgerTurns);
+    for (const turn of ledgerTurns) {
       // Any request the receiver has placed in its queue waits here, whatever
       // its word (ask, queue, a queued replace).
       const stage = lifecycleOf(turn);
+      if (stage === LIFECYCLE.waiting && passed(turn)) continue;
       if (stage === LIFECYCLE.waiting || stage === LIFECYCLE.processing) busy.add(receiverOf(turn));
       if (stage === LIFECYCLE.waiting && turn.requestId !== editingTargetId) ledger.push(turn);
     }
