@@ -60,6 +60,9 @@ test('TC-0330 D-BR-11 narrow channel member management stays inside the viewport
   const principal = panel.getByRole('combobox', { name: '选择参与者' });
   const submit = panel.getByRole('button', { name: '添加到频道' });
   await expect(principal).toBeVisible();
+  // c0 的描述成员（steward、root、svcactor、registrar、metapeer……）把表单推到面板滚动区下面：
+  // 先在面板里滚到它，再量它在面板和视口里。
+  await principal.scrollIntoViewIfNeeded();
   const submitTopBefore = (await submit.boundingBox()).y;
   const controlGeometry = await principal.evaluate((element) => {
     const rect = element.getBoundingClientRect();

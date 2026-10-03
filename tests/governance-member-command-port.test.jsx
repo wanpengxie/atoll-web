@@ -239,15 +239,16 @@ describe('TC-0484 public governance member command port', () => {
   });
 });
 
-describe('c0 members are fixed', () => {
-  it('offers no removal for c0\'s agents; people can still be removed', () => {
+// c0 的描述只读是描述的性质，由后端拒写；前端不按频道 id 预先禁用移除。
+describe('c0 members are not told apart by the channel id', () => {
+  it('offers removal in c0 as anywhere; a read-only description is refused by the backend', () => {
     render(<ChannelAdministrationPanel
       channel={{ id: 'c0', owner_principal: 'root' }}
       initialTab="members"
       port={{
         selfId: 'human:root:1',
         roster: [
-          { id: 'agent:steward:1', kind: 'agent', name: 'Steward', bound: true },
+          { id: 'agent:steward', kind: 'agent', name: 'Steward', bound: true },
           { id: 'human:alice:1', kind: 'human', name: 'Alice', principal: 'alice', bound: true },
         ],
         commands: { submit: vi.fn(), refresh: vi.fn() },
@@ -255,7 +256,7 @@ describe('c0 members are fixed', () => {
       onClose={vi.fn()}
     />);
     const steward = screen.getByText('Steward').closest('.managed-actor');
-    expect(within(steward).getByRole('button', { name: '移除' }).disabled).toBe(true);
+    expect(within(steward).getByRole('button', { name: '移除' }).disabled).toBe(false);
     const alice = screen.getByText('Alice').closest('.managed-actor');
     expect(within(alice).getByRole('button', { name: '移除' }).disabled).toBe(false);
   });

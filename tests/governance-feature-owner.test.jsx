@@ -141,8 +141,8 @@ describe('Governance UI owner contracts', () => {
     await waitFor(() => expect(readChannel).toHaveBeenCalledTimes(3));
   });
 
-  it('says a platform-built channel has no description and offers no description form', async () => {
-    const readChannel = vi.fn().mockResolvedValue({ id: 'c0' });
+  it('reads a read-only description from the description itself, and offers no form to change it', async () => {
+    const readChannel = vi.fn().mockResolvedValue({ id: 'c0', description: { body: { members: [], serving: 1, readonly: true }, revision: 1 } });
     render(<ChannelAdministrationPanel
       channel={{ id: 'c0', qualified_name: 'c0' }}
       initialTab="overview"
@@ -150,9 +150,22 @@ describe('Governance UI owner contracts', () => {
       onClose={vi.fn()}
     />);
     fireEvent.click(screen.getByRole('button', { name: '读取' }));
-    await screen.findByText('这个频道由平台搭建，没有频道描述；成员固定。');
-    expect(screen.queryByText('正常')).toBeNull();
-    expect(screen.queryByText('还没有成员构建记录。')).toBeNull();
+    await screen.findByText('这份描述是只读的（内核写的）：能读、能复制成新频道的描述，不能改。');
+    expect(screen.getByText('第 1 版')).toBeTruthy();
+    expect(screen.queryByLabelText('频道说明')).toBeNull();
+  });
+
+  it('shows a description that cannot be read as stored, with why', async () => {
+    const readChannel = vi.fn().mockResolvedValue({ id: 'c1', description: { raw: '{broken', problem: 'unexpected end of JSON input', revision: 4, newest: 4 } });
+    render(<ChannelAdministrationPanel
+      channel={{ id: 'c1', qualified_name: 'c0.c1' }}
+      initialTab="overview"
+      port={{ children: [], commands: { readChannel } }}
+      onClose={vi.fn()}
+    />);
+    fireEvent.click(screen.getByRole('button', { name: '读取' }));
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', '第 4 版描述读不出：unexpected end of JSON input');
+    expect(screen.getByLabelText('描述原文').textContent).toBe('{broken');
     expect(screen.queryByLabelText('频道说明')).toBeNull();
   });
 
@@ -186,7 +199,8 @@ describe('Governance UI owner contracts', () => {
     expect(within(screen.getByText('Root').closest('.managed-actor')).getByRole('button', { name: 'Owner' }).disabled).toBe(true);
   });
 
-  it('states the backend root protection instead of exposing a retire control', () => {
+  // c0 不能退役是后端（registrar）的判断；前端不按频道 id 预先藏起退役。
+  it('offers retiring every channel the same way, c0 included, and leaves the refusal to the backend', () => {
     render(<ChannelAdministrationPanel
       channel={{ id: 'c0', qualified_name: 'c0' }}
       initialTab="danger"
@@ -194,8 +208,8 @@ describe('Governance UI owner contracts', () => {
       onClose={vi.fn()}
     />);
 
-    expect(screen.getByText('空间根频道 c0 受后端保护，不能退役。')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '退役当前频道' })).toBeNull();
+    expect(screen.getByRole('button', { name: '退役当前频道' })).toBeTruthy();
+    expect(screen.queryByText(/受后端保护/)).toBeNull();
   });
 
   it('keeps a null channel projection renderable during directory handoff', () => {

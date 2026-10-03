@@ -520,9 +520,9 @@ describe('A-D round 26 public-owner evidence', () => {
   it('[AD-194] keeps member ledger terminal and roster convergence as separate facts', async () => {
     // 用户能力：成员操作只有账本和 roster 都收敛才 ready。
     // 不变量：terminal receipt 不能伪造 roster；公开 owner：ChannelAdministrationPanel → ChannelMembers（GovernanceFeature）。
-    const submit = vi.fn().mockResolvedValue({ written: true, config_id: 'cfg-worker' });
+    const submit = vi.fn().mockResolvedValue({ written: true, entry: { id: 'e-worker' } });
     const refresh = vi.fn();
-    const worker = { id: 'agent:worker:1', kind: 'agent', status: 'present', name: 'Worker', configId: 'cfg-worker' };
+    const worker = { id: 'agent:worker:1', kind: 'agent', status: 'present', name: 'Worker', configId: 'cfg-worker', entryId: 'e-worker' };
     const view = governance({
       commands: { submit, refresh },
       actorDescriptions: [{ id: 'd-worker', name: 'worker', version: 1, class: 'codex', status: 'present' }],

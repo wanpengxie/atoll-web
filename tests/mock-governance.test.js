@@ -86,25 +86,29 @@ describe('mock system actor governance', () => {
 
     // 加成员 = 在频道描述里写一个条目；构建好后出现在名册上。
     const created = await call('c0.project', 'system.member.create', { name: 'analyst', body: { actor: 'd-analyst@1' } });
-    // 描述由 c0 的 registrar 写（铸条目 id），频道门再建配置：回复带条目和配置 id。
+    // 描述由 c0 的 registrar 写（铸条目 id）：回复带写下的条目；配置在频道收敛时才建。
     expect(created.payload.body).toMatchObject({ status: 'completed', value: { written: true, entry: { name: 'analyst', body: { actor: 'd-analyst@1' } } } });
-    const configId = created.payload.body.value.config_id;
+    expect(created.payload.body.value).not.toHaveProperty('config_id');
+    const entryId = created.payload.body.value.entry.id;
+    const built = await waitFor(() => envelopes.find((entry) => entry.channel_id === 'c0.project' && entry.type === 'system.build.finished' && entry.payload?.body?.object?.entry_id === entryId));
+    const configId = built.payload.body.object.config_id;
     expect(configId).toBeTruthy();
-    const built = await waitFor(() => envelopes.find((entry) => entry.channel_id === 'c0.project' && entry.type === 'system.build.finished' && entry.payload?.body?.object?.config_id === configId));
     expect(built.payload.body).toMatchObject({ result: 'ok', state: 'ready', description: { actor: 'd-analyst@1' } });
     const roster = await fetchWithSession('/obs/channel/c0.project/actors').then((response) => response.json());
-    const analyst = roster.items.find((entry) => entry.declared.config_id === configId);
+    const analyst = roster.items.find((entry) => entry.declared.entry_id === entryId);
+    expect(analyst.declared.config_id).toBe(configId);
     expect(analyst.declared).toMatchObject({ kind: 'agent', name: 'analyst', body: 'actor d-analyst@1' });
     const memberId = analyst.declared.id;
-    // 运行时生成的成员标着 generated，不是描述里的条目。
-    expect(roster.items.find((entry) => entry.declared.id === 'svcactor').declared.body).toBe('generated');
+    // svcactor 是描述里的条目（内核的 svcactor actor 描述），不是运行时生成的。
+    expect(roster.items.find((entry) => entry.declared.id === 'svcactor').declared.body).toBe('actor svcactor@1');
 
     // 同名再加一个：名字只显示，两个成员并存，各有各的配置和 actor id。
     const twin = await call('c0.project', 'system.member.create', { name: 'analyst', body: { class: 'codex' } });
     expect(twin.payload.body).toMatchObject({ status: 'completed', value: { written: true, entry: { name: 'analyst' } } });
-    const twinConfig = twin.payload.body.value.config_id;
+    const twinEntry = twin.payload.body.value.entry.id;
+    const twinBuilt = await waitFor(() => envelopes.find((entry) => entry.channel_id === 'c0.project' && entry.type === 'system.build.finished' && entry.payload?.body?.object?.entry_id === twinEntry));
+    const twinConfig = twinBuilt.payload.body.object.config_id;
     expect(twinConfig).not.toBe(configId);
-    await waitFor(() => envelopes.find((entry) => entry.channel_id === 'c0.project' && entry.type === 'system.build.finished' && entry.payload?.body?.object?.config_id === twinConfig));
     const both = await fetchWithSession('/obs/channel/c0.project/actors').then((response) => response.json());
     expect(both.items.filter((entry) => entry.declared.name === 'analyst').map((entry) => entry.declared.config_id).sort()).toEqual([configId, twinConfig].sort());
 

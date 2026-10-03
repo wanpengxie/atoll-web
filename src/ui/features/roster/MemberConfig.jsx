@@ -13,7 +13,7 @@ import {
   patchAtPath,
   sameJSON,
 } from '../../../model/member-config.js';
-import { LOCAL_DEVICE_ID } from '../../../protocol/vocab.js';
+import { AGENT_CLASS, LOCAL_DEVICE_ID } from '../../../protocol/vocab.js';
 import { BuildLine } from '../governance/BuildLine.jsx';
 
 function errorText(error) {
@@ -160,6 +160,41 @@ function MemberEntryEditor({ actor, info, commands, descriptions = [], disabled,
   </form>;
 }
 
+// agent 类的成员：配置里的 agent 选它跑哪个 agent 类（节点上 kind 为 agent 的
+// 类，自身除外）。打开编辑器是一次真人动作，这时读一次类目录。
+function AgentClassPicker({ commands, text, setText, disabled }) {
+  const [classes, setClasses] = useState(null);
+  const [error, setError] = useState('');
+  const listRef = useRef(null);
+  listRef.current = commands.listClasses;
+  useEffect(() => {
+    const list = listRef.current;
+    if (typeof list !== 'function') return undefined;
+    let active = true;
+    Promise.resolve(list()).then((rows) => {
+      if (!active) return;
+      setClasses((Array.isArray(rows) ? rows : []).filter((row) => row?.kind === 'agent' && row.class !== AGENT_CLASS).map((row) => row.class));
+    }).catch((failure) => { if (active) setError(errorText(failure)); });
+    return () => { active = false; };
+  }, []);
+  let current = '';
+  try { current = String(parseMemberConfigText(text)?.agent || ''); } catch { current = ''; }
+  const options = [...new Set([current, ...(classes || [])].filter(Boolean))];
+  const choose = (value) => {
+    let object = {};
+    try { object = parseMemberConfigText(text) || {}; } catch { return; }
+    setText(JSON.stringify({ ...object, agent: value }, null, 2));
+  };
+  return <>
+    <label>跑哪个 agent<select aria-label="agent 类" value={current} disabled={disabled || !options.length} onChange={(event) => choose(event.target.value)}>
+      {!current && <option value="">{classes ? '选一个 agent 类' : '正在读取类目录…'}</option>}
+      {options.map((name) => <option key={name} value={name}>{name}</option>)}
+    </select></label>
+    <p className="field-hint">那个类自己的配置写在 values 的 <code>config</code> 里。</p>
+    {error && <p className="field-hint">类目录读取失败：{error}</p>}
+  </>;
+}
+
 // 这一台的配置：它跑在哪台设备（desired_host，空 = local-device）和它的 values。
 // 存在本频道的库里，发 system.member.config.set。
 function MemberOwnConfigEditor({ actor, info, commands, devices, globalKeys, disabled, onSaved, onCancel }) {
@@ -196,6 +231,7 @@ function MemberOwnConfigEditor({ actor, info, commands, devices, globalKeys, dis
       <option value="">local-device（默认）</option>
       {hostOptions.map((id) => <option key={id} value={id}>{(devices || []).find((row) => row.id === id)?.name || id}</option>)}
     </select></label>
+    {info?.class === AGENT_CLASS && <AgentClassPicker commands={commands} text={text} setText={setText} disabled={locked} />}
     <label>values JSON<textarea
       ref={textRef}
       aria-label="成员配置 JSON"

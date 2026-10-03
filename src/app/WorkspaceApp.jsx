@@ -51,7 +51,7 @@ import {
   readGlobalValue,
   writeGlobalValue,
 } from '../model/global-keys.js';
-import { isPlatformChannel, SYSTEM_ACTOR_ID, TYPES } from '../protocol/vocab.js';
+import { isKernelChannel, SYSTEM_ACTOR_ID, TYPES } from '../protocol/vocab.js';
 import { Auth } from '../ui/Auth.jsx';
 import { VersionIncompatible } from '../ui/VersionIncompatible.jsx';
 import { ConversationSurface } from '../ui/conversation/ConversationSurface.jsx';
@@ -1615,6 +1615,8 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
         ...(desiredHost !== undefined ? { desired_host: String(desiredHost || '') } : {}),
         ...(values && Object.keys(values).length ? { values } : {}),
       }),
+      // 这个节点能跑的类（system.class.list）：编辑 agent 类成员的配置时选它跑哪个 agent。
+      listClasses: () => requestSystemReply(selectedActorChannelId, TYPES.classes.list, {}),
       refresh: () => roster.refresh(navigation.activeChannelId, true),
       select: (actor) => setPanel({ kind: 'actor', actor, channelId: navigation.activeChannelId }),
       describe: (actor) => probes.requestCapability(actor.id, selectedActorChannelId),
@@ -1764,7 +1766,8 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
         : EMPTY_ARRAY,
       candidatesUnavailable: !directory.support?.principals || !directory.support?.actorDescriptions,
       // 可以复制描述的频道：我是成员的、平台自己搭的（c0、大厅）除外。
-      copyableChannels: navigation.channels.filter((row) => row.id && !isPlatformChannel(row.id) && isMemberAccess(row.access)),
+      // 自己是成员的频道都能复制；内核频道（c0、大厅、c0.home）的描述是内核的，不复制。
+      copyableChannels: navigation.channels.filter((row) => row.id && !isKernelChannel(row.id) && isMemberAccess(row.access)),
       // 空间里的设备（可挂到本频道）和本频道此刻能用的设备。
       spaceDevices: directory.devices,
       channelDevices: attachments.devices,

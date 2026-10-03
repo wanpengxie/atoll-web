@@ -96,6 +96,12 @@ const MOCK_CLASSES = Object.freeze({
       return '';
     },
   },
+  // 内核的类：svcactor（频道的对外门）、registrar、meta peer、agent（跑哪个 agent 由配置说）。
+  svcactor: { kind: 'peer', defaults: {} },
+  registrar: { kind: 'system', defaults: {} },
+  metapeer: { kind: 'peer', defaults: {} },
+  peeractor: { kind: 'peer', defaults: {} },
+  agent: { kind: 'agent', defaults: {} },
   'mcp-tool': {
     kind: 'tool',
     defaults: { endpoint: 'http://127.0.0.1:9000/mcp' },
@@ -129,7 +135,7 @@ export function rowBuilt(row) {
   return Boolean(bound && !bound.unknown && bound.value);
 }
 
-export function rosterItem({ id, kind, body = kind === 'human' ? 'human' : '', name = id, description = '', principal = '', configId = '', generated = '', bound = true, online = null }, observedAt = STAMP) {
+export function rosterItem({ id, kind, body = kind === 'human' ? 'human' : '', name = id, description = '', principal = '', configId = '', entryId = '', generated = '', bound = true, online = null }, observedAt = STAMP) {
   const declared = {
     id,
     kind,
@@ -138,6 +144,7 @@ export function rosterItem({ id, kind, body = kind === 'human' ? 'human' : '', n
     ...(description ? { description } : {}),
     ...(principal ? { principal } : {}),
     ...(configId ? { config_id: configId } : {}),
+    ...(entryId ? { entry_id: entryId } : {}),
     ...(generated ? { generated } : {}),
   };
   const measures = [measure('bound', bound, observedAt)];
@@ -167,23 +174,25 @@ export function envelope({ id, channelId, sender, kind, type, payload = {}, pare
 }
 
 function createRoster(channel, memberships, clock, { seedBusiness = true, canonicalActorIds = false } = {}) {
-  // 与真实后端一致：每个频道都有 system 与 svcactor(peer)，registrar 只在 c0。
+  // 与真实后端一致：每个频道的描述里有 svcactor 条目；c0 的描述（内核写的）里还有
+  // registrar、steward、meta peer。它们都是描述里的成员，有配置；运行时推导的只有把手。
   const rows = [
     rosterItem({ id: 'system', kind: 'system', body: GENERATED_BODY, name: 'system', description: 'Channel system actor' }, clock),
-    rosterItem({ id: 'svcactor', kind: 'peer', body: GENERATED_BODY, name: 'Service Actor', description: 'Service actor', generated: 'service-door' }, clock),
+    rosterItem({ id: 'svcactor', kind: 'peer', body: 'actor svcactor@1', name: 'svcactor', description: "The channel's door" }, clock),
   ];
   if (channel.id === 'c0') {
-    rows.push(rosterItem({ id: 'registrar', kind: 'system', body: GENERATED_BODY, name: 'Registrar Seat', description: 'Registrar seat', generated: 'registrar' }, clock));
+    rows.push(rosterItem({ id: 'registrar', kind: 'system', body: 'actor registrar@1', name: 'registrar', description: "The registry's one writer" }, clock));
+    rows.push(rosterItem({ id: 'metapeer', kind: 'peer', body: 'actor metapeer@1', name: 'metapeer', description: "c0's way to every channel" }, clock));
   }
 	if (!channel.internal && seedBusiness) {
 		const businessActorId = channel.id === 'c0'
 			? canonicalActorIds ? 'agent:steward:test' : 'steward'
 			: canonicalActorIds ? `agent:${channel.name}:test` : `${channel.name}-agent`;
-		rows.push(rosterItem({ id: businessActorId, kind: 'agent', body: 'class codex', name: channel.id === 'c0' ? 'steward' : `${channel.name}-agent`, description: 'Mock collaboration agent' }, clock));
+		rows.push(rosterItem({ id: businessActorId, kind: 'agent', body: channel.id === 'c0' ? 'actor steward@1' : 'class codex', name: channel.id === 'c0' ? 'steward' : `${channel.name}-agent`, description: 'Mock collaboration agent' }, clock));
     if (channel.id === 'c0') rows.push(rosterItem({ id: 'claude', kind: 'agent', body: 'class claude', name: 'Claude', description: 'Mock Claude collaboration agent' }, clock));
   }
   for (const membership of memberships.filter((entry) => entry.channel_id === channel.id && entry.status === 'active')) {
-    rows.push(rosterItem({ id: membership.actor_id, kind: 'human', name: membership.principal_id, principal: membership.principal_id, online: true, description: 'Human channel member', ...(channel.id === 'c0' || channel.internal ? { generated: `person:${membership.principal_id}` } : {}) }, clock));
+    rows.push(rosterItem({ id: membership.actor_id, kind: 'human', name: membership.principal_id, principal: membership.principal_id, online: true, description: 'Human channel member' }, clock));
   }
   return rows;
 }
@@ -219,15 +228,19 @@ export class MockDomain {
     // Actor 描述（c0 的 actor_descriptions 表）：(描述 id, 版本)，每一版不可改。
     this.actorDescriptions = new Map();
     for (const [name, klass, description, params] of [
-      ['steward', 'codex', 'Mock steward', {}],
       ['claude', 'claude', 'Mock Claude agent', {}],
       ['analyst', 'codex-agent', 'Mock analyst agent', {}],
       ['search', 'mcp-tool', 'Mock search tool', {}],
     ]) this.putActorDescription({ id: `d-${name}`, name, class: klass, description, params }, stamp, { seed: true });
-    // 频道描述（c0 的 channel_descriptions 表）：c0 和大厅是平台搭的，没有描述。
+    // 内核的 actor 描述（boot 写，只读，声明保留 id）。
+    for (const [id, klass, configurable, params] of [
+      ['svcactor', 'svcactor', true, {}],
+      ['registrar', 'registrar', false, {}],
+      ['metapeer', 'metapeer', false, {}],
+      ['steward', 'agent', true, { config: { prompt: 'Mock steward prompt' } }],
+    ]) this.putActorDescription({ id, name: id, class: klass, description: `kernel ${id}`, params, configurable, readonly: true }, stamp, { seed: true });
+    // 频道描述（c0 的 channel_descriptions 表）：c0 和大厅的由内核写，只读。
     this.descriptions = new Map();
-    // c0 的成员是平台固定的：条目只能读，这一台的配置可以改。
-    this.c0Entries = [];
     // 成员这一台的配置（各频道自己的 member_config 表）：配置 id → {config_id, entry_id,
     // channel_id, desired_host, values, revision}。
     this.memberConfigs = new Map();
@@ -236,28 +249,32 @@ export class MockDomain {
     this.events = [];
     for (const channel of this.channels.values()) {
       const entries = [];
+      const kernel = channel.id === 'c0' || channel.internal;
       for (const row of this.rosters.get(channel.id) || []) {
-        if (!['agent', 'tool'].includes(row.declared.kind) || !String(row.declared.body || '').startsWith('class ')) continue;
-        // 场景种子：条目和在跑的 actor 一起造，直接把配置 id 记到名册行上。
-        const entry = { id: this.mintEntryId(), name: row.declared.name || '', body: { class: row.declared.body.slice('class '.length) } };
+        const body = String(row.declared.body || '');
+        if (!body.startsWith('class ') && !body.startsWith('actor ')) continue;
+        // 场景种子：条目和在跑的 actor 一起造，直接把配置 id 记到名册行上。内核
+        // 频道的条目 id 是内核定的（svcactor、registrar、steward、metapeer）。
+        const ref = body.startsWith('actor ') ? body.slice('actor '.length).replace(/@\d+$/, '') : '';
+        const entry = ref
+          ? { id: kernel ? ref : this.mintEntryId(), name: row.declared.name || ref, body: { actor: ref }, ...(ref === 'steward' ? { principal: 'steward' } : {}) }
+          : { id: this.mintEntryId(), name: row.declared.name || '', body: { class: body.slice('class '.length) } };
         entries.push(entry);
-        if (channel.id !== 'c0') row.declared.config_id = this.ensureConfig(channel.id, entry.id).config_id;
-        else row.declared.generated = 'steward';
+        row.declared.config_id = this.ensureConfig(channel.id, entry.id).config_id;
+        row.declared.entry_id = entry.id;
+        if (ref === 'steward') this.memberConfigs.get(row.declared.config_id).values = { agent: 'codex', config: {} };
       }
       // 场景里已在册的人也写进描述（和迁移脚本对真数据做的一样）。
       for (const membership of this.memberships) {
-        if (channel.id === 'c0' || membership.channel_id !== channel.id || membership.status !== 'active') continue;
-        if (!this.humanPrincipals.has(membership.principal_id)) continue;
+        if (membership.channel_id !== channel.id || membership.status !== 'active') continue;
+        if (!this.humanPrincipals.has(membership.principal_id) && !(channel.internal && membership.principal_id === 'guest')) continue;
         if (entries.some((entry) => entry.principal === membership.principal_id)) continue;
-        const entry = { id: this.mintEntryId(), name: membership.principal_id, body: { human: true }, principal: membership.principal_id };
+        const entry = { id: kernel ? membership.principal_id : this.mintEntryId(), name: membership.principal_id, body: { human: true }, principal: membership.principal_id };
         entries.push(entry);
-        if (!channel.internal) {
-          const row = (this.rosters.get(channel.id) || []).find((candidate) => candidate.declared.id === membership.actor_id);
-          if (row) row.declared.config_id = this.ensureConfig(channel.id, entry.id).config_id;
-        }
+        const row = (this.rosters.get(channel.id) || []).find((candidate) => candidate.declared.id === membership.actor_id);
+        if (row) Object.assign(row.declared, { config_id: this.ensureConfig(channel.id, entry.id).config_id, entry_id: entry.id });
       }
-      if (channel.id === 'c0') this.c0Entries = entries;
-      else if (!channel.internal) this.descriptions.set(channel.id, { body: this.normalizedDescription({ members: entries, description: channel.description || '' }), revision: 1 });
+      this.descriptions.set(channel.id, { body: this.normalizedDescription({ members: entries, description: channel.description || '', ...(kernel ? { readonly: true } : {}), ...(channel.internal ? { local_device: false } : {}) }), revision: 1 });
     }
     for (const channelId of this.channels.keys()) {
       for (const entry of this.entriesOf(channelId)) this.builds.set(this.buildKey(channelId, entry.id), this.buildRecord(channelId, entry.id, { result: 'ok', state: 'ready', attempt: 1, at: stamp }));
@@ -359,7 +376,7 @@ export class MockDomain {
 
   // system.actor.description.create：不带 id 是新的一条（铸 id，版本 1）；带 id 是它的
   // 下一个版本。名字只显示，可以和别的描述重名。
-  putActorDescription({ id = '', name, class: klass, params = {}, description = '', visibility = 'private', configurable = true }, at = this.clock, { seed = false } = {}) {
+  putActorDescription({ id = '', name, class: klass, params = {}, description = '', visibility = 'private', configurable = true, readonly = false }, at = this.clock, { seed = false } = {}) {
     if (!String(name || '').trim()) throw operationError('invalid_args', 'name required: it is only shown, and may repeat');
     if (!klass) throw operationError('invalid_args', 'class required');
     if (!MOCK_CLASSES[klass]) throw operationError('invalid_args', `class ${klass} is not a class this node has; see system.class.list`);
@@ -367,15 +384,20 @@ export class MockDomain {
     let descriptionId = String(id || '');
     const versions = [...this.actorDescriptions.values()].filter((row) => row.id === descriptionId);
     if (descriptionId && !seed && !versions.length) throw operationError('not_found', `actor description ${descriptionId} does not exist; without an id this creates a new one`);
+    if (!seed && versions.some((row) => row.readonly)) throw operationError('reserved', `actor description ${descriptionId} is the kernel's; it has no new versions but the kernel's own`);
     if (!descriptionId) {
       this.descriptionSeq += 1;
       descriptionId = `d-${this.seed}-${this.descriptionSeq}`;
     }
     const version = versions.reduce((highest, row) => Math.max(highest, row.version), 0) + 1;
     const ref = `${descriptionId}@${version}`;
-    const row = { id: descriptionId, version, ref, name: String(name).trim(), class: klass, params: structuredClone(params), configurable: configurable !== false, description, owner: ROOT_ID, visibility, status: 'present', created_at: at };
+    const row = { id: descriptionId, version, ref, name: String(name).trim(), class: klass, params: structuredClone(params), configurable: configurable !== false, ...(readonly ? { readonly: true, reserved_id: { svcactor: 'peer:svcactor', registrar: 'system:registrar', metapeer: 'peer:metapeer', steward: 'agent:steward' }[descriptionId] || '' } : {}), description, owner: ROOT_ID, visibility: readonly ? 'public' : visibility, status: 'present', created_at: at };
     this.actorDescriptions.set(ref, row);
     return structuredClone(row);
+  }
+
+  classRows() {
+    return Object.entries(MOCK_CLASSES).map(([name, row]) => ({ class: name, kind: row.kind, placement: row.kind === 'agent' ? 'daemon' : 'server' }));
   }
 
   // 按描述 id 取一版；不带版本号是最新在用的那一版。
@@ -406,7 +428,8 @@ export class MockDomain {
   normalizedDescription(body = {}) {
     return {
       members: Array.isArray(body.members) ? structuredClone(body.members) : [],
-      service: plainObject(body.service) ? structuredClone(body.service) : { words: {} },
+      ...(body.readonly === true ? { readonly: true } : {}),
+      ...(body.local_device === false ? { local_device: false } : {}),
       ...(body.description ? { description: String(body.description) } : {}),
       serving: Number(body.serving || 0) === 1 ? 1 : 0,
       ...(Array.isArray(body.devices) && body.devices.length ? { devices: [...body.devices] } : {}),
@@ -436,7 +459,6 @@ export class MockDomain {
   }
 
   entriesOf(channelId) {
-    if (channelId === 'c0') return this.c0Entries;
     return this.descriptions.get(channelId)?.body.members || [];
   }
 
@@ -444,10 +466,11 @@ export class MockDomain {
     return this.entriesOf(channelId).find((entry) => entry.id === entryId) || null;
   }
 
-  // 频道描述的唯一写口：c0 和大厅没有描述。改完重新校验、版本加一、重建。
+  // 频道描述的唯一写口：只读的（内核写的 c0、大厅）拒写。改完重新校验、版本加一、重建。
   editDescription(channelId, mutate) {
     const current = this.descriptions.get(channelId);
-    if (!current) throw operationError('reserved', 'lagoon: this channel is built by the platform and has no description');
+    if (!current) throw operationError('not_found', `channel ${JSON.stringify(channelId)} has no description`);
+    if (current.body.readonly === true) throw operationError('reserved', "lagoon: this channel's description is read-only (the kernel writes it); read it, or copy it into a new channel");
     const next = structuredClone(current.body);
     const known = new Set(current.body.members.map((entry) => entry.id));
     const result = mutate(next);
@@ -543,10 +566,10 @@ export class MockDomain {
       if (!row) {
         // 新铸一个 actor id；种子只是好认，没人拆它。
         this.counter += 1;
-        row = rosterItem({ id: `${kind}:${entry.name || kind}:${this.clock + this.counter}`, kind, body: bodyPhrase(entry.body), name: entry.name || '', description: actor?.description || '', configId: config.config_id }, this.clock);
+        row = rosterItem({ id: `${kind}:${entry.name || kind}:${this.clock + this.counter}`, kind, body: this.entryBodyPhrase(entry), name: entry.name || '', description: actor?.description || '', configId: config.config_id, entryId: entry.id }, this.clock);
         rows.push(row);
       } else {
-        row.declared.body = bodyPhrase(entry.body);
+        row.declared.body = this.entryBodyPhrase(entry);
         if (entry.name) row.declared.name = entry.name; else delete row.declared.name;
       }
       // 业务起不来（缺全局 key、class 拒绝、端点连不上）：actor 自己结束、由
@@ -599,7 +622,7 @@ export class MockDomain {
       const id = `human:${principal}:${this.clock + this.counter}`;
       const config = this.ensureConfig(channelId, entry.id);
       this.memberships.push({ principal_id: principal, channel_id: channelId, actor_id: id, role: principal === channel?.owner_principal ? 'owner' : 'member', status: 'active' });
-      rows.push(rosterItem({ id, kind: 'human', name: entry.name || principal, principal, online: true, description: 'Human channel member', configId: config.config_id }, this.clock));
+      rows.push(rosterItem({ id, kind: 'human', name: entry.name || principal, principal, online: true, description: 'Human channel member', configId: config.config_id, entryId: entry.id }, this.clock));
       this.events.push({ channelId, type: 'system.member.created', payload: { member: id, principal, body: 'human', by: 'runtime' } });
       changed = true;
     }
@@ -653,11 +676,17 @@ export class MockDomain {
     return '';
   }
 
+  // 和真节点一样：条目指向 actor 描述时，说的是解析出来的那一版（id@版本）。
+  entryBodyPhrase(entry) {
+    const actor = entry?.body?.actor ? this.resolveActorRef(entry.body.actor) : null;
+    return actor ? `actor ${actor.ref}` : bodyPhrase(entry?.body);
+  }
+
   memberSummary(channelId, row) {
     if (row.kind === 'human') return 'human';
     const config = row.config_id ? this.memberConfigs.get(row.config_id) : null;
     const entry = config ? this.entry(channelId, config.entry_id) : null;
-    return entry ? bodyPhrase(entry.body) : GENERATED_BODY;
+    return entry ? this.entryBodyPhrase(entry) : GENERATED_BODY;
   }
 
   // 描述里有、但没有在场 actor 的成员：按配置 id 列出来，好让人去修它。
@@ -667,7 +696,7 @@ export class MockDomain {
       .filter((entry) => entry.body?.human !== true && this.descriptions.has(channelId))
       .map((entry) => ({ entry, config: this.ensureConfig(channelId, entry.id) }))
       .filter(({ config }) => !rows.some((row) => row.declared.config_id === config.config_id))
-      .map(({ entry, config }) => ({ config_id: config.config_id, entry_id: entry.id, ...(entry.name ? { name: entry.name } : {}), body: bodyPhrase(entry.body), present: false }));
+      .map(({ entry, config }) => ({ config_id: config.config_id, entry_id: entry.id, ...(entry.name ? { name: entry.name } : {}), body: this.entryBodyPhrase(entry), present: false }));
   }
 
   // system.member.get {member}：member 是 actor id 或配置 id。成员事实（建好了没有）+
@@ -710,8 +739,8 @@ export class MockDomain {
     };
   }
 
-  // system.member.create：频道描述里加一个条目（registrar 铸条目 id），频道门再给它
-  // 建一份配置，回复带上配置 id。名字只显示，可以留空、可以重名。
+  // system.member.create：频道描述里加一个条目（registrar 铸条目 id），回复写下的条目；
+  // 它的配置在频道收敛时才建（和真节点一样，回复里没有配置 id）。名字只显示，可以留空、可以重名。
   createMemberEntry(channelId, { name, body, params, requires } = {}) {
     let entry = null;
     const { revision } = this.editDescription(channelId, (description) => {
@@ -719,8 +748,7 @@ export class MockDomain {
       description.members.push(entry);
       return { minted: entry.id };
     });
-    const config = this.ensureConfig(channelId, entry.id);
-    return { written: true, description_revision: revision, entry, config_id: config.config_id };
+    return { written: true, description_revision: revision, entry };
   }
 
   // system.member.set {member}：member 是 actor id 或配置 id，频道门沿链换成条目 id。
@@ -728,7 +756,7 @@ export class MockDomain {
   setMemberEntry(channelId, { member, body, params, requires } = {}) {
     if (this.memberRow(channelId, member)?.declared.generated) throw operationError('reserved', 'the runtime keeps this member itself; it is not in the channel description');
     const target = this.entryOfMember(channelId, member);
-    if (!target) throw operationError('invalid_args', `${JSON.stringify(member)} is neither an actor id nor a configuration id of a member the channel description lists; the members the runtime keeps itself (the service door, peers, handles) are not in it`);
+    if (!target) throw operationError('invalid_args', `${JSON.stringify(member)} is neither an actor id nor a configuration id of a member the channel description lists; a handle (the other end of another channel's seat) is not in it`);
     let result = null;
     const { revision } = this.editDescription(channelId, (description) => {
       const entry = description.members.find((row) => row.id === target.id);
@@ -747,8 +775,7 @@ export class MockDomain {
     if (row?.declared.generated || row?.declared.body === GENERATED_BODY) throw operationError('reserved', 'the runtime keeps this member itself; it is not in the channel description');
     const target = this.entryOfMember(channelId, member);
     if (!target) throw operationError('invalid_args', `${JSON.stringify(member)} is neither an actor id nor a configuration id of a member the channel description lists`);
-    const channel = this.channel(channelId);
-    if (target.body?.human === true && channel?.owner_principal === target.principal) throw operationError('reserved', `${JSON.stringify(target.principal)} is the channel's owner, who stays in the channel`);
+    // owner 的人条目也能删：描述就是频道照着建的（owner 10-03）。
     const { revision } = this.editDescription(channelId, (description) => {
       description.members = description.members.filter((entry) => entry.id !== target.id);
     });
@@ -774,8 +801,13 @@ export class MockDomain {
   // 构建会说它行不行。
   setMemberConfig(channelId, { member, desired_host: desiredHost, values } = {}) {
     const entry = this.configTarget(channelId, member);
-    if (entry.body?.human === true) throw operationError('bad_payload', 'a person has no configuration to set');
     if (values != null && !plainObject(values)) throw operationError('invalid_args', 'values must be a JSON object (a merge patch)');
+    // 描述说不可配的值，写的时候当场拒（最快给写的人反馈）；别的值不检查，构建会说它行不行。
+    const actor = entry.body?.actor ? this.resolveActorRef(entry.body.actor) : null;
+    const locked = actor && actor.configurable === false ? Object.keys(values || {}).find((key) => Object.hasOwn(actor.params || {}, key)) : '';
+    if (locked) throw operationError('bad_payload', `actor description ${actor.ref} is not configurable, and this writes \`${locked}\`, which it gives; use an actor description that is configurable`);
+    const channelDescription = this.descriptions.get(channelId)?.body;
+    if (channelDescription?.configurable === false && Object.keys(values || {}).length) throw operationError('bad_payload', `the channel description is not configurable (configurable: false), so a member configuration may hold no value, and this writes \`${Object.keys(values)[0]}\``);
     const current = this.ensureConfig(channelId, entry.id);
     current.desired_host = desiredHost === undefined ? current.desired_host : String(desiredHost || '').trim();
     current.values = values ? applyMergePatch(current.values, values) : structuredClone(current.values);
@@ -984,9 +1016,20 @@ export class MockDomain {
       const source = this.channel(copyFrom) || [...this.channels.values()].find((row) => row.qualified_name === copyFrom);
       if (!source || source.status !== 'present') throw operationError('not_found', `channel to copy ${copyFrom} does not exist; see system.channel.list`);
       const copied = this.descriptions.get(source.id);
-      if (!copied) throw operationError('invalid_args', `${source.qualified_name} is built by the platform and has no description to copy`);
+      if (!copied) throw operationError('not_found', `${source.qualified_name} has no description to copy`);
+      // 内核频道的描述是内核的，不复制（和真节点 registrar 一样，按 id 认）。
+      if (source.id === C0_CHANNEL_ID || source.internal || source.id === 'c0.home') throw operationError('reserved', `${source.qualified_name} is a kernel channel: its description is the kernel's and is not copied; start from a blank description, or pick members`);
       body = structuredClone(copied.body);
     }
+    // 每个频道都有 svcactor：描述里没有就写上。
+    let svcEntry = body.members.find((entry) => String(entry.body?.actor || '').replace(/@\d+$/, '') === 'svcactor' || entry.body?.class === 'svcactor');
+    if (!svcEntry) {
+      svcEntry = { id: this.mintEntryId(), name: 'svcactor', body: { actor: 'svcactor' } };
+      body.members.push(svcEntry);
+    }
+    // group 子频道和它的 group 父频道（c0、c0.home 除外）互相写一个 peer 条目。
+    const pairWithParent = parentRow.id !== C0_CHANNEL_ID && parentRow.id !== 'c0.home' && this.descriptions.has(parentRow.id) && this.descriptions.get(parentRow.id).body.readonly !== true;
+    if (pairWithParent) body.members.push({ id: this.mintEntryId(), name: parentRow.qualified_name || parentRow.id, body: { class: 'peeractor' }, params: { channel: parentRow.id } });
     if (!Array.isArray(humans)) throw operationError('invalid_args', 'humans must be an array of principal ids');
     for (const human of humans) if (!this.humanPrincipals.has(human)) throw operationError('not_found', `principal ${human} does not exist; see system.principal.list`);
     // 一开始放进来的人就是新描述里的人的条目。
@@ -1003,6 +1046,9 @@ export class MockDomain {
     this.histories.set(id, []);
     this.resources.set(id, new Map());
     this.descriptions.set(id, { body, revision: 1 });
+    const door = this.rosters.get(id).find((row) => row.declared.id === 'svcactor');
+    if (door) Object.assign(door.declared, { config_id: this.ensureConfig(id, svcEntry.id).config_id, entry_id: svcEntry.id });
+    if (pairWithParent) this.editDescription(parentRow.id, (parentBody) => { parentBody.members.push({ name: id, body: { class: 'peeractor' }, params: { channel: id } }); });
     this.queueBuild(id);
     return { channel_id: id, revision: 1 };
   }
@@ -1030,14 +1076,13 @@ export class MockDomain {
     const channel = this.channel(channelRef) || [...this.channels.values()].find((row) => row.qualified_name === channelRef);
     if (!channel) throw operationError('not_found', `channel ${channelRef} does not exist; see system.channel.list`);
     const description = this.descriptions.get(channel.id);
-    if (!description) throw operationError('reserved', `${channel.qualified_name} is built by the platform and has no description; system.member.list shows its members`);
+    if (!description) throw operationError('not_found', `${channel.qualified_name} has no description row`);
     return { body: structuredClone(description.body), revision: description.revision };
   }
 
   // system.channel.set：描述里的说明和 serving 两个字段。
   // 和真后端一样（lagoon setChannel）：只能从这个频道自己或 c0 改。
   setChannel(channelId, { description, serving } = {}, { from = channelId } = {}) {
-    if (!this.descriptions.has(channelId)) throw operationError('reserved', `channel ${JSON.stringify(channelId)} is built by the platform; its account of itself is fixed`);
     if (from !== C0_CHANNEL_ID && from !== channelId) throw operationError('permission_denied', `a channel's description may only be changed from that channel or from the registry channel: this names channel_id ${JSON.stringify(channelId)} but arrived from ${JSON.stringify(from)}`);
     const { revision } = this.editDescription(channelId, (body) => {
       if (description !== undefined) body.description = String(description || '');

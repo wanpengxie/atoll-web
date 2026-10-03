@@ -1,9 +1,9 @@
 import { GENERATED_BODY } from '../protocol/vocab.js';
 
-// 频道里有两种成员：频道描述里写着的（人、人加进来的 agent 和工具，手写的 peer
-// 也算），和运行时自己生成的（服务门、peer、handle、c0 的 registrar）。后者没有
-// 描述条目，也不归人增删，名册、治理面板和时间线都不显示它们。判据只有一个：
-// 后端给的 body 是 "generated"（名册行、成员加入的那行都带）。
+// 频道里有两种成员：频道描述里写着的（人、agent、工具、peer、svcactor，c0 的
+// registrar、steward、meta peer 也是），和运行时自己推导的（只有把手：另一个
+// 频道的座位的另一头）。后者没有描述条目，也不归人增删，名册、治理面板和时间线
+// 都不显示它们。判据只有一个：后端给的 body 是 "generated"。
 
 export function isGeneratedMember(row) {
   return row?.body === GENERATED_BODY;

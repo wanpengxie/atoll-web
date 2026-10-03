@@ -85,9 +85,9 @@ test('blank start sends one channel.create with humans and a description, no tem
   expect(submits().some((payload) => RETIRED_WORDS.test(JSON.stringify(payload)))).toBe(false);
 
   const state = await mockState(request);
-  // 带进来的人就是新描述里的人的条目（BATCH3 §5）。
+  // 带进来的人就是新描述里的人的条目（BATCH3 §5）；每个频道都有的 svcactor 条目由 registrar 写上。
   expect(state.descriptions['c0.blank-room']).toMatchObject({ revision: 1, body: {
-    members: [{ name: 'root', body: { human: true }, principal: 'root' }, { name: 'alice', body: { human: true }, principal: 'alice' }],
+    members: [{ name: 'svcactor', body: { actor: 'svcactor' } }, { name: 'root', body: { human: true }, principal: 'root' }, { name: 'alice', body: { human: true }, principal: 'alice' }],
     description: '从空白开始',
   } });
   expect(state.memberships.filter((row) => row.channel_id === 'c0.blank-room' && row.status === 'active').map((row) => row.principal_id).sort())
@@ -143,8 +143,10 @@ test('picking members reads this channel\'s description and copies the chosen en
   });
   const state = await mockState(request);
   const picked = state.descriptions['c0.project.picked-room'].body.members;
-  expect(picked.map((entry) => entry.name)).toEqual(['project-agent', 'search-tool', 'root']);
+  // 挑的两条，加上 registrar 写的 svcactor 条目和到父频道的 peer（group 子频道和 group 父频道互相写一个），再是带进来的人。
+  expect(picked.map((entry) => entry.name)).toEqual(['project-agent', 'search-tool', 'svcactor', 'c0.project', 'root']);
   expect(picked.every((entry) => entry.id)).toBe(true);
+  expect(state.descriptions['c0.project'].body.members.some((entry) => entry.body?.class === 'peeractor' && entry.params?.channel === 'c0.project.picked-room')).toBe(true);
 });
 
 test('复制频道: copy_from creates a channel whose member entries match the source', async ({ page, request }) => {
@@ -158,7 +160,7 @@ test('复制频道: copy_from creates a channel whose member entries match the s
   await expect(modal.getByLabel('频道用途')).toHaveCount(0);
   await expect(modal.getByRole('button', { name: '创建频道', exact: true })).toBeDisabled();
   await modal.getByRole('combobox', { name: '复制的频道' }).click();
-  // 只能复制自己是成员、且有描述的频道：c0（平台搭的）和 c0.public（不是成员）不在里面。
+  // 只能复制自己是成员的频道；内核频道 c0 不复制，c0.public（不是成员）也不在里面。
   const options = modal.getByRole('listbox', { name: '复制的频道选项' });
   await expect(options.getByRole('option', { name: 'c0.project', exact: true })).toBeVisible();
   await expect(options.getByRole('option', { name: 'c0', exact: true })).toHaveCount(0);
@@ -173,7 +175,7 @@ test('复制频道: copy_from creates a channel whose member entries match the s
   // 源频道和新频道的成员条目逐条一致；源频道成员自己的配置不跟过来。
   const state = await mockState(request);
   const source = state.descriptions['c0.project'].body.members;
-  expect(source.map((entry) => entry.name)).toEqual(['project-agent', 'root', 'deepseek', 'search-tool', 'writer']);
+  expect(source.map((entry) => entry.name)).toEqual(['svcactor', 'project-agent', 'root', 'deepseek', 'search-tool', 'writer']);
   expect(state.descriptions['c0.copy-room'].body.members).toEqual(source);
   // 新频道给每个条目建了自己的配置，全是空值：源频道的配置没跟过来。
   expect(state.member_configs.filter((row) => row.channel_id === 'c0.copy-room').every((row) => Object.keys(row.values).length === 0)).toBe(true);

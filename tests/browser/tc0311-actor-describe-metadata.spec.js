@@ -21,7 +21,7 @@ async function openSteward(page) {
   await page.getByRole('button', { name: '成员', exact: true }).click();
   const roster = page.getByRole('complementary', { name: '频道成员' });
   await expect(roster).toBeVisible();
-  const steward = roster.getByRole('button', { name: /steward agent · class codex/ });
+  const steward = roster.getByRole('button', { name: /steward agent · actor steward@1/ });
   await expect(steward).toHaveCount(1);
   await steward.click();
   const details = page.getByRole('complementary', { name: 'Actor 详情' });
@@ -49,7 +49,7 @@ test('TC-0311 Actor Describe keeps canonical actor metadata usable in Actor deta
   const roster = page.getByRole('complementary', { name: '频道成员' });
   await expect(roster).toBeVisible();
   await roster.getByRole('button', { name: '刷新名册', exact: true }).click();
-  await roster.getByRole('button', { name: /steward agent · class codex/ }).click();
+  await roster.getByRole('button', { name: /steward agent · actor steward@1/ }).click();
   const refreshed = page.getByRole('complementary', { name: 'Actor 详情' });
   await expect(refreshed).toBeVisible();
   await expect(refreshed.getByText('Mock collaboration agent', { exact: true })).toBeVisible();

@@ -15,6 +15,8 @@ function projectActor(item) {
     name: actorDisplayName({ id, name: declared.name, body: declared.body }),
     // 描述里的成员带配置 id，运行时自己的成员带生成键；人带 principal。
     configId: declared.config_id || '',
+    // 它的配置是为描述里哪个条目建的：写描述的人按条目 id 认出新成员。
+    entryId: declared.entry_id || '',
     generated: declared.generated || '',
     // 成员是从什么造出来的，一句话："class kimi"、"actor 小研@2"，运行时
     // 自己生成的是 "generated"。

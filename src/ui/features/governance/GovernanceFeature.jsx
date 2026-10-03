@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { actorDisplayName } from '../../../model/actor-display.js';
 import { actorDescriptionName, actorDescriptionRef, isVisibleActor } from '../../../model/actor-visibility.js';
-import { isPlatformChannel, LOCAL_DEVICE_ID, ROOT_CHANNEL_ID } from '../../../protocol/vocab.js';
+import { LOCAL_DEVICE_ID } from '../../../protocol/vocab.js';
 import { TERMINAL_RESULT_UNAVAILABLE } from '../../../model/terminal-result.js';
 import { rosterBodyLabel } from '../../../model/member-config.js';
 import { InlineConfirmation } from '../../primitives/InlineConfirmation.jsx';
@@ -143,7 +143,9 @@ function ChannelSettings({ channel, port }) {
     : undefined;
   const readable = typeof commands.readChannel === 'function';
   const body = view?.description?.body || null;
-  const platformChannel = Boolean(view) && !view.description;
+  // 描述读不出时后端给原文和原因；只读描述（内核写的）能读、能复制，不能改。
+  const unreadable = Boolean(view?.description) && !body && Boolean(view.description.problem);
+  const editable = Boolean(body) && body.readonly !== true;
   const read = async () => {
     if (!readable) return;
     const target = channel?.id;
@@ -195,15 +197,16 @@ function ChannelSettings({ channel, port }) {
           {body && <><dt>说明</dt><dd>{body.description || '—'}</dd></>}
           {body && <><dt>对外服务</dt><dd>{Number(body.serving || 0) === 1 ? '是' : '否'}</dd></>}
         </dl>
-        {platformChannel && <p className="governance-empty">这个频道由平台搭建，没有频道描述；成员固定。</p>}
+        {body?.readonly === true && <p className="governance-empty">这份描述是只读的（内核写的）：能读、能复制成新频道的描述，不能改。</p>}
+        {unreadable && <><p className="governance-error" role="alert">第 {view.description.revision} 版描述读不出：{view.description.problem}</p><pre className="member-config-json" aria-label="描述原文">{typeof view.description.raw === 'string' ? view.description.raw : JSON.stringify(view.description.raw)}</pre></>}
       </>}
     </PanelCard>
-    {body && <PanelCard className="governance-form" title="说明与服务">
+    {editable && <PanelCard className="governance-form" title="说明与服务">
       <label>说明<textarea aria-label="频道说明" rows="3" value={description} onChange={(event) => setDescription(event.target.value)} /></label>
-      <label className="checkbox-row"><input type="checkbox" aria-label="对外服务" checked={serving} onChange={(event) => setServing(event.target.checked)} /> 对外服务（频道的服务门接受外部请求）</label>
+      <label className="checkbox-row"><input type="checkbox" aria-label="对外服务" checked={serving} onChange={(event) => setServing(event.target.checked)} /> 对外服务（频道的 svcactor 接受外部请求）</label>
       <button type="button" className="primary-button" disabled={port.disabled || action.busy} onClick={saveProfile}>保存</button>
     </PanelCard>}
-    {body && <PanelCard className="channel-devices" title="设备">
+    {editable && <PanelCard className="channel-devices" title="设备">
       <p className="field-hint">频道的文件和成员默认在 local-device 上；这里挂上的设备是另外几个可选的位置，成员在自己的配置里选 desired_host 才会去那里。</p>
       <div className="device-row default"><div><strong>local-device</strong><small>默认 · 不需要挂载</small></div></div>
       {spaceDevices.map((row) => {
@@ -232,9 +235,8 @@ function ChannelMembers({ channel, port }) {
   const action = useCommand(port.commands, 'channel');
   const commandPort = port.commands || {};
   const roster = (port.roster || []).filter(isVisibleActor);
-  // 平台建的频道（c0、大厅）没有描述，成员由平台固定；人照常可请出。
-  const fixedMembers = isPlatformChannel(channel?.id);
-  // c0 没有描述：它的 agent / 工具由平台固定，只能改配置，不能移除。
+  // 只读描述（内核写的 c0、大厅、c0.home）由后端拒写，拒绝原样显示；前端不按
+  // 频道 id 预先禁用。
   // A submitted command is only a ledger-side receipt.  Readiness is a
   // separate projection: the canonical roster owner must report a complete
   // authority for this channel and the requested actor must be present in
@@ -246,7 +248,7 @@ function ChannelMembers({ channel, port }) {
   const submittedMemberPresent = Boolean(submittedMember && roster.some((row) => (
     row.id === submittedMember.id
       || (submittedMember.kind === 'principal' && row.principal === submittedMember.id)
-      || (submittedMember.kind !== 'principal' && Boolean(submittedMember.configId) && row.configId === submittedMember.configId)
+      || (submittedMember.kind !== 'principal' && Boolean(submittedMember.entryId) && row.entryId === submittedMember.entryId)
   )));
   const memberReady = Boolean(
     submittedMember
@@ -301,15 +303,16 @@ function ChannelMembers({ channel, port }) {
       action.submit('introduce_actor', { channelId: channel?.id, candidateType: 'principal', candidateId: selected.row.id });
       return;
     }
-    setSubmittedMember({ kind: selected.kind, configId: '' });
+    setSubmittedMember({ kind: selected.kind, entryId: '' });
     const reply = await action.submit('introduce_actor', {
       channelId: channel?.id,
       candidateType: selected.kind,
       candidateId: selected.kind === 'class' ? className.trim() : selected.row.ref,
       name: trimmedName,
     }, { submitted: '成员条目已写进频道描述；成员构建好后出现在名册里，构建结果在成员详情和时间线上。' });
-    const configId = String(reply?.config_id || '');
-    setSubmittedMember((current) => current && current.kind === selected.kind ? { ...current, configId } : current);
+    // member.create 回写下的条目；成员的配置在频道收敛时才建，按条目 id 认它。
+    const entryId = String(reply?.entry?.id || '');
+    setSubmittedMember((current) => current && current.kind === selected.kind ? { ...current, entryId } : current);
   };
   const confirmActor = () => {
     if (!confirm) return;
@@ -337,13 +340,13 @@ function ChannelMembers({ channel, port }) {
           <button type="button" disabled={typeof commandPort.selectActor !== 'function'} onClick={() => commandPort.selectActor?.(row)} aria-label={`查看 ${actorDisplayName(row)}`}>查看</button>
           {canBind || canUnbind ? <button type="button" disabled={port.disabled || directOperation?.state === 'pending'} onClick={() => runDirectCommand(row.bound ? '解绑' : '绑定', row.bound ? unbindCommand : bindCommand, row)}>{row.bound ? '解绑' : '绑定'}</button> : <button type="button" disabled title="当前治理端口未提供绑定命令">绑定</button>}
           {canRestart ? <button type="button" disabled={port.disabled || directOperation?.state === 'pending'} onClick={() => setConfirm({ kind: 'restart', row })}>重启</button> : <button type="button" disabled title={row.kind === 'human' ? '用户成员不支持 Agent 重启' : '当前治理端口未提供重启命令'}>重启</button>}
-          <button type="button" className="danger-text" disabled={port.disabled || row.id === port.selfId || ownerActor || row.protected || (fixedMembers && row.kind !== 'human')} title={fixedMembers && row.kind !== 'human' ? `${channel?.id} 的成员由平台固定，不能移除` : undefined} onClick={() => setConfirm({ kind: 'remove', row })}>{ownerActor ? 'Owner' : '移除'}</button>
+          <button type="button" className="danger-text" disabled={port.disabled || row.id === port.selfId || ownerActor || row.protected} onClick={() => setConfirm({ kind: 'remove', row })}>{ownerActor ? 'Owner' : '移除'}</button>
         </div>;
       })}
       {!roster.length && <p className="governance-empty">暂无可管理的业务 Actor</p>}
       {port.identityPending && <p className="roster-identity-pending" role="status">正在确认你在本频道中的 Actor 身份</p>}
       {memberReady && <p className="roster-ready" role="status">成员已就绪</p>}
-      <p className="protected-note">运行时自己生成的成员（服务门、peer、handle）不在频道描述里，已隐藏。</p>
+      <p className="protected-note">运行时推导的把手（另一个频道座位的另一头）不在频道描述里，已隐藏。</p>
       {!hasLifecycleCommands && <p className="protected-note">当前治理端口未提供绑定或重启命令；这里仅展示目录事实、查看与已有移除入口。</p>}
     </PanelCard>
     <PanelCard as="form" className="governance-form" title="添加参与者" onSubmit={introduce}>
@@ -362,10 +365,9 @@ function ChannelDanger({ channel, port }) {
   const [confirmation, setConfirmation] = useState('');
   const action = useCommand(port.commands, 'channel');
   const expected = displayChannelName(channel);
-  const protectedRoot = channel?.id === ROOT_CHANNEL_ID;
   return <PanelCard className="danger-zone" title="退役频道">
     {action.error && <p className="governance-error" role="alert">{action.error}</p>}
-    {protectedRoot ? <p>空间根频道 {ROOT_CHANNEL_ID} 受后端保护，不能退役。</p> : <><p>退役后频道停止写入，但已有账本和文件不会被前端删除；存在活动子频道时由后端拒绝。</p><label>输入 <strong>{expected}</strong> 确认<input aria-label="退役确认" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></label><button type="button" className="danger-button" disabled={port.disabled || confirmation !== expected} onClick={() => action.submit('retire', { channelId: channel?.id })}>退役当前频道</button></>}
+    {<><p>退役后频道停止写入，但已有账本和文件不会被前端删除；存在活动子频道、或描述只读（内核写的频道）时由后端拒绝。</p><label>输入 <strong>{expected}</strong> 确认<input aria-label="退役确认" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></label><button type="button" className="danger-button" disabled={port.disabled || confirmation !== expected} onClick={() => action.submit('retire', { channelId: channel?.id })}>退役当前频道</button></>}
   </PanelCard>;
 }
 
@@ -439,7 +441,7 @@ function creationConvergence(channel, children, request, creation = null) {
 
 const CREATE_STARTS = Object.freeze([
   ['blank', '空白', '从一份空描述开始，之后再加成员'],
-  ['copy', '复制一个频道', '照抄另一个频道的描述（成员条目、服务、说明、设备）；被复制频道的成员配置不跟过来'],
+  ['copy', '复制一个频道', '照抄另一个频道的描述（成员条目、说明、设备）；内核频道不能抄；被复制频道的成员配置不跟过来'],
   ['pick', '从本频道挑成员', '把本频道描述里的几个成员条目抄进新频道'],
 ]);
 

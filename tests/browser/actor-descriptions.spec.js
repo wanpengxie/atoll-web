@@ -178,14 +178,14 @@ test('频道设置: status is read on demand, description and serving are saved,
   expect(state.descriptions['c0.project'].body.devices).toBeUndefined();
 });
 
-test('频道设置 on c0: the platform channel has no description and no builds in its status', async ({ page, request }) => {
+test('频道设置 on c0: its description is read-only and offers no form to change it', async ({ page, request }) => {
   await reset(request, 'channel-governance', 4103);
   await login(page);
   const panel = await openChannelPanel(page, '设置');
   await panel.getByRole('button', { name: '读取', exact: true }).click();
-  await expect(panel.getByText('这个频道由平台搭建，没有频道描述；成员固定。')).toBeVisible();
+  await expect(panel.getByText('这份描述是只读的（内核写的）：能读、能复制成新频道的描述，不能改。')).toBeVisible();
   await expect(panel.locator('.channel-runtime .build-line')).toHaveCount(0);
-  // 没有描述，就没有说明与服务、设备两块。
+  // 只读，就没有说明与服务、设备两块。
   await expect(panel.getByRole('heading', { name: '说明与服务' })).toHaveCount(0);
   await expect(panel.locator('.channel-devices')).toHaveCount(0);
 });
