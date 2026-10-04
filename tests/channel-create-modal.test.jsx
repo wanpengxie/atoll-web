@@ -49,7 +49,7 @@ describe('创建子频道（GovernanceFeature public owner）', () => {
         children: [],
         selfId: 'human:root:1',
         copyableChannels: [{ id: 'c0.project', qualified_name: 'c0.project' }, { id: 'c0.public', qualified_name: 'c0.public' }],
-        principals: [{ id: 'alice', kind: 'human', display_name: 'Alice' }, { id: 'retired', kind: 'human', status: 'retired' }, { declared: { id: 'bob', kind: 'human', email: 'bob@x' } }],
+        principals: [{ id: 'alice', kind: 'human', display_name: 'Alice' }, { id: 'retired', kind: 'human', status: 'retired' }, { declared: { id: 'bob', kind: 'human', email: 'bob@x' } }, { id: 'guest', kind: 'human', display_name: 'Guest', email: 'guest@atoll.local', status: 'present' }],
       } }}
       onClose={vi.fn()}
     />);
@@ -63,10 +63,12 @@ describe('创建子频道（GovernanceFeature public owner）', () => {
     fireEvent.click(screen.getByRole('combobox', { name: '复制的频道' }));
     fireEvent.click(screen.getByRole('option', { name: 'c0.project' }));
 
-    // 带进来的人：自己恒在（固定一行），退役的人不列出。
+    // 带进来的人：自己恒在（固定一行），退役的人不列出，大厅的 guest 永不列出。
     const humans = screen.getByRole('region', { name: '带进来的人' });
     expect(within(humans).getByText('human:root:1')).toBeTruthy();
     expect(within(humans).queryByLabelText(/retired/)).toBeNull();
+    expect(within(humans).queryByLabelText(/Guest/)).toBeNull();
+    expect(within(humans).queryByText(/guest/)).toBeNull();
     fireEvent.click(within(humans).getByLabelText('带上用户 bob@x'));
     fireEvent.click(screen.getByRole('button', { name: '创建频道' }));
 

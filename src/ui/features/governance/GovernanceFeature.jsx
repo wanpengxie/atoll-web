@@ -102,13 +102,19 @@ function actorRuntime(row = {}) {
   return ['waiting', '等待状态'];
 }
 
+// The lobby's guest is the one person no channel lets in (the registrar
+// refuses it everywhere): it is never offered, by its reserved principal id
+// (owner 10-04: "严禁添加 guest，这个选项不应该出现").
+const GUEST_PRINCIPAL_ID = 'guest';
+
 function eligiblePrincipal(row = {}) {
   // WorkspaceApp already narrows the directory projection. Keep the feature
   // boundary defensive for direct public ports and fixtures: an explicit
   // non-human or retired row is never presented as a human admission target.
   return (!row.kind || row.kind === 'human')
     && (!row.status || row.status === 'present')
-    && Boolean(row.id);
+    && Boolean(row.id)
+    && row.id !== GUEST_PRINCIPAL_ID;
 }
 
 function participantCandidateName(candidate) {

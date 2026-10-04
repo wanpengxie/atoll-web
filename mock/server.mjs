@@ -2250,6 +2250,9 @@ export function createMockServer({
           item({ id: ROOT_ID, kind: 'human', email: ROOT_EMAIL, display_name: 'Root', status: 'present', created_at: 1_723_974_400_000 }, null),
           item({ id: 'alice', kind: 'human', email: 'alice@atoll.local', display_name: 'Alice', status: 'present', created_at: 1_723_974_400_100 }, null),
           item({ id: 'bob', kind: 'human', email: 'bob@atoll.local', display_name: 'Bob', status: 'present', created_at: 1_723_974_400_200 }, null),
+          // The node lists the lobby's guest as a person too (boot seeds it); the
+          // web must never offer it as someone to let into a channel.
+          item({ id: 'guest', kind: 'human', email: 'guest@atoll.local', display_name: 'Guest', status: 'present', created_at: 1_723_974_400_000 }, null),
         ]));
         return;
       }

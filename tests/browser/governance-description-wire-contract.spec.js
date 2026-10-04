@@ -69,6 +69,9 @@ test('blank start sends one channel.create with humans and a description, no tem
   await expect(modal.getByRole('combobox', { name: '频道模板' })).toHaveCount(0);
   await modal.getByLabel('新频道名称').fill('blank-room');
   await modal.getByLabel('频道用途').fill('从空白开始');
+  // The node lists the lobby's guest among people; it is never offered.
+  await expect(modal.getByRole('checkbox', { name: '带上用户 Bob', exact: true })).toHaveCount(1);
+  await expect(modal.getByRole('checkbox', { name: '带上用户 Guest', exact: true })).toHaveCount(0);
   await modal.getByRole('checkbox', { name: '带上用户 Alice', exact: true }).check();
   await modal.getByRole('button', { name: '创建频道', exact: true }).click();
   await expectReady(modal);
