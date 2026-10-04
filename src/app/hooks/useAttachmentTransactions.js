@@ -104,6 +104,38 @@ async function readBoundedText(response, limit, signal) {
   }
 }
 
+// The node streams a file without Content-Length, so a preview cannot learn
+// its size up front. It reads at most `limit` bytes and stops there: a 100 MB
+// file must not be pulled whole into the page just to find it is too big.
+async function readBoundedBlob(response, limit, signal) {
+  const declared = Number(response.headers?.get?.('content-length') || 0);
+  if (declared > limit) throw new RangeError(previewSizeError(limit));
+  if (!response.body?.getReader) {
+    const blob = await response.blob();
+    if (blob.size > limit) throw new RangeError(previewSizeError(limit));
+    return blob;
+  }
+  const reader = response.body.getReader();
+  const parts = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      if (signal?.aborted) throw new DOMException('预览已取消', 'AbortError');
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > limit) {
+        await reader.cancel();
+        throw new RangeError(previewSizeError(limit));
+      }
+      parts.push(value);
+    }
+  } finally {
+    reader.releaseLock?.();
+  }
+  return new Blob(parts, { type: response.headers?.get?.('content-type')?.split(';')[0]?.trim() || '' });
+}
+
 function previewLimit(kind) {
   if (['markdown', 'text', 'unsupported'].includes(kind)) return PREVIEW_LIMITS.text;
   if (kind === 'image') return PREVIEW_LIMITS.image;
@@ -868,21 +900,20 @@ export function useAttachmentTransactions({
       if (activeChannelRef.current === channelId) setFilesBusy(false);
     }
   }, [activeChannelId, activeChannelRef, refreshDirectory, runFileOperation]);
+  // The browser downloads the file itself, straight from the ticket URL: it
+  // shows progress, writes to disk as bytes arrive, and a 100 MB file never
+  // passes through the page's memory. The session cookie authenticates it.
   const downloadFile = useCallback(async (entry) => {
     if (!activeChannelId || !entry?.resourceId) return;
-    const blob = await runFileOperation({ channelId: activeChannelId, access: 'read' }, async (operation) => {
+    const url = await runFileOperation({ channelId: activeChannelId, access: 'read' }, async (operation) => {
       const receipt = await operation.resource({ channel_id: activeChannelId, op: 'read', resource_id: entry.resourceId, with_content: true });
       if (!receipt?.ticket) throw new TypeError('服务端没有返回下载凭据');
-      const response = await operation.fetch(downloadURL(activeChannelId, receipt.ticket), { credentials: 'include' });
-      if (!response.ok) throw new TypeError(`下载失败 (${response.status})`);
-      return response.blob();
+      return downloadURL(activeChannelId, receipt.ticket);
     });
-    const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
     anchor.download = entry.name || 'download';
     anchor.click();
-    setTimeout(() => URL.revokeObjectURL(url), 0);
   }, [activeChannelId, runFileOperation]);
 
   const previewArtifact = useCallback(async (entry, requestedChannelId = activeChannelRef.current, historyMode = 'push') => {
@@ -940,19 +971,25 @@ export function useAttachmentTransactions({
         if (['markdown', 'text'].includes(resolved.kind)) {
           return { ...resolved, status: 'ready', text: await readBoundedText(response, PREVIEW_LIMITS.text, operation.signal) };
         }
-        const blob = await response.blob();
         if (resolved.kind === 'unsupported') {
-          if (blob.size > PREVIEW_LIMITS.text) return {
+          const unsupported = {
             ...resolved,
             status: 'unsupported',
             reason: `不支持预览 ${resolved.mediaType || '未知媒体类型'} 文件`,
           };
+          let blob;
+          try {
+            blob = await readBoundedBlob(response, PREVIEW_LIMITS.text, operation.signal);
+          } catch (error) {
+            if (error instanceof RangeError) return unsupported;
+            throw error;
+          }
           const text = await sniffText(blob);
           return text === null
-            ? { ...resolved, status: 'unsupported', reason: `不支持预览 ${resolved.mediaType || '未知媒体类型'} 文件` }
+            ? unsupported
             : { ...resolved, kind: 'text', status: 'ready', text, sniffed: true };
         }
-        if (limit && blob.size > limit) throw new RangeError(previewSizeError(limit));
+        const blob = await readBoundedBlob(response, limit, operation.signal);
         const declaredType = String(blob.type || '').toLowerCase();
         const wantedType = resolved.kind === 'pdf' ? 'application/pdf' : resolved.mediaType;
         const previewBlob = wantedType && (!declaredType || declaredType === 'application/octet-stream')

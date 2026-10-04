@@ -189,6 +189,23 @@ describe('channel file browser (FilesFeature + useAttachmentTransactions)', () =
     vi.restoreAllMocks();
   });
 
+  it('a large file of unknown size stops reading at the preview limit', async () => {
+    const root = 'daemon://local-device/c0/';
+    const wireResource = vi.fn(async (payload) => (payload.op === 'list' ? { items: [] } : { ticket: 'big-ticket' }));
+    const chunk = new Uint8Array(256 * 1024);
+    let reads = 0;
+    const cancel = vi.fn(async () => {});
+    const body = { getReader: () => ({ read: async () => { reads += 1; return { done: reads > 400, value: chunk }; }, cancel, releaseLock: () => {} }) };
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, headers: { get: () => null }, body })));
+    const { resultRef } = renderHarness({ devices: [{ id: 'local-device', name: 'local-device', defaultStorage: true }], wireResource });
+    await waitFor(() => expect(resultRef.current.attachments.deviceId).toBe('local-device'));
+    await act(async () => { await resultRef.current.attachments.previewArtifact({ key: 'big', channelId: 'c0', resourceId: `${root}big.zip`, name: 'big.zip', mediaType: 'application/zip' }, 'c0'); });
+    expect(resultRef.current.attachments.artifactPreview.status).toBe('unsupported');
+    // 512 KB is two chunks; each open stops at the third, never the 400.
+    expect(cancel).toHaveBeenCalled();
+    expect(reads).toBeLessThanOrEqual(3 * cancel.mock.calls.length);
+  });
+
   it('reopens a recently viewed file without navigating back to its directory', async () => {
     const user = userEvent.setup();
     const root = 'daemon://local-device/c0/';
