@@ -259,8 +259,8 @@ describe('Round 16 public-owner evidence: Dynamic presentation', () => {
 
   it('[AD-335] same-author continuation keeps each message focusable while sharing identity', () => {
     // 能力：用户可分别聚焦连续消息；不变量：身份只合并相邻同作者，不合并事实；公开 owner：useTimelineRowRenderer。
-    const first = envelope({ id: 'm-1', kind: 'event', type: 'human.note', sender: HUMAN, ts: 1000, body: { text: '第一条' } });
-    const second = envelope({ id: 'm-2', kind: 'event', type: 'human.note', sender: HUMAN, ts: 2000, body: { text: '第二条' } });
+    const first = envelope({ id: 'm-1', kind: 'request', type: 'human.note', sender: HUMAN, ts: 1000, body: { text: '第一条' } });
+    const second = envelope({ id: 'm-2', kind: 'request', type: 'human.note', sender: HUMAN, ts: 2000, body: { text: '第二条' } });
     const { view } = renderStandaloneRows([
       { id: 'm-1', body: { kind: 'standalone', envelope: first }, continuation: false },
       { id: 'm-2', body: { kind: 'standalone', envelope: second }, continuation: true },
@@ -270,6 +270,14 @@ describe('Round 16 public-owner evidence: Dynamic presentation', () => {
     expect(view.container.textContent).toContain('第一条');
     expect(view.container.textContent).toContain('第二条');
     expect(view.container.querySelectorAll('[tabindex="0"]')).toHaveLength(2);
+  });
+
+  it('an event reads as a weak notice line, not a message card', () => {
+    const ready = envelope({ id: 'ready', kind: 'event', type: 'actor.ready', sender: { id: 'tool:device-mini:1', kind: 'tool' }, ts: 1000, body: { component: 'workspace', runtime: 'pi' } });
+    const { view } = renderStandaloneRows([{ id: ready.id, body: { kind: 'standalone', envelope: ready }, continuation: false }]);
+    expect(view.container.querySelectorAll('.standalone-row')).toHaveLength(0);
+    expect(view.container.querySelector('.timeline-notice')?.textContent).toContain('已就绪');
+    expect(view.container.textContent).not.toContain('actor.ready');
   });
 
   it('[AD-336] an unknown sender shows a generic label without parsing or leaking the actor id', () => {

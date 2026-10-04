@@ -112,6 +112,18 @@ export function hasReadableTerminalContent(envelope) {
   return Object.keys(payload || {}).some((key) => !TERMINAL_TRANSPORT_FIELDS.has(key));
 }
 
+// An event is something that happened, not something said. The timeline
+// shows it as a weak notice — one centred grey line, like an IM's time stamp
+// or "X joined" — never as a message card. Background work and a provider's
+// own run keep the renderings they have.
+const OWN_EVENT_RENDERINGS = new Set([TYPES.agentTask, TYPES.agentProviderRun]);
+
+export function weakNoticeEvent(envelope) {
+  return envelope?.kind === 'event'
+    && envelope.visibility !== 'system'
+    && !OWN_EVENT_RENDERINGS.has(envelope.type);
+}
+
 // A public event is a notification only when it is itself a readable Timeline
 // item. Transport/lifecycle events may remain visible in activity surfaces, but
 // visibility alone is not evidence that a person received a new message.

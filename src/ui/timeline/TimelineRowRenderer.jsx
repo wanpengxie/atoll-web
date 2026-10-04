@@ -4,7 +4,7 @@ import { isGeneratedMember } from '../../model/actor-visibility.js';
 import { buildRecord, buildSummaryText, buildTone } from '../../model/build-record.js';
 import { terminalContentEnvelope, terminalResultState, turnProcessObservations } from '../../model/terminal-result.js';
 import { isMobileProfile } from '../../model/device-profile.js';
-import { hasReadableTerminalContent } from '../../model/conversation-visibility.js';
+import { hasReadableTerminalContent, weakNoticeEvent } from '../../model/conversation-visibility.js';
 import { argsOf, hasCanonicalBody } from '../../protocol/envelope.js';
 import { DECISIONS, isConversationCall, isSystemWord, TYPES } from '../../protocol/vocab.js';
 import { messageTimeLabel } from '../../util/time.js';
@@ -1472,6 +1472,22 @@ function Standalone({ envelope, subTasks, names, selfId, continuation, fold, onD
       && <ThreadTree items={[{ key: 'report', depth: 1, leaf: true, status: 'completed' }]} label="后台任务" render={() => <ProviderRunLeaf envelope={envelope} />} />}
   </ReplyableMessageFrame>;
 }
+// What an event says when it carries no words of its own. A wire type is an
+// identifier, never shown to the reader.
+const EVENT_NOTICE_LABELS = {
+  'actor.initializing': '正在启动',
+  'actor.ready': '已就绪',
+};
+
+function WeakNotice({ envelope, names }) {
+  const text = hasCanonicalBody(envelope) ? textContent(argsOf(envelope)) : '';
+  const line = text.split('\n').map((part) => part.trim()).find(Boolean)
+    || EVENT_NOTICE_LABELS[envelope.type] || '后台状态已更新';
+  return <div className="timeline-notice" title={text || undefined}>
+    <span><strong>{nameOf(envelope.sender?.id, names)}</strong> {line} · <time>{messageTimeLabel(envelope.ts)}</time></span>
+  </div>;
+}
+
 function Narration({ rows, names }) {
   return <div className="timeline-narration">{(rows || []).map(({ seq, envelope }) => {
     const presentation = systemEventPresentation(envelope, names);
@@ -1520,6 +1536,7 @@ export function useTimelineRowRenderer({ state, names, selfId, access = '', targ
       onPreview={port?.onPreviewResource ? (attachment) => port.onPreviewResource(state.channelId, attachment) : undefined}
       onReply={port?.onReply} onCreateTask={port?.onCreateTask} onOpen={port?.onOpenTurn}
     />;
+    else if (entry?.envelope && weakNoticeEvent(entry.envelope)) content = <WeakNotice envelope={entry.envelope} names={names} />;
     else if (entry?.envelope) content = <Standalone envelope={entry.envelope} subTasks={entry.subTasks} names={names} selfId={selfId} continuation={row.continuation} fold={rowFold}
       onDownload={port?.onDownloadResource ? (attachment) => port.onDownloadResource(state.channelId, attachment) : undefined}
       onPreview={port?.onPreviewResource ? (attachment) => port.onPreviewResource(state.channelId, attachment) : undefined}

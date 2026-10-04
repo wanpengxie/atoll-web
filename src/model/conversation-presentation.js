@@ -1,7 +1,7 @@
 import { argsOf, correlationOf } from '../protocol/envelope.js';
 import { isConversationCall, isOperationCall, TYPES } from '../protocol/vocab.js';
 import { subTaskEnds } from './background-tasks.js';
-import { isControlOnlyTurn } from './conversation-visibility.js';
+import { isControlOnlyTurn, weakNoticeEvent } from './conversation-visibility.js';
 import { LIFECYCLE, memberRestarts, requestLifecycle } from './request-lifecycle.js';
 
 function finiteSeq(value) {
@@ -82,8 +82,9 @@ function endAuthorOf(entry) {
     : entry?.envelope?.sender?.id || '';
 }
 
+// A weak notice neither continues a message nor is continued by one.
 function conversational(entry) {
-  return entry?.kind === 'standalone'
+  return (entry?.kind === 'standalone' && !weakNoticeEvent(entry.envelope))
     || (entry?.kind === 'turn' && ![TYPES.humanAsk, TYPES.humanApprove].includes(entry.turn?.request?.type));
 }
 
@@ -104,6 +105,7 @@ function continuationOf(previous, current) {
 
 function layoutClassOf(entry) {
   if (entry?.kind === 'narration') return 'compact';
+  if (entry?.kind === 'standalone' && weakNoticeEvent(entry.envelope)) return 'compact';
   const envelope = entry?.kind === 'turn' ? entry.turn?.request : entry?.envelope;
   const payload = argsOf(envelope);
   const text = String(payload?.text || payload?.body || '');
