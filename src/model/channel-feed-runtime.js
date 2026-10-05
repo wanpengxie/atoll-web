@@ -24,12 +24,18 @@ export const HISTORY_BATCH_BYTES = 1024 * 1024;
 export const HISTORY_BATCH_TIMEOUT_MS = 30_000;
 export const HISTORY_RESERVOIR_SIZE = 5_000;
 
-// Mobile keeps a bounded Replica suffix.  Trim only after crossing the high
-// water mark, then leave hysteresis so a live row does not trigger a delete on
-// every frame.  The Replica remains the sole owner of closure retention and
-// history re-admission; this is only Feed's admission threshold.
+// Every page keeps a bounded Replica suffix per channel: memory grows with the
+// rows held (about 70 KB each), and a desktop tab left open for a day held
+// 17k rows across its channels, 1.2 GB of heap, before its renderer died.
+// Trim only after crossing the high water mark, then leave hysteresis so a
+// live row does not trigger a delete on every frame.  The Replica remains the
+// sole owner of closure retention and history re-admission; this is only
+// Feed's admission threshold.  Trimmed rows come back from the local cache
+// when the reader pages back.
 const MOBILE_REPLICA_MAX_ROWS = 500;
 const MOBILE_REPLICA_TARGET_ROWS = 400;
+const DESKTOP_REPLICA_MAX_ROWS = 5_000;
+const DESKTOP_REPLICA_TARGET_ROWS = 4_500;
 
 // Channel entry warms one useful physical page target, not the whole ledger.
 // Four pages is deliberately finite: the mock's root-safe pages are smaller
@@ -166,11 +172,13 @@ function historySourceFor(localMeta, beforeSeq) {
   )) ? 'indexeddb' : 'network';
 }
 
-function trimMobileReplica(replica, channelId) {
-  if (!isMobileProfile()) return 0;
+function trimReplica(replica, channelId) {
+  const [max, target] = isMobileProfile()
+    ? [MOBILE_REPLICA_MAX_ROWS, MOBILE_REPLICA_TARGET_ROWS]
+    : [DESKTOP_REPLICA_MAX_ROWS, DESKTOP_REPLICA_TARGET_ROWS];
   const state = replica.state(channelId);
-  if (!state || state.rows.size <= MOBILE_REPLICA_MAX_ROWS) return 0;
-  return replica.trim(channelId, MOBILE_REPLICA_TARGET_ROWS);
+  if (!state || state.rows.size <= max) return 0;
+  return replica.trim(channelId, target);
 }
 
 // 是不是"我"：只比完整 actor id，从不拆开它。
@@ -766,10 +774,19 @@ export function createChannelFeedRuntime(options = {}) {
       observeAgentActivity(result.row, source);
       observeTimerFiring(result.row, source);
     }
-    // Admit the whole batch before applying the bounded mobile suffix.  The
+    // Admit the whole batch before applying the bounded suffix.  The
     // Replica must see terminal/request pairs together so its existing
     // compact-closure reconciliation remains the only closure owner.
-    for (const channelId of discoveredChannels) trimMobileReplica(replica, channelId);
+    for (const channelId of discoveredChannels) {
+      if (!trimReplica(replica, channelId)) continue;
+      // What was cut is older history again: paging reaches it from the new
+      // bottom of the window.
+      const status = histories.get(channelId);
+      if (!status) continue;
+      status.beforeSeq = replica.visibleOldest(channelId) || status.beforeSeq;
+      status.hasOlder = true;
+      status.coverage = replica.record(channelId)?.materializedCoverage || [];
+    }
     for (const channelId of discoveredChannels) {
       const status = histories.get(channelId);
       if (status) refreshControlCurrent(channelId, status);
