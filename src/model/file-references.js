@@ -31,6 +31,13 @@ export function parseFileReference(href) {
 }
 
 export function attachmentFromFileReference(reference) {
+  // A stored file (oss://…) is named by its address; its bytes come from the
+  // storage seat, not from a host path.
+  const address = String(reference?.address || '');
+  if (address) {
+    const name = String(reference?.name || address.split('/').filter(Boolean).pop() || address);
+    return { resource_id: address, name, media_type: mediaTypeFromFileName(name), file_reference: true };
+  }
   const path = String(reference?.path || '');
   const name = path.split('/').filter(Boolean).pop() || path;
   return {

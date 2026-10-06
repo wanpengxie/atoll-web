@@ -35,6 +35,9 @@ export const HIDDEN_TURN_TYPES = new Set([
   TYPES.agentOptions,
   TYPES.agentFork,
   TYPES.describe,
+  // Exchanging a stored file's address for a signed URL is how a preview
+  // opens, not something anyone said.
+  TYPES.storageGetURL,
 ]);
 
 // A steer is the one control word that may or may not be a message: with a
@@ -89,6 +92,11 @@ export function hasReadableMessageContent(envelope) {
   return Boolean(
     String(payload?.text || payload?.body || payload?.message || '').trim()
     || (Array.isArray(attachments) && attachments.length > 0)
+    // Content blocks: prose, or a file named by a resource_link.
+    || (Array.isArray(payload?.content) && payload.content.some((item) => (
+      (item?.type === 'text' && String(item.text || '').trim())
+      || (item?.type === 'resource_link' && String(item.uri || '').trim())
+    )))
   );
 }
 

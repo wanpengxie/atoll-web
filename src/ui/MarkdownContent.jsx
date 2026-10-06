@@ -7,6 +7,7 @@ import remarkMath from 'remark-math';
 import 'katex/dist/katex.min.css';
 import { createContentPlanStore } from '../model/content-plan.js';
 import { parseFileReference } from '../model/file-references.js';
+import { parseStorageAddress, remarkStorageLinks, storageFileReference, storageUrlTransform } from '../model/storage-address.js';
 import { normalizeMathMarkdown } from '../model/math-markdown.js';
 import { CodeBlock, fenceLanguageOf, textOfNode } from './CodeBlock.jsx';
 import { ContentPlanBlocks } from './ContentPlanBlocks.jsx';
@@ -15,7 +16,7 @@ import { PreparedMarkdown } from './PreparedMarkdown.jsx';
 
 export { describeContentTextPoint, resolveContentTextPoint } from './ContentPlanBlocks.jsx';
 
-const REMARK_PLUGINS = [remarkGfm, remarkMath, remarkBreaks];
+const REMARK_PLUGINS = [remarkGfm, remarkMath, remarkBreaks, remarkStorageLinks];
 const REHYPE_PLUGINS = [[rehypeKatex, { strict: false, throwOnError: false, trust: false }]];
 // Prepared trees are retained only while both the entry-count and conservative
 // AST byte budgets permit it. Mounted MarkdownContent instances keep their
@@ -65,9 +66,13 @@ const StableMarkdownImage = React.memo(function StableMarkdownImage({ src = '', 
 
 function MarkdownLink({ node: _node, ...props }) {
   const onOpenFileReference = useContext(FileReferenceContext);
-  const reference = onOpenFileReference ? parseFileReference(props.href) : null;
+  const stored = parseStorageAddress(props.href);
+  // A stored file (oss://) is never a page the browser can open: without a
+  // file-opening context the link stays inert rather than navigating.
+  if (stored && !onOpenFileReference) return <a {...props} className={[props.className, 'markdown-file-reference'].filter(Boolean).join(' ')} onClick={(event) => event.preventDefault()} />;
+  const reference = stored ? storageFileReference(stored) : onOpenFileReference ? parseFileReference(props.href) : null;
   if (!reference) return <a {...props} target="_blank" rel="noreferrer" />;
-  return <a {...props} className={[props.className, 'markdown-file-reference'].filter(Boolean).join(' ')} title="在 Atoll 中预览文件" onClick={(event) => {
+  return <a {...props} className={[props.className, 'markdown-file-reference', stored ? 'markdown-storage-reference' : ''].filter(Boolean).join(' ')} title="在 Atoll 中预览文件" onClick={(event) => {
     props.onClick?.(event);
     if (event.defaultPrevented) return;
     event.preventDefault();
@@ -107,8 +112,8 @@ function renderMarkdownBlock(block) {
   const cached = BLOCK_RENDERS.get(block);
   if (cached) return cached;
   const content = block.preparedRoot
-    ? <PreparedMarkdown root={block.preparedRoot} components={MARKDOWN_COMPONENTS} />
-    : <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={MARKDOWN_COMPONENTS}>
+    ? <PreparedMarkdown root={block.preparedRoot} components={MARKDOWN_COMPONENTS} urlTransform={storageUrlTransform} />
+    : <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={MARKDOWN_COMPONENTS} urlTransform={storageUrlTransform}>
       {block.renderSource}
     </ReactMarkdown>;
   const rendered = <MarkdownBlockContext.Provider value={block.blockID}>{content}</MarkdownBlockContext.Provider>;

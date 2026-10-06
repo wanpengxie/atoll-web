@@ -56,6 +56,7 @@ export function mountAttachmentTransactions(overrides = {}) {
     serverWorld: overrides.serverWorld || 'world-1',
     wireRef: { current: wire },
     wireState: overrides.wireState || 'open',
+    ...(overrides.resolveStorageURL ? { resolveStorageURL: overrides.resolveStorageURL } : {}),
   };
   const view = renderHook((props) => useAttachmentTransactions(props), { initialProps: baseProps });
   return { view, wire, wireResource, channelDevices, drafts, accessState, activeChannelRef, props: baseProps };

@@ -134,6 +134,7 @@ const CURRENT_ENTRY_EXCLUDED_TYPES = new Set([
   TYPES.agentOptions,
   TYPES.agentFork,
   TYPES.describe,
+  TYPES.storageGetURL,
 ]);
 
 // Current-entry eligibility is a Presentation concern. Consumers must not

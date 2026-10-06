@@ -59,6 +59,15 @@ import { Composer, useComposerCommands } from '../ui/composer/index.js';
 import { TaskCreationDialog } from '../ui/features/tasks/TasksFeature.jsx';
 import { UiFormModal } from '../ui/UiFormModal.jsx';
 import { systemReplyValue } from '../protocol/reply-shape.js';
+import { parseStorageAddress } from '../model/storage-address.js';
+import {
+  identifyStorageSeat,
+  isStorageSeatRow,
+  STORAGE_REQUEST_TTL_MS,
+  storageError,
+  storageReplyError,
+  storageTicket,
+} from '../model/storage-seat.js';
 import {
   WorkspaceFeatures,
   WorkspaceFeatureOverlays,
@@ -666,24 +675,31 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     attachmentRef: attachmentPortRef,
   });
   const submission = composer.submission;
-  const sendSystemCommand = useCallback((channelId, msgType, payload) => {
+  // 向本频道一个成员发一个词。system 门只是其中一个收件人。
+  const sendMemberCommand = useCallback((channelId, actorId, msgType, payload, { expiresAtMs = 0, deniedText = '当前身份不能治理该频道' } = {}) => {
     if (!channelId) return Promise.reject(new TypeError('请先选择频道'));
+    if (!actorId) return Promise.reject(new TypeError('请求没有收件人'));
     const channelAccess = wire.accessRef.current?.state?.(channelId);
     if (channelAccess?.relationship !== 'member'
       || channelAccess.existence === 'retired'
       || channelAccess.runtime === 'closed'
       || channelAccess.unavailable) {
-      return Promise.reject(new TypeError('当前身份不能治理该频道'));
+      return Promise.reject(new TypeError(deniedText));
     }
     return submission.send({
       channelId,
       text: '',
       msgType,
-      audience: [SYSTEM_ACTOR_ID],
-      targetLabel: SYSTEM_ACTOR_ID,
+      audience: [actorId],
+      targetLabel: actorId,
       payload,
+      ...(expiresAtMs ? { expiresAtMs } : {}),
     });
   }, [submission.send, wire.accessRef]);
+  const sendSystemCommand = useCallback(
+    (channelId, msgType, payload) => sendMemberCommand(channelId, SYSTEM_ACTOR_ID, msgType, payload),
+    [sendMemberCommand],
+  );
   // 全局 key 的读写经某个频道的资源面：global/ 前缀在每个频道都指向同一份空间
   // 存储，判权只看"是不是这个频道的成员"。这里只放行 global/ 前缀——它不是一个
   // 通用的资源旁路，频道自己的文件/KV 仍然只走附件 owner。
@@ -713,15 +729,65 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
   const waitForGovernanceTerminal = useCallback((record) => new Promise((resolve, reject) => {
     trackGovernanceRequest({ ...record, epoch: governanceEpochRef.current, resolve, reject });
   }), [trackGovernanceRequest]);
-  // 发一个 system 词并等它的终态回到账本，拿回平铺的回复。追踪路径恒是
-  // 请求编号 → 账本上的终态；恒不另起一条旁路。
-  const requestSystemReply = useCallback(async (channelId, msgType, payload) => {
+  // 向一个成员发一个词并等它的终态回到账本，拿回平铺的回复。追踪路径恒是
+  // 请求编号 → 账本上的终态（或提交被拒）；恒不另起一条旁路。
+  const requestMemberReply = useCallback(async (channelId, actorId, msgType, payload, options = {}) => {
     const epoch = governanceEpochRef.current;
-    const requestId = governanceRequestId(await sendSystemCommand(channelId, msgType, payload));
+    const requestId = governanceRequestId(await sendMemberCommand(channelId, actorId, msgType, payload, options));
     if (epoch !== governanceEpochRef.current) throw governanceWorldResetError();
-    if (!requestId) throw new TypeError('系统请求没有返回可追踪的请求编号');
+    if (!requestId) throw new TypeError('请求没有返回可追踪的请求编号');
     return waitForGovernanceTerminal({ channelId, requestId, msgType, kind: 'reply', epoch });
-  }, [sendSystemCommand, waitForGovernanceTerminal]);
+  }, [sendMemberCommand, waitForGovernanceTerminal]);
+  const requestSystemReply = useCallback(
+    (channelId, msgType, payload) => requestMemberReply(channelId, SYSTEM_ACTOR_ID, msgType, payload),
+    [requestMemberReply],
+  );
+  // 存储座位：宿主频道里 body 为 class channel-seat 的成员，它的词是存储频道
+  // 提供的词。按（频道，存储频道）记住认出的座位；名册变了就重认。
+  const storageRostersRef = useRef(roster.rosters);
+  storageRostersRef.current = roster.rosters;
+  const storageChannelsRef = useRef(navigation.channels);
+  storageChannelsRef.current = navigation.channels;
+  const storageSeatsRef = useRef(new Map());
+  const resolveStorageSeat = useCallback((channelId, storageChannel) => {
+    const seats = (storageRostersRef.current.get(channelId) || []).filter(isStorageSeatRow);
+    const rosterKey = seats.map((row) => `${row.id}\u001f${row.configId}\u001f${row.entryId}`).join('\u001e');
+    const key = `${channelId}\u001f${storageChannel}`;
+    const known = storageSeatsRef.current.get(key);
+    if (known && known.rosterKey === rosterKey) return known.promise;
+    const promise = identifyStorageSeat({
+      channelId,
+      storageChannel,
+      seats,
+      directory: storageChannelsRef.current || [],
+      request: requestMemberReply,
+    });
+    storageSeatsRef.current.set(key, { rosterKey, promise });
+    promise.catch(() => {
+      if (storageSeatsRef.current.get(key)?.promise === promise) storageSeatsRef.current.delete(key);
+    });
+    return promise;
+  }, [requestMemberReply]);
+  const storageGetURL = useCallback(async (channelId, address, { inline = true } = {}) => {
+    const parsed = parseStorageAddress(address);
+    if (!parsed) throw storageError('invalid_address', `不是有效的存储地址：${address}`);
+    const channel = (storageChannelsRef.current || []).find((row) => row?.id === channelId);
+    const hostName = String(channel?.qualified_name || channel?.name || channelId || '');
+    if (parsed.hostChannel !== hostName && parsed.hostChannel !== channelId) {
+      throw storageError('storage_foreign_channel', `这个文件属于频道 ${parsed.hostChannel}，不在当前频道 ${hostName} 里；请到 ${parsed.hostChannel} 打开它。`);
+    }
+    const seat = await resolveStorageSeat(channelId, parsed.storageChannel);
+    let reply;
+    try {
+      reply = await requestMemberReply(channelId, seat, TYPES.storageGetURL, { path: parsed.path, inline: Boolean(inline) }, {
+        expiresAtMs: Date.now() + STORAGE_REQUEST_TTL_MS,
+        deniedText: '当前身份不是该频道的成员，不能读取它存储的文件',
+      });
+    } catch (failure) {
+      throw storageReplyError(failure, parsed);
+    }
+    return storageTicket(reply);
+  }, [requestMemberReply, resolveStorageSeat]);
   const sendGovernanceCommand = useCallback(async (channelId, msgType, payload) => {
     const epoch = governanceEpochRef.current;
     const result = await sendSystemCommand(channelId, msgType, payload);
@@ -762,7 +828,26 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     }
   }, [refreshDirectoryFacts, showError]);
   useEffect(() => {
+    const rejectedSubmissions = new Map((submission.pending || [])
+      .filter((row) => row?.state === 'rejected' && row.messageId)
+      .map((row) => [row.messageId, row]));
     for (const [requestId, record] of governanceRequestsRef.current) {
+      const rejected = rejectedSubmissions.get(requestId);
+      if (rejected) {
+        // 提交本身被拒：账本上永远不会有它的终态，不能让等待的人一直等。
+        governanceRequestsRef.current.delete(requestId);
+        const detail = rejected.error && typeof rejected.error === 'object' ? rejected.error : {};
+        const failure = new Error(String(detail.detail || detail.message || '请求提交被拒绝'));
+        failure.code = String(detail.code || 'submission_rejected');
+        failure.detail = failure.message;
+        if (record.kind === 'channel-create') {
+          setChannelCreationRequest((current) => current?.requestId === requestId
+            ? { ...current, failed: true, error: errorText(failure) }
+            : current);
+        }
+        record.reject?.(failure);
+        continue;
+      }
       const turn = timelineTurnForRequest(feed.stateFor(record.channelId), requestId);
       if (!turn?.terminal) continue;
       const resultState = terminalResultState(turn);
@@ -802,7 +887,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
           : current);
       }
     }
-  }, [feed, governanceRequestRevision, navigation]);
+  }, [feed, governanceRequestRevision, navigation, submission.pending]);
   useEffect(() => () => resetGovernanceRequests(), [resetGovernanceRequests]);
   const attachments = useAttachmentTransactions({
     activeChannel: navigation.activeChannel,
@@ -823,6 +908,7 @@ function AuthenticatedWorkspace({ identity, initialError = '' }) {
     serverWorld,
     wireRef: wire.wireRef,
     wireState: wire.state,
+    resolveStorageURL: storageGetURL,
   });
   const resourceEntry = useCallback((channelId, resource) => ({
     key: `resource:${channelId}:${resource?.resource_id || resource?.resourceId || resource?.path || ''}`,

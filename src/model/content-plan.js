@@ -3,15 +3,17 @@ import remarkParse from 'remark-parse';
 import remarkBreaks from 'remark-breaks';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
+import { remarkStorageLinks } from './storage-address.js';
 
-export const CONTENT_PARSER_REVISION = 'commonmark-gfm-math-breaks@1';
+export const CONTENT_PARSER_REVISION = 'commonmark-gfm-math-breaks-oss@1';
 export const CONTENT_TEXT_CONTEXT = 48;
 
 const processor = unified()
   .use(remarkParse)
   .use(remarkGfm)
   .use(remarkMath)
-  .use(remarkBreaks);
+  .use(remarkBreaks)
+  .use(remarkStorageLinks);
 
 function sourceOf(source, node) {
   const start = node.position?.start?.offset;

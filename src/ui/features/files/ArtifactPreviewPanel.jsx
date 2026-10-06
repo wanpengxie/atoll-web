@@ -92,7 +92,7 @@ function NoPreview({ artifact, title, detail, onDownload }) {
 function Preview({ artifact, preview, textMode, onDownload }) {
   if (!artifact) return <p>没有选择文件。</p>;
   if (preview?.status === 'loading') return <p role="status">正在加载预览…</p>;
-  if (preview?.status === 'error') return <NoPreview artifact={artifact} title="预览暂不可用" detail={preview.error} onDownload={onDownload} />;
+  if (preview?.status === 'error') return <NoPreview artifact={artifact} title="预览暂不可用" detail={preview.error} onDownload={preview.downloadable === false ? null : onDownload} />;
   if (preview?.status === 'unsupported') return <NoPreview artifact={artifact} title="此文件暂不支持站内预览" detail={preview.reason || '文件事实和来源仍然保留，可以安全下载后打开。'} onDownload={onDownload} />;
   if (preview?.kind === 'image' && preview.url) return <img src={preview.url} alt={artifact.name || '文件预览'} />;
   if (preview?.kind === 'video' && preview.url) return <video controls src={preview.url} />;

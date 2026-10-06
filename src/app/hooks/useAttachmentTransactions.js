@@ -10,6 +10,7 @@ import {
   requestAccessError,
 } from '../../model/request-owner.js';
 import { newId } from '../../util/id.js';
+import { isStorageAddress } from '../../model/storage-address.js';
 
 const WORLD_FIELD = '_atoll_world_epoch';
 const FILE_READING_HISTORY_LIMIT = 24;
@@ -142,6 +143,28 @@ function previewLimit(kind) {
   if (['audio', 'video'].includes(kind)) return PREVIEW_LIMITS.media;
   if (kind === 'pdf') return PREVIEW_LIMITS.inline;
   return 0;
+}
+
+// A stored file (oss://) is shown straight from its signed URL: the browser
+// streams an image, PDF, video or audio itself, so nothing is read into the
+// page and no preview size cap applies. Text is read, within the same bound
+// as any other text preview.
+const DIRECT_PREVIEW_KINDS = new Set(['image', 'pdf', 'video', 'audio']);
+const STORAGE_UNREACHABLE = new Set([
+  'invalid_address', 'storage_foreign_channel', 'storage_seat_missing', 'storage_seat_ambiguous', 'not_found', 'invalid_args', 'forbidden',
+]);
+// A signed URL is treated as spent a little before it actually expires.
+const SIGNED_URL_MARGIN_MS = 5_000;
+
+function previewExpired(preview, now = Date.now()) {
+  const expiresAt = Number(preview?.expiresAtMs || 0);
+  return expiresAt > 0 && expiresAt - SIGNED_URL_MARGIN_MS <= now;
+}
+
+// Only a blob: URL this page made has anything to release; a signed https URL
+// is not the page's to revoke.
+function revokePreviewURL(url) {
+  if (typeof url === 'string' && url.startsWith('blob:')) URL.revokeObjectURL(url);
 }
 
 function previewSizeError(limit) {
@@ -358,7 +381,10 @@ export function useAttachmentTransactions({
   serverWorld,
   wireRef,
   wireState,
+  resolveStorageURL = null,
 }) {
+  const resolveStorageURLRef = useRef(resolveStorageURL);
+  resolveStorageURLRef.current = resolveStorageURL;
   const [devices, setDevices] = useState([]);
   const [directory, setDirectory] = useState('');
   const [deviceId, setDeviceId] = useState('');
@@ -464,7 +490,7 @@ export function useAttachmentTransactions({
   // released only when neither the live preview nor any kept one uses it.
   const cachedURL = (url) => Boolean(url) && [...previewCacheRef.current.values()].some((entry) => entry.preview?.url === url);
   const releaseURL = (url) => {
-    if (url && url !== previewObjectURLRef.current && !cachedURL(url)) URL.revokeObjectURL(url);
+    if (url && url !== previewObjectURLRef.current && !cachedURL(url)) revokePreviewURL(url);
   };
   const publishArtifactPreview = useCallback((preview) => {
     const nextURL = preview?.url || '';
@@ -816,7 +842,7 @@ export function useAttachmentTransactions({
     setFilesScrollTop(Number(restored?.scrollTop || 0));
     const reopen = restored?.previewStack?.at(-1);
     const kept = reopen ? previewCacheRef.current.get(activeChannelId) : null;
-    const keptReady = Boolean(kept && samePreview(kept.artifact, reopen) && kept.preview?.status === 'ready');
+    const keptReady = Boolean(kept && samePreview(kept.artifact, reopen) && kept.preview?.status === 'ready' && !previewExpired(kept.preview));
     // A preview this page already rendered comes back as it was; only one it
     // has not loaded (a reload, or one evicted) is fetched again.
     publishArtifactPreview(keptReady ? kept.preview : { status: 'idle' });
@@ -905,6 +931,19 @@ export function useAttachmentTransactions({
   // passes through the page's memory. The session cookie authenticates it.
   const downloadFile = useCallback(async (entry) => {
     if (!activeChannelId || !entry?.resourceId) return;
+    if (isStorageAddress(entry.resourceId)) {
+      // The storage signs an attachment URL; the browser fetches it from the
+      // bucket and saves it. A cross-origin anchor ignores `download`, so the
+      // file name is the one the URL's Content-Disposition carries.
+      const resolve = resolveStorageURLRef.current;
+      if (typeof resolve !== 'function') throw new TypeError('当前页面不能读取存储文件');
+      const ticket = await resolve(activeChannelId, entry.resourceId, { inline: false });
+      const anchor = document.createElement('a');
+      anchor.href = ticket.url;
+      anchor.rel = 'noreferrer';
+      anchor.click();
+      return;
+    }
     const url = await runFileOperation({ channelId: activeChannelId, access: 'read' }, async (operation) => {
       const receipt = await operation.resource({ channel_id: activeChannelId, op: 'read', resource_id: entry.resourceId, with_content: true });
       if (!receipt?.ticket) throw new TypeError('服务端没有返回下载凭据');
@@ -915,6 +954,46 @@ export function useAttachmentTransactions({
     anchor.download = entry.name || 'download';
     anchor.click();
   }, [activeChannelId, runFileOperation]);
+
+  // A stored file's preview: the host channel's storage seat signs an inline
+  // URL; media is shown from it directly, text is read from it without
+  // credentials (the bucket allows any origin to GET, never with cookies).
+  const previewStoredFile = useCallback(async ({ entry, descriptor, channelId, resourceId, signal }) => {
+    const resolve = resolveStorageURLRef.current;
+    if (typeof resolve !== 'function') throw new TypeError('当前页面不能读取存储文件');
+    const ticket = await resolve(channelId, resourceId, { inline: true });
+    if (signal?.aborted) throw new DOMException('预览已取消', 'AbortError');
+    const resolved = ticket.mediaType
+      ? previewDescriptor({ ...entry, mediaType: ticket.mediaType })
+      : descriptor;
+    const shown = resolved.kind === 'unsupported' && descriptor.kind !== 'unsupported' ? descriptor : resolved;
+    const facts = { expiresAtMs: ticket.expiresAtMs, ...(ticket.size != null ? { size: ticket.size } : {}) };
+    if (DIRECT_PREVIEW_KINDS.has(shown.kind)) return { ...shown, ...facts, status: 'ready', url: ticket.url };
+    const unsupported = {
+      ...shown,
+      ...facts,
+      status: 'unsupported',
+      reason: `不支持预览 ${shown.mediaType || '未知媒体类型'} 文件`,
+    };
+    if (ticket.size != null && ticket.size > PREVIEW_LIMITS.text) {
+      if (shown.kind === 'unsupported') return unsupported;
+      throw new RangeError(previewSizeError(PREVIEW_LIMITS.text));
+    }
+    const response = await fetch(ticket.url, { credentials: 'omit', signal });
+    if (!response.ok) throw new TypeError(`存储文件读取失败 (${response.status})`);
+    if (['markdown', 'text'].includes(shown.kind)) {
+      return { ...shown, ...facts, status: 'ready', text: await readBoundedText(response, PREVIEW_LIMITS.text, signal) };
+    }
+    let blob;
+    try {
+      blob = await readBoundedBlob(response, PREVIEW_LIMITS.text, signal);
+    } catch (error) {
+      if (error instanceof RangeError) return unsupported;
+      throw error;
+    }
+    const text = await sniffText(blob);
+    return text === null ? unsupported : { ...shown, ...facts, kind: 'text', status: 'ready', text, sniffed: true };
+  }, []);
 
   const previewArtifact = useCallback(async (entry, requestedChannelId = activeChannelRef.current, historyMode = 'push') => {
     const channelId = String(requestedChannelId || '');
@@ -939,7 +1018,8 @@ export function useAttachmentTransactions({
       finishRequest(previewRequestRef, request);
       return null;
     }
-    const declaredLimit = previewLimit(descriptor.kind);
+    const stored = isStorageAddress(resourceId);
+    const declaredLimit = stored && DIRECT_PREVIEW_KINDS.has(descriptor.kind) ? 0 : previewLimit(descriptor.kind);
     if (declaredLimit && Number(entry.size || 0) > declaredLimit) {
       if (previewRequestRef.current.request === request) {
         publishArtifactPreview({
@@ -955,7 +1035,9 @@ export function useAttachmentTransactions({
       return null;
     }
     try {
-      const preview = await runFileOperation({ channelId, access: 'read', signal: request.controller.signal }, async (operation) => {
+      const preview = stored
+        ? await previewStoredFile({ entry, descriptor, channelId, resourceId, signal: request.controller.signal })
+        : await runFileOperation({ channelId, access: 'read', signal: request.controller.signal }, async (operation) => {
         const receipt = await operation.resource({ channel_id: channelId, op: 'read', resource_id: resourceId, with_content: true });
         if (!receipt?.ticket) throw new TypeError('服务端没有返回预览凭据');
         const response = await operation.fetch(downloadURL(channelId, receipt.ticket), { credentials: 'include' });
@@ -997,7 +1079,7 @@ export function useAttachmentTransactions({
         return { ...resolved, status: 'ready', url: URL.createObjectURL(previewBlob) };
       });
       if (previewRequestRef.current.request !== request || request.controller.signal.aborted) {
-        if (preview?.url) URL.revokeObjectURL(preview.url);
+        if (preview?.url) revokePreviewURL(preview.url);
         return null;
       }
       publishArtifactPreview(preview);
@@ -1005,13 +1087,16 @@ export function useAttachmentTransactions({
       return preview;
     } catch (error) {
       if (previewRequestRef.current.request === request && !request.controller.signal.aborted) {
-        publishArtifactPreview({ ...descriptor, status: 'error', error: errorText(error) });
+        // A stored file that cannot be reached at all (another channel's, no
+        // seat, gone) cannot be downloaded either: offering it only fails again.
+        const unreachable = stored && STORAGE_UNREACHABLE.has(String(error?.code || ''));
+        publishArtifactPreview({ ...descriptor, status: 'error', error: errorText(error), ...(unreachable ? { downloadable: false } : {}) });
       }
       return null;
     } finally {
       finishRequest(previewRequestRef, request);
     }
-  }, [activeChannelRef, beginRequest, finishRequest, publishArtifactPreview, rememberRecentFile, runFileOperation]);
+  }, [activeChannelRef, beginRequest, finishRequest, previewStoredFile, publishArtifactPreview, rememberRecentFile, runFileOperation]);
 
   previewArtifactRef.current = previewArtifact;
   // Keep this channel's open preview on the device, so a reload finds it.
@@ -1311,9 +1396,9 @@ export function useAttachmentTransactions({
     abortUploads();
     abortFileOperations();
     uploadQueuesRef.current.clear();
-    if (previewObjectURLRef.current) URL.revokeObjectURL(previewObjectURLRef.current);
+    if (previewObjectURLRef.current) revokePreviewURL(previewObjectURLRef.current);
     previewObjectURLRef.current = '';
-    for (const entry of previewCacheRef.current.values()) if (entry.preview?.url) URL.revokeObjectURL(entry.preview.url);
+    for (const entry of previewCacheRef.current.values()) if (entry.preview?.url) revokePreviewURL(entry.preview.url);
     previewCacheRef.current.clear();
   }, [abortFileOperations, abortRequest, abortUploads]);
 

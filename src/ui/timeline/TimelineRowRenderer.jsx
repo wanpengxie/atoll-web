@@ -357,8 +357,32 @@ function attachmentType(attachment) {
   return '文件';
 }
 
+// A reply may name files as content blocks ({type: 'resource_link', uri, name,
+// mimeType, size}) next to its text; each is an attachment like any other.
+function resourceLinkAttachments(content) {
+  if (!Array.isArray(content)) return [];
+  return content.flatMap((item) => {
+    const uri = typeof item?.uri === 'string' ? item.uri.trim() : '';
+    if (item?.type !== 'resource_link' || !uri) return [];
+    const size = Number(item.size);
+    return [{
+      resource_id: uri,
+      name: String(item.name || item.title || uri.split('/').filter(Boolean).pop() || uri),
+      media_type: String(item.mimeType || item.mime_type || item.media_type || ''),
+      ...(item.size != null && Number.isFinite(size) && size >= 0 ? { size } : {}),
+    }];
+  });
+}
+
+function messageAttachments(body) {
+  const listed = Array.isArray(body?.attachments) ? body.attachments : Array.isArray(body?.files) ? body.files : [];
+  const linked = resourceLinkAttachments(body?.content)
+    .filter((link) => !listed.some((attachment) => (attachment?.resource_id || attachment?.id) === link.resource_id));
+  return linked.length ? [...listed, ...linked] : listed;
+}
+
 function Attachments({ envelope, onDownload, onPreview }) {
-  const attachments = argsOf(envelope).attachments || argsOf(envelope).files || [];
+  const attachments = messageAttachments(argsOf(envelope));
   if (!attachments.length) return null;
   return <section className="message-attachments" aria-label="附件列表">{attachments.map((attachment, index) => <article
     className="message-attachment" key={attachment.resource_id || attachment.id || `${attachmentName(attachment)}:${index}`}
@@ -620,6 +644,12 @@ function StructuredResult({ requestType = '', payload = {}, contentKey }) {
     if (!text) return <p className="empty-result">返回了空文本</p>;
     const parsed = parseJSON(text);
     return parsed === undefined ? <MarkdownContent contentKey={contentKey} text={text} /> : <StructuredData title="JSON 结果" value={parsed} />;
+  }
+  // Content blocks are the answer's prose (text) and files (resource_link,
+  // shown as attachments): read as a message, not as a field tree.
+  if (Array.isArray(payload.content) && payload.content.some((item) => item?.type === 'text' || item?.type === 'resource_link')) {
+    const text = textContent({ content: payload.content });
+    return text ? <MarkdownContent contentKey={contentKey} text={text} /> : null;
   }
   if (Object.keys(business).length > 0) return <StructuredData title={resultTitle(requestType, payload)} value={business} />;
   return <p className="completion-ack">✓ 已完成</p>;

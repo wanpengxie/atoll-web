@@ -123,6 +123,8 @@ export const TYPES = Object.freeze({
   }),
 
   describe: 'actor.describe',
+  // 存储频道经座位提供的词：前端只用它换一张读文件的直链。
+  storageGetURL: 'storage.get_url',
 });
 
 // 由**客户端**受理的 ui.* 词（platform/subjectgate IsUIWord）。客户端按请求里点名的
