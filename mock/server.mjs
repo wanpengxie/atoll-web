@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import fsPath from 'node:path';
 import { WebSocket, WebSocketServer } from 'ws';
@@ -251,6 +251,25 @@ function mockDescribe(actorId, { taskCapability = false } = {}) {
   };
 }
 
+// 座位的 actor.describe：它的词就是存储频道经 svcactor 提供的词。
+function storageSeatDescribe() {
+  const path = { type: 'string', description: 'the file path in this channel' };
+  return {
+    class: 'channel-seat',
+    interfaces: ['actor', 'channel'],
+    capabilities: {},
+    words: {
+      'storage.get_url': {
+        description: 'Get a URL to download one stored file. GET url yourself before expires_at; inline asks the browser to show the file rather than save it.',
+        input_schema: { type: 'object', required: ['path'], properties: { path, inline: { type: 'boolean' } } },
+        output_schema: { type: 'object', required: ['url', 'expires_at', 'size', 'media_type'], properties: { url: { type: 'string' }, expires_at: { type: 'string', format: 'date-time' }, size: { type: 'integer' }, media_type: { type: 'string' } } },
+        error_codes: ['invalid_args', 'not_found', 'forbidden', 'backend_unavailable'],
+      },
+      'storage.stat': { description: 'One stored file\'s facts.', input_schema: { type: 'object', required: ['path'], properties: { path } } },
+    },
+  };
+}
+
 function seededHistory(channelId, behavior = {}) {
   const rows = [];
   const add = (value) => rows.push({ channel_id: channelId, seq: rows.length + 1, envelope: value });
@@ -289,7 +308,20 @@ function seededHistory(channelId, behavior = {}) {
     add(envelope({ id: `${requestId}-turn-started`, channelId, sender: responder, kind: 'response', type: 'agent.ask', payload: { status: 'processing', turn_index: index, controls: PROCESSING_CONTROLS, process: { kind: 'turn', phase: 'started' } }, parentId: requestId, correlationId: requestId, audience: [selfActorId], ts: at + 3 }));
     add(envelope({ id: `${requestId}-tool-started`, channelId, sender: responder, kind: 'response', type: 'agent.ask', payload: { status: 'processing', turn_index: index, controls: PROCESSING_CONTROLS, process: { kind: 'tool', phase: 'started', tool_call_id: `${requestId}-tool`, tool: toolName, input: { channel_id: channelId, query: `检查 ${channelId} 的协作账本` } } }, parentId: requestId, correlationId: requestId, audience: [selfActorId], ts: at + 4 }));
     add(envelope({ id: `${requestId}-tool-ended`, channelId, sender: responder, kind: 'response', type: 'agent.ask', payload: { status: 'processing', turn_index: index, controls: PROCESSING_CONTROLS, process: { kind: 'tool', phase: 'ended', tool_call_id: `${requestId}-tool`, tool: toolName, outcome: 'completed', output: { ok: true, matched_rows: 3, channel_id: channelId } } }, parentId: requestId, correlationId: requestId, audience: [selfActorId], ts: at + 5 }));
-    add(envelope({ id: `${requestId}-completed`, channelId, sender: responder, kind: 'response', type: 'agent.ask', payload: { status: 'completed', turn_index: index, text: responseText, usage: { context_tokens: 30_000 + index * 1_000, context_window: 200_000, model: 'gpt-5.6-sol', effort: 'medium' } }, parentId: requestId, correlationId: requestId, audience: [selfActorId], ts: at + 6 }));
+    // 存储链接演示：正文是内容块（文字 + resource_link），文字里有 Markdown 链接、
+    // 裸地址和一个别的频道的地址。
+    const storageDemo = behavior.storage_link_demo && channelId === 'c0.dev' && index === 3;
+    const answer = storageDemo ? { content: [
+      { type: 'text', text: [
+        'Q3 的材料已经存进对象存储：',
+        '',
+        '- 图表：[Q3 图表](oss://c0.storage/c0.dev/reports/q3-chart.png)',
+        '- 纪要原文：oss://c0.storage/c0.dev/reports/q3-notes.txt',
+        '- cvmax 那边的版本：[cvmax 报告](oss://c0.storage/c0.cvmax/reports/q3.pdf)',
+      ].join('\n') },
+      { type: 'resource_link', uri: 'oss://c0.storage/c0.dev/reports/q3-summary.md', name: 'q3-summary.md', mimeType: 'text/markdown' },
+    ] } : { text: responseText };
+    add(envelope({ id: `${requestId}-completed`, channelId, sender: responder, kind: 'response', type: 'agent.ask', payload: { status: 'completed', turn_index: index, ...answer, usage: { context_tokens: 30_000 + index * 1_000, context_window: 200_000, model: 'gpt-5.6-sol', effort: 'medium' } }, parentId: requestId, correlationId: requestId, audience: [selfActorId], ts: at + 6 }));
   }
 
   const registeredActors = isLobby ? ['svcactor'] : ['steward', 'svcactor'];
@@ -475,6 +507,13 @@ export function rawHistoryPage(allRows, { beforeSeq = 0, limit = 200 } = {}) {
   });
 }
 
+function originOf(server) {
+  const address = server?.address?.();
+  if (!address || typeof address !== 'object') return 'http://127.0.0.1:8832';
+  const host = ['::', '0.0.0.0', '::1'].includes(address.address) ? '127.0.0.1' : address.address;
+  return `http://${host}:${address.port}`;
+}
+
 export function createMockServer({
   rootPassword = process.env.ATOLL_ROOT_PASSWORD || 'root',
   liveIntervalMs = 0,
@@ -482,6 +521,8 @@ export function createMockServer({
   seed = process.env.ATOLL_MOCK_SEED,
 } = {}) {
   let domain = createMockDomain(loadScenario(scenario, seed));
+  // 签出的直链指向 mock 自己的源：页面从 Vite 的源跨源去读，和真桶一样。
+  const mockOrigin = () => originOf(server);
   const initialNodeUpdate = () => ({ current_version: 'v0.06', latest_version: 'v0.07', available: true, status: 'idle' });
   let nodeUpdate = initialNodeUpdate();
   const sessions = new Map();
@@ -1056,7 +1097,9 @@ export function createMockServer({
     if (payload.msg_type === 'actor.describe' && target) {
       const describe = target.kind === 'agent'
         ? mockDescribe(target.id, { taskCapability: domain.behavior.task_capability })
-        : { class: target.kind || 'tool', interfaces: ['actor'], capabilities: {}, words: {} };
+        : domain.storageSeatTarget(channelId, target.id)
+          ? storageSeatDescribe()
+          : { class: target.kind || 'tool', interfaces: ['actor'], capabilities: {}, words: {} };
       const selector = payload.payload?.type;
       if (selector) {
         const meta = describe.words?.[selector];
@@ -1272,6 +1315,33 @@ export function createMockServer({
         fail(error.code || 'invalid_args', error.message);
         return;
       }
+    }
+
+    // 座位把存储频道的词转过去；manager 认出宿主（座位所在的频道），只看它的路径。
+    if (kind === 'request' && payload.msg_type === 'storage.get_url' && target && domain.storageSeatTarget(channelId, target.id)) {
+      const body = payload.payload || {};
+      const path = typeof body.path === 'string' ? body.path : '';
+      if (!path || path.startsWith('/') || path.split('/').some((segment) => !segment || segment === '.' || segment === '..')) {
+        fail('invalid_args', 'path must be a relative path without . or .. segments');
+        return;
+      }
+      const stored = domain.storageObject(channelId, path);
+      if (!stored) {
+        fail('not_found', `no stored file at ${path}`);
+        return;
+      }
+      const ttlMs = 300_000;
+      const expiresAt = Date.now() + ttlMs;
+      const disposition = body.inline ? 'inline' : 'attachment';
+      const key = `${channelId}/${path}`.split('/').map(encodeURIComponent).join('/');
+      const signature = createHash('sha256').update(`${key}\u001f${expiresAt}\u001f${disposition}`).digest('hex').slice(0, 24);
+      completeFlat({
+        url: `${mockOrigin()}/mock/oss/${key}?exp=${expiresAt}&disp=${disposition}&sig=${signature}`,
+        expires_at: new Date(expiresAt).toISOString(),
+        size: stored.size,
+        media_type: stored.mediaType,
+      });
+      return;
     }
 
     const respondingAgent = (rosters.get(channelId) || [])
@@ -2118,6 +2188,42 @@ export function createMockServer({
   const server = http.createServer(async (request, response) => {
     const url = new URL(request.url, 'http://mock.local');
     const path = url.pathname;
+
+    // 桶的替身：一张签过名的直链，不认 cookie，任何源都能 GET/HEAD（CORS 照
+    // 真桶的配置：允许 GET/HEAD，暴露 ETag、Content-Length）。
+    if (path.startsWith('/mock/oss/')) {
+      const cors = {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, HEAD',
+        'Access-Control-Allow-Headers': '*',
+        'Access-Control-Expose-Headers': 'ETag, Content-Length',
+      };
+      if (request.method === 'OPTIONS') { response.writeHead(204, cors); response.end(); return; }
+      if (!['GET', 'HEAD'].includes(request.method)) { response.writeHead(405, cors); response.end(); return; }
+      const key = path.slice('/mock/oss/'.length);
+      const expiresAt = Number(url.searchParams.get('exp') || 0);
+      const disposition = url.searchParams.get('disp') === 'attachment' ? 'attachment' : 'inline';
+      const signature = createHash('sha256').update(`${key}\u001f${expiresAt}\u001f${disposition}`).digest('hex').slice(0, 24);
+      if (url.searchParams.get('sig') !== signature || !(expiresAt > Date.now())) {
+        response.writeHead(403, { ...cors, 'Content-Type': 'application/xml' });
+        response.end(request.method === 'HEAD' ? undefined : '<Error><Code>AccessDenied</Code><Message>Request has expired or signature does not match</Message></Error>');
+        return;
+      }
+      const segments = key.split('/').map((segment) => decodeURIComponent(segment));
+      const stored = domain.storageObject(segments[0], segments.slice(1).join('/'));
+      if (!stored) { response.writeHead(404, cors); response.end(); return; }
+      const fileName = segments.at(-1);
+      response.writeHead(200, {
+        ...cors,
+        'Content-Type': stored.mediaType,
+        'Content-Length': String(stored.size),
+        ETag: `"${createHash('md5').update(stored.content).digest('hex')}"`,
+        'Content-Disposition': `${disposition}; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+        'Cache-Control': 'private, max-age=60',
+      });
+      response.end(request.method === 'HEAD' ? undefined : stored.content);
+      return;
+    }
 
     if (request.method === 'POST' && (path === '/api/identity/login' || path === '/api/identity/register')) {
       let body;

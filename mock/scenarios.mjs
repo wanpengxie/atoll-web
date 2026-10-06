@@ -29,6 +29,19 @@ const FILE_REFERENCE_DEMO = Object.freeze({
   ].join('\n'),
 });
 
+// 存储链接：c0.dev 有一个通往 c0.storage 的座位；桶里放着 c0.dev 的几份文件。
+// 页面只读——点 oss:// 链接，经座位换一张直链，从 mock 自己的源（跨源）读字节。
+const STORAGE_CHANNELS = Object.freeze([
+  { id: 'c0.dev', name: 'dev', qualified_name: 'c0.dev', parent_id: 'c0', internal: false, open: true, status: 'present' },
+  { id: 'c0.storage', name: 'storage', qualified_name: 'c0.storage', parent_id: 'c0', internal: false, open: true, status: 'present' },
+]);
+
+const STORAGE_OBJECTS = Object.freeze([
+  { host: 'c0.dev', path: 'reports/q3-chart.png', media_type: 'image/png', png: 'chart' },
+  { host: 'c0.dev', path: 'reports/q3-notes.txt', media_type: 'text/plain', content: 'Q3 纪要（来自对象存储）\n\n1. 收入同比增长 18%\n2. 新增两个存储后端\n3. 下季度目标：上传走存储\n' },
+  { host: 'c0.dev', path: 'reports/q3-summary.md', media_type: 'text/markdown', content: '# Q3 小结\n\n这份 Markdown 存在 **c0.storage**，经座位签出的直链读取。\n' },
+]);
+
 const member = (channelId, actorId = 'root', role = 'owner') => ({
   principal_id: 'root',
   channel_id: channelId,
@@ -102,6 +115,11 @@ export const SCENARIOS = Object.freeze({
   'space-administration-denied': standard({ behavior: { governance_denied: true } }),
   'device-governance': standard(),
   'resource-workflow': standard(),
+  'storage-link': standard({
+    channels: [...BASE_CHANNELS, ...STORAGE_CHANNELS],
+    memberships: [member('c0'), member('c0.dev', 'root-dev', 'member')],
+    behavior: { storage_link_demo: true, storage_seats: { 'c0.dev': 'c0.storage' }, storage_objects: STORAGE_OBJECTS },
+  }),
   'file-reference': standard({ files: [...DEMO_FILES, FILE_REFERENCE_DEMO], behavior: { file_reference_demo: true } }),
   'resource-ticket-expired': standard(),
   'scheduled-action': standard(),

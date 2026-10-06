@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { deflateSync } from 'node:zlib';
 
 const ROOT_ID = 'root';
 const STAMP = 1_723_974_400_000;
@@ -197,6 +198,59 @@ function createRoster(channel, memberships, clock, { seedBusiness = true, canoni
   return rows;
 }
 
+// ---- 存储座位与对象存储（c0.storage 的替身）----
+// 座位在宿主频道里就是一个成员：名册说 kind channel、body "class channel-seat"，
+// 描述条目 {body: {class: channel-seat}, params: {body: <存储频道 id>}}。
+export const STORAGE_SEAT_BODY = 'class channel-seat';
+
+const CRC_TABLE = Array.from({ length: 256 }, (_, n) => {
+  let c = n;
+  for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  return c >>> 0;
+});
+
+function crc32(bytes) {
+  let c = 0xffffffff;
+  for (const byte of bytes) c = CRC_TABLE[(c ^ byte) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length);
+  const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(body));
+  return Buffer.concat([length, body, crc]);
+}
+
+// 一张真 PNG（柱状图样子），让预览面板里能看见它确实是从存储读来的图。
+export function demoChartPNG(width = 240, height = 150) {
+  const bars = [0.35, 0.6, 0.45, 0.85];
+  const rows = [];
+  for (let y = 0; y < height; y += 1) {
+    const row = Buffer.alloc(1 + width * 3);
+    for (let x = 0; x < width; x += 1) {
+      const slot = Math.floor((x / width) * bars.length);
+      const inBar = (x % (width / bars.length)) > 10 && (x % (width / bars.length)) < (width / bars.length) - 10;
+      const filled = inBar && (height - y) < bars[slot] * (height - 20);
+      const [r, g, b] = filled ? [37 + slot * 30, 99 + slot * 20, 235 - slot * 30] : y === height - 10 ? [80, 80, 80] : [248, 250, 252];
+      row[1 + x * 3] = r; row[2 + x * 3] = g; row[3 + x * 3] = b;
+    }
+    rows.push(row);
+  }
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8; header[9] = 2; header[10] = 0; header[11] = 0; header[12] = 0;
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk('IHDR', header),
+    pngChunk('IDAT', deflateSync(Buffer.concat(rows))),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
 export class MockDomain {
   constructor(config) {
     this.reset(config);
@@ -213,6 +267,11 @@ export class MockDomain {
     this.rosters = new Map([...this.channels.values()].map((channel) => [channel.id, createRoster(channel, this.memberships, this.clock, {
       canonicalActorIds: config.behavior?.canonical_actor_ids === true,
     })]));
+    // 宿主频道 → 它的座位通往的存储频道。
+    const storageSeats = Object.entries(config.behavior?.storage_seats || {});
+    for (const [hostId] of storageSeats) {
+      this.rosters.get(hostId)?.push(rosterItem({ id: `channel:storage:${hostId}`, kind: 'channel', body: STORAGE_SEAT_BODY, name: 'storage' }, this.clock));
+    }
     this.histories = new Map([...this.channels.keys()].map((channelId) => [channelId, []]));
     this.scheduled = structuredClone(config.scheduled || []);
     this.delays = structuredClone(config.delays || {});
@@ -275,6 +334,16 @@ export class MockDomain {
         if (row) Object.assign(row.declared, { config_id: this.ensureConfig(channel.id, entry.id).config_id, entry_id: entry.id });
       }
       this.descriptions.set(channel.id, { body: this.normalizedDescription({ members: entries, description: channel.description || '', ...(kernel ? { readonly: true } : {}), ...(channel.internal ? { local_device: false } : {}) }), revision: 1 });
+    }
+    for (const [hostId, storageId] of storageSeats) {
+      const seat = this.entriesOf(hostId).find((entry) => entry.body?.class === 'channel-seat');
+      if (seat) seat.params = { body: storageId };
+    }
+    // 桶里的对象：<宿主频道 id>/<路径> → 字节。
+    this.storageObjects = new Map();
+    for (const seed of config.behavior?.storage_objects || []) {
+      const content = seed.png === 'chart' ? demoChartPNG() : Buffer.from(String(seed.content || ''), 'utf8');
+      this.storageObjects.set(`${seed.host}/${seed.path}`, { content, mediaType: seed.media_type || 'application/octet-stream', size: content.length });
     }
     for (const channelId of this.channels.keys()) {
       for (const entry of this.entriesOf(channelId)) this.builds.set(this.buildKey(channelId, entry.id), this.buildRecord(channelId, entry.id, { result: 'ok', state: 'ready', attempt: 1, at: stamp }));
@@ -680,6 +749,19 @@ export class MockDomain {
   entryBodyPhrase(entry) {
     const actor = entry?.body?.actor ? this.resolveActorRef(entry.body.actor) : null;
     return actor ? `actor ${actor.ref}` : bodyPhrase(entry?.body);
+  }
+
+  // storage.get_url 经座位到达：宿主就是座位所在的频道，只看它自己的路径。
+  storageObject(hostId, path) {
+    return this.storageObjects?.get(`${hostId}/${path}`) || null;
+  }
+
+  storageSeatTarget(channelId, actorId) {
+    const row = (this.rosters.get(channelId) || []).find((entry) => entry.declared.id === actorId);
+    if (row?.declared.body !== STORAGE_SEAT_BODY) return '';
+    const config = row.declared.config_id ? this.memberConfigs.get(row.declared.config_id) : null;
+    const entry = config ? this.entry(channelId, config.entry_id) : null;
+    return String(entry?.params?.body || '');
   }
 
   memberSummary(channelId, row) {
